@@ -50,6 +50,8 @@ Optional fields:
 
 The contract: a manifest is correct when `go run ./tools/build` succeeds, the produced `r/<name>.json` round-trips through `cmd/glyph`'s install logic (`go test ./cmd/glyph -run Integration`), and the produced `r/<name>/<file>` URLs each resolve when served. The build and integration tests verify all three.
 
+Adapter-level contributions (a port of glyph to a non-Bubble-Tea framework) follow a separate spec. See [`docs/ADAPTERS.md`](docs/ADAPTERS.md) before opening an adapter-proposal issue.
+
 ## Story files
 
 Every component ships a story file at `components/<name>/story/main.go` with the `//go:build glyph_story` build tag. The tag keeps the story out of the default Go build and lets `go test ./components/...` ignore it. Stories are runnable via `go run -tags glyph_story ./components/<name>/story/`.
