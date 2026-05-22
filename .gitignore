@@ -23,3 +23,4 @@ Thumbs.db
 # Stray local binaries from go build at repo root
 /glyph
 /story
+/showcase
