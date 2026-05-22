@@ -1,0 +1,32 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "panel",
+  "type": "glyph:component",
+  "title": "Panel",
+  "description": "Bordered container with optional title and footer. The workhorse layout primitive: almost every other component pairs well inside a Panel. Rounded corners, two border weights, configurable padding.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/panel/panel.go",
+      "type": "glyph:component",
+      "target": "@components/panel/panel.go"
+    },
+    {
+      "path": "components/panel/panel_test.go",
+      "type": "glyph:test",
+      "target": "@components/panel/panel_test.go"
+    }
+  ],
+  "docs": "Panel is pure render: no Update, no Cmd. Compose other components by setting their View() output as the content. Use WithWidth/WithHeight to clamp the outer dimensions, or omit both for natural sizing.",
+  "categories": ["layout", "primitive", "container"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

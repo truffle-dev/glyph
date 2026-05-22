@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "spinner",
+  "type": "glyph:component",
+  "title": "Spinner",
+  "description": "Animated single-glyph progress indicator with an optional label. Five built-in styles: dots, line, arc, pulse, bounce. Each spinner produces its own TickMsg, addressable by an optional ID so parent models can multiplex.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/spinner/spinner.go",
+      "type": "glyph:component",
+      "target": "@components/spinner/spinner.go"
+    },
+    {
+      "path": "components/spinner/spinner_test.go",
+      "type": "glyph:test",
+      "target": "@components/spinner/spinner_test.go"
+    }
+  ],
+  "docs": "Call Init to start the tick. Forward TickMsg through your model's Update so it reaches the spinner's Update. Use WithID when composing more than one spinner so each gets its own tick stream.",
+  "categories": ["feedback", "progress", "indicator"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

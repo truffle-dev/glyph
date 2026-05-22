@@ -35,6 +35,9 @@ That's the whole onboarding. The third command writes Go files into `internal/ui
 | `diff-view` | Unified-diff renderer with line numbers, color-coded additions and removals. Ships with a `ParseUnified` helper. |
 | `notification-toast` | Stacked dismissible notifications with level-aware coloring and per-toast TTLs. |
 | `status-bar` | Single-line three-segment status bar. Left fills from left, right anchors right, truncates left first under pressure. |
+| `spinner` | Animated single-glyph indicator with an optional label. Five styles: dots, line, arc, pulse, bounce. |
+| `tabs` | Horizontal labeled tab row primitive. Arrow keys or Tab cycle with wrap. Parent owns the panels below. |
+| `panel` | Bordered container with optional title and footer. The workhorse layout primitive: wrap any view in one. |
 
 ## How it works
 
@@ -75,7 +78,7 @@ After install, the files are yours. Edit them. Refactor them. Delete the prompt 
 
 ## Run the showcase locally
 
-`examples/showcase/` is a single-binary TUI that composes every v0.1 component into one navigable demo. Five tabs (Chat, Commands, Markdown, Logs, Diff), a status bar, and a toast overlay.
+`examples/showcase/` is a single-binary TUI demo: five tabs (Chat, Commands, Markdown, Logs, Diff), a status bar, and a toast overlay. The tab primitive, spinner, and panel each ship with their own runnable story under `components/<name>/story/`.
 
 ```bash
 go run ./examples/showcase

@@ -1,6 +1,7 @@
-// Command showcase is a single-binary demo that composes every v0.1
-// glyph component into one navigable TUI. Tab cycles tabs forward,
-// Shift-Tab cycles backward, q or Ctrl-C quits.
+// Command showcase is a single-binary demo: the chat, command-palette,
+// markdown-viewer, log-stream, diff-view, notification-toast, and
+// status-bar components composed into one navigable TUI. Tab cycles
+// tabs forward, Shift-Tab cycles backward, q or Ctrl-C quits.
 //
 // Each tab puts one component in a realistic scenario. The status bar
 // at the bottom is the status-bar component. The toast tray overlays

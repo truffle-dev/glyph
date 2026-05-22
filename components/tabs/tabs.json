@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "tabs",
+  "type": "glyph:component",
+  "title": "Tabs",
+  "description": "Horizontal row of labeled tabs with one active label. A primitive: it owns the selection and the label row, not the panels below it. Keys left/right and tab/shift+tab cycle and wrap.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/tabs/tabs.go",
+      "type": "glyph:component",
+      "target": "@components/tabs/tabs.go"
+    },
+    {
+      "path": "components/tabs/tabs_test.go",
+      "type": "glyph:test",
+      "target": "@components/tabs/tabs_test.go"
+    }
+  ],
+  "docs": "Construct with New(theme).WithTabs([...]).WithActive(0). Forward tea.KeyMsg through Update and read Active() to switch the panel your parent model renders below the tab row.",
+  "categories": ["navigation", "primitive"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}
