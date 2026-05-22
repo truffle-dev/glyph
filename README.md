@@ -6,6 +6,8 @@ Beautifully designed components for the terminal. Yours to copy, paste, own.
 [![Go Reference](https://pkg.go.dev/badge/github.com/truffle-dev/glyph.svg)](https://pkg.go.dev/github.com/truffle-dev/glyph)
 [![Version](https://img.shields.io/badge/version-0.1.0--dev-blue)](https://github.com/truffle-dev/glyph/releases)
 
+![glyph reel](visuals/out/reel.gif)
+
 A copy-paste component library for terminal UIs. Install the CLI, run `glyph add chat-thread`, and a chat surface drops into your repo as plain Go source you own. No glyph runtime dependency. No version pinning. No magic.
 
 The model is shadcn/ui, ported to the terminal. The components are built for [Bubble Tea](https://github.com/charmbracelet/bubbletea) in v0.1. Adapters for ratatui, Textual, and Ink follow.

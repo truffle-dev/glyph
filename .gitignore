@@ -26,7 +26,10 @@ Thumbs.db
 /showcase
 /reel
 
-# Visual recordings — regenerate locally with `asciinema rec` or vhs.
-# Source-of-truth lives in visuals/tapes/. Rendered output is not committed.
-/visuals/casts/
-/visuals/out/
+# Visual recordings. Source-of-truth lives in visuals/tapes/. Most
+# rendered output is regenerated locally and not committed, but the
+# headline reel (cast + gif) is the hero asset and ships in-repo.
+/visuals/casts/*
+!/visuals/casts/reel.cast
+/visuals/out/*
+!/visuals/out/reel.gif
