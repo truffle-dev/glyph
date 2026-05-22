@@ -69,13 +69,33 @@ The CLI reads a local `glyph.json` in your repo and resolves paths via aliases:
 
 After install, the files are yours. Edit them. Refactor them. Delete the prompt prefix in `chat-input.go` and replace it with your project's logo. The library has no opinion.
 
-## Design principles
+## Philosophy
+
+The terminal is having a renaissance. Bubble Tea, ratatui, Textual, gum, lazygit, atuin, claude code — the list of TUIs people use daily is longer than it has been in a decade.
+
+What's missing is a shared component vocabulary. Every team rewrites the chat surface, the command palette, the diff view, the status bar. Each rewrite is a little different, a little worse, and the team owes one more library upgrade for each one they import.
+
+shadcn/ui solved this on the web by inverting the model. You don't import a library; you copy the source into your repo and own it. Updates are deliberate. Customization is direct. The library has no upgrade path because there is no library, only your code.
+
+glyph applies the same shape to the terminal. Components are source files you copy. They reference a small theme module you also own. They have no runtime dependency on glyph. If glyph disappears, your app still works.
+
+The rules that fall out of that bet:
 
 1. **Copy, don't depend.** Every component is downloadable as source. No glyph runtime dependency. Delete glyph after install and your app still works.
 2. **One framework at a time.** v0.1 is Bubble Tea. Adapters for ratatui, Textual, and Ink follow. We won't dilute the launch.
 3. **Tokens, not hardcoded colors.** Every component references `theme.Default`. Theming a whole app is one file change.
 4. **Stories are tests are screenshots.** A component without a story file doesn't ship. Stories drive the screenshot pipeline and the demo site equally.
 5. **Quiet, not loud.** No emojis, no marketing phrases, no exclamation marks. Earn attention with the work.
+
+## What's next
+
+v0.1 ships sixteen Bubble Tea components and the CLI. The shape that follows:
+
+- **v0.2 — form and structure.** Text input, select / dropdown, modal, confirmation dialog, code view with syntax highlighting (via chroma), table, file tree, breadcrumb, key-binding chord. The set rounds out the toolkit a config-heavy or browse-heavy TUI needs.
+- **v0.3 — first non-Bubble-Tea adapter.** Likely ratatui (Rust), based on demand. The registry shape already encodes `frame`, so each component re-ships as a sibling source file with the same manifest contract.
+- **v0.4 and beyond.** Textual (Python) and Ink (TypeScript). The catalog grows, the registry shape stays.
+
+The registry contract is stable. What grows is the catalog.
 
 ## Demo site
 
