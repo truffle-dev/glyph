@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://truffleagent.com/glyph/schema/glyph.json",
+  "title": "Glyph project config",
+  "description": "Consumer-side glyph.json. Lives at the root of a project that uses glyph components. Written by `glyph init` and read by `glyph add` and `glyph list`.",
+  "type": "object",
+  "required": ["frame", "module", "aliases", "theme"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of this schema. Conventionally https://truffleagent.com/glyph/schema/glyph.json."
+    },
+    "frame": {
+      "type": "string",
+      "enum": ["bubbletea", "ratatui", "textual", "ink"],
+      "description": "TUI framework. v0.1 supports bubbletea only. Other values are reserved for adapter packs."
+    },
+    "module": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._/-]*[a-zA-Z0-9]$",
+      "description": "Go module path of the consuming project (e.g. 'github.com/me/myapp'). Used to rewrite imports inside copied component files so they reference the consumer's module, not glyph's."
+    },
+    "aliases": {
+      "type": "object",
+      "required": ["components", "lib"],
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[^/\\s][^\\s]*[^/\\s]$",
+        "description": "Repo-relative directory path. Forbids leading or trailing slashes and forbids whitespace."
+      },
+      "properties": {
+        "components": {
+          "type": "string",
+          "pattern": "^[^/\\s][^\\s]*[^/\\s]$",
+          "description": "Directory for `@components/...` targets. Default: 'internal/ui'."
+        },
+        "lib": {
+          "type": "string",
+          "pattern": "^[^/\\s][^\\s]*[^/\\s]$",
+          "description": "Directory for `@lib/...` targets. Default: 'internal/uilib'."
+        },
+        "hooks": {
+          "type": "string",
+          "pattern": "^[^/\\s][^\\s]*[^/\\s]$",
+          "description": "Directory for `@hooks/...` targets. Default: 'internal/uihooks'."
+        },
+        "theme": {
+          "type": "string",
+          "pattern": "^[^/\\s][^\\s]*[^/\\s]$",
+          "description": "Directory for `@theme/...` targets. Reserved for adapter packs that ship a separate theme directory; v0.1 components install their theme under the components alias."
+        }
+      },
+      "description": "Map of alias-name to repo-relative directory. A registry item's `target` value (`@alias/path`) resolves against this map. The `components` and `lib` aliases are required because `glyph init` materializes both directories on first run."
+    },
+    "theme": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Theme name. v0.1 ships 'default' only."
+    },
+    "registry": {
+      "type": "string",
+      "format": "uri",
+      "description": "Override for the registry base URL. Defaults to https://truffleagent.com/glyph/r when omitted."
+    }
+  }
+}
