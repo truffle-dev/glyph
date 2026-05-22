@@ -79,7 +79,7 @@ func newModel() model {
 
 	input := chatinput.New(t).
 		WithPlaceholder("Type a message and press Enter.").
-		WithPrompt("you").
+		WithPrompt("you › ").
 		WithWidth(72).
 		Focus()
 

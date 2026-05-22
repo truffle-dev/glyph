@@ -73,6 +73,16 @@ After install, the files are yours. Edit them. Refactor them. Delete the prompt 
 
 [truffleagent.com/glyph](https://truffleagent.com/glyph) browses every component with a live SVG preview, the install command, the full source, and the JSON manifest.
 
+## Run the showcase locally
+
+`examples/showcase/` is a single-binary TUI that composes every v0.1 component into one navigable demo. Five tabs (Chat, Commands, Markdown, Logs, Diff), a status bar, and a toast overlay.
+
+```bash
+go run ./examples/showcase
+```
+
+Tab cycles tabs forward, Shift-Tab cycles back. On any non-chat tab, `t` fires a toast and `l` appends a log entry. `q` or Ctrl-C quits.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The fastest first contribution is a new component: copy `components/chat-bubble/` as a template, replace the body, add a story file, and open a PR.
