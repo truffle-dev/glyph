@@ -45,6 +45,47 @@ That's the whole onboarding. The third command writes Go files into `internal/ui
 | `progress-bar` | Determinate progress indicator with an optional label and percentage readout. Color- and glyph-tunable. |
 | `key-hints` | Compact footer of key-and-description pairs. The bottom-row cheatsheet every TUI grows into. |
 
+## Gallery
+
+Every screenshot below is a recording of the component's own `story/` binary running in a real terminal. No mockups, no Figma, no compositing — the same Bubble Tea output you get after `glyph add <name>`.
+
+<table>
+<tr>
+<td width="50%"><a href="components/theme/"><img src="visuals/out/theme.gif" alt="theme" /></a><br/><sub><b>theme</b> — Token palette every component reads from.</sub></td>
+<td width="50%"><a href="components/chat-bubble/"><img src="visuals/out/chat-bubble.gif" alt="chat-bubble" /></a><br/><sub><b>chat-bubble</b> — Role-aware speech bubble with width-aware wrapping.</sub></td>
+</tr>
+<tr>
+<td><a href="components/chat-input/"><img src="visuals/out/chat-input.gif" alt="chat-input" /></a><br/><sub><b>chat-input</b> — Single-line chat prompt with placeholder, cursor, focus.</sub></td>
+<td><a href="components/chat-thread/"><img src="visuals/out/chat-thread.gif" alt="chat-thread" /></a><br/><sub><b>chat-thread</b> — Vertically scrolling conversation surface.</sub></td>
+</tr>
+<tr>
+<td><a href="components/command-palette/"><img src="visuals/out/command-palette.gif" alt="command-palette" /></a><br/><sub><b>command-palette</b> — Filterable modal command picker.</sub></td>
+<td><a href="components/markdown-viewer/"><img src="visuals/out/markdown-viewer.gif" alt="markdown-viewer" /></a><br/><sub><b>markdown-viewer</b> — Scrollable terminal markdown.</sub></td>
+</tr>
+<tr>
+<td><a href="components/log-stream/"><img src="visuals/out/log-stream.gif" alt="log-stream" /></a><br/><sub><b>log-stream</b> — Bounded color-coded log view that tails like <code>tail -f</code>.</sub></td>
+<td><a href="components/diff-view/"><img src="visuals/out/diff-view.gif" alt="diff-view" /></a><br/><sub><b>diff-view</b> — Unified-diff renderer with line numbers.</sub></td>
+</tr>
+<tr>
+<td><a href="components/notification-toast/"><img src="visuals/out/notification-toast.gif" alt="notification-toast" /></a><br/><sub><b>notification-toast</b> — Stacked dismissible notifications.</sub></td>
+<td><a href="components/status-bar/"><img src="visuals/out/status-bar.gif" alt="status-bar" /></a><br/><sub><b>status-bar</b> — Single-line three-segment status bar.</sub></td>
+</tr>
+<tr>
+<td><a href="components/spinner/"><img src="visuals/out/spinner.gif" alt="spinner" /></a><br/><sub><b>spinner</b> — Animated single-glyph indicator. Five styles.</sub></td>
+<td><a href="components/tabs/"><img src="visuals/out/tabs.gif" alt="tabs" /></a><br/><sub><b>tabs</b> — Horizontal labeled tab row primitive.</sub></td>
+</tr>
+<tr>
+<td><a href="components/panel/"><img src="visuals/out/panel.gif" alt="panel" /></a><br/><sub><b>panel</b> — Bordered container with optional title and footer.</sub></td>
+<td><a href="components/list/"><img src="visuals/out/list.gif" alt="list" /></a><br/><sub><b>list</b> — Vertical selectable list with cursor highlight.</sub></td>
+</tr>
+<tr>
+<td><a href="components/progress-bar/"><img src="visuals/out/progress-bar.gif" alt="progress-bar" /></a><br/><sub><b>progress-bar</b> — Determinate progress indicator.</sub></td>
+<td><a href="components/key-hints/"><img src="visuals/out/key-hints.gif" alt="key-hints" /></a><br/><sub><b>key-hints</b> — Compact footer of key-and-description pairs.</sub></td>
+</tr>
+</table>
+
+Browse all sixteen with live demos at [truffleagent.com/glyph](https://truffleagent.com/glyph).
+
 ## How it works
 
 Glyph is two things: a CLI and a static registry.
