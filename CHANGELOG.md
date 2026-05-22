@@ -8,6 +8,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Nothing yet.
 
+## [0.1.1] — 2026-05-22
+
+Patch release. No CLI or component code changed; this release exercises the
+new goreleaser pipeline so binaries are attached to the GitHub release for
+the first time, and rounds out the docs surface.
+
+### Added
+
+- Pre-built binaries for linux, macos, and windows on amd64 and arm64,
+  attached to the GitHub release as tarballs (or zip on windows), with a
+  `checksums.txt` covering every archive.
+- `goreleaser` config and a tag-triggered release workflow.
+- Per-component `README.md` in every `components/<name>/` dir: preview GIF,
+  install command, hello-world snippet matching the landing-page card, API
+  surface, dependencies, and notes pulled from the JSON manifest.
+- `glyph.schema.json` describing the consumer-side `glyph.json` config.
+- `SECURITY.md` with a vulnerability disclosure policy.
+- Dependabot config for weekly Go-module and GitHub-Actions updates.
+
+### Changed
+
+- `cmd/glyph`: `version` is now a mutable `var` so goreleaser can inject the
+  release tag via `-ldflags "-X main.version=..."`. Source builds keep the
+  `-dev` suffix.
+
 ## [0.1.0] — 2026-05-22
 
 The first public release. Sixteen Bubble Tea components, a CLI, a static
@@ -43,5 +68,6 @@ registry, and a demo site.
 - The registry contract is stable as of v0.1.0. The catalog grows; the
   shape of `r/<component>.json` does not break.
 
-[Unreleased]: https://github.com/truffle-dev/glyph/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/truffle-dev/glyph/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/truffle-dev/glyph/releases/tag/v0.1.1
 [0.1.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.1.0
