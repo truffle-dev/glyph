@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "command-palette",
+  "type": "glyph:component",
+  "title": "Command Palette",
+  "description": "Filterable modal command picker. Case-insensitive substring matching by default, swappable matcher. Bubble Tea model.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/command-palette/command-palette.go",
+      "type": "glyph:component",
+      "target": "@components/command-palette/command-palette.go"
+    },
+    {
+      "path": "components/command-palette/command-palette_test.go",
+      "type": "glyph:test",
+      "target": "@components/command-palette/command-palette_test.go"
+    }
+  ],
+  "docs": "Emits commandpalette.SelectMsg on Enter with the chosen Command, commandpalette.CancelMsg on Esc. Pass WithCommands to load the list. Substitute the substring matcher with WithMatcher for fuzzy ranking.",
+  "categories": ["navigation", "input", "modal"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}
