@@ -7,10 +7,14 @@ committed; see `.gitignore`.
 ## Tapes
 
 `tapes/<name>.tape` is a [vhs](https://github.com/charmbracelet/vhs)
-script. Each tape produces a `.gif` in `out/`.
+script. Each tape produces a `.gif` in `out/`. There is one tape per
+component story under `components/<name>/story/` (16 total). All share
+a 1000-pixel-wide frame, the Catppuccin Mocha theme, JetBrains Mono at
+18px, and 24px padding; only the height varies to fit the story output.
 
 ```bash
-vhs visuals/tapes/spinner.tape   # writes visuals/out/spinner.gif
+vhs visuals/tapes/spinner.tape   # one tape
+./visuals/render-all.sh          # every tape
 ```
 
 ## Reel

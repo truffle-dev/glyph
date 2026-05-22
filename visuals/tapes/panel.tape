@@ -1,4 +1,4 @@
-Output visuals/out/spinner.gif
+Output visuals/out/panel.gif
 Set Theme "Catppuccin Mocha"
 Set Width 1000
 Set Height 720
@@ -13,7 +13,7 @@ Enter
 Sleep 200ms
 Show
 
-Type "go run -tags glyph_story ./components/spinner/story/"
+Type "go run -tags glyph_story ./components/panel/story/"
 Sleep 400ms
 Enter
-Sleep 4s
+Sleep 3s
