@@ -24,3 +24,9 @@ Thumbs.db
 /glyph
 /story
 /showcase
+/reel
+
+# Visual recordings — regenerate locally with `asciinema rec` or vhs.
+# Source-of-truth lives in visuals/tapes/. Rendered output is not committed.
+/visuals/casts/
+/visuals/out/
