@@ -6,7 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- `text-input` component. Multi-line input with placeholder, focus, 2D cursor,
+  Alt+Left/Right word jumps, Ctrl-U kill-to-cursor, Ctrl-K kill-to-end-of-line,
+  and `Enter` for newline / `Ctrl-D` for accept. Pairs with `panel` for a
+  labeled commit-message surface.
 
 ## [0.1.1] — 2026-05-22
 

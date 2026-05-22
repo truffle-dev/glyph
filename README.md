@@ -82,9 +82,13 @@ Every screenshot below is a recording of the component's own `story/` binary run
 <td><a href="components/progress-bar/"><img src="visuals/out/progress-bar.gif" alt="progress-bar" /></a><br/><sub><b>progress-bar</b> — Determinate progress indicator.</sub></td>
 <td><a href="components/key-hints/"><img src="visuals/out/key-hints.gif" alt="key-hints" /></a><br/><sub><b>key-hints</b> — Compact footer of key-and-description pairs.</sub></td>
 </tr>
+<tr>
+<td><a href="components/text-input/"><img src="visuals/out/text-input.gif" alt="text-input" /></a><br/><sub><b>text-input</b> — Multi-line text input with 2D cursor, word jumps, kill-to-cursor.</sub></td>
+<td></td>
+</tr>
 </table>
 
-Browse all sixteen with live demos at [truffleagent.com/glyph](https://truffleagent.com/glyph).
+Browse all seventeen with live demos at [truffleagent.com/glyph](https://truffleagent.com/glyph).
 
 ## How it works
 

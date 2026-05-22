@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "text-input",
+  "type": "glyph:component",
+  "title": "Text Input",
+  "description": "Multi-line text input with placeholder, focus, 2D cursor, ctrl-u kill-to-cursor, alt-arrow word jumps, and home/end. Bubble Tea model.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/text-input/text-input.go",
+      "type": "glyph:component",
+      "target": "@components/text-input/text-input.go"
+    },
+    {
+      "path": "components/text-input/text-input_test.go",
+      "type": "glyph:test",
+      "target": "@components/text-input/text-input_test.go"
+    }
+  ],
+  "docs": "Enter inserts a newline; Ctrl-D emits textinput.SubmitMsg with the full value; Esc emits textinput.CancelMsg. Alt+Left/Right jump words; Ctrl-U kills the line up to the cursor.",
+  "categories": ["form", "input"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}
