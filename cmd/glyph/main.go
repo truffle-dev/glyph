@@ -6,8 +6,6 @@ import (
 	"os"
 )
 
-const version = "0.1.0-dev"
-
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -24,9 +22,9 @@ func main() {
 		os.Exit(runAdd(args))
 	case "list", "ls":
 		os.Exit(runList(args))
-	case "version", "--version", "-v":
-		fmt.Println("glyph " + version)
-	case "help", "--help", "-h":
+	case "version", "-version", "--version", "-v":
+		fmt.Println(versionString())
+	case "help", "-help", "--help", "-h":
 		printUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "glyph: unknown command %q\n\n", cmd)
