@@ -82,10 +82,10 @@ func TestGreet(t *testing.T) { _ = Greet() }
 func writeBuildFixture(t *testing.T, root string) {
 	t.Helper()
 	files := map[string]string{
-		"components/foo/foo.json":     fixtureFooBuildManifest,
-		"components/foo/foo.go":       fixtureFooBuildBody,
-		"components/bar/bar.json":     fixtureBarBuildManifest,
-		"components/bar/bar.go":       fixtureBarBuildBody,
+		"components/foo/foo.json":    fixtureFooBuildManifest,
+		"components/foo/foo.go":      fixtureFooBuildBody,
+		"components/bar/bar.json":    fixtureBarBuildManifest,
+		"components/bar/bar.go":      fixtureBarBuildBody,
 		"components/bar/bar_test.go": fixtureBarBuildTest,
 	}
 	for rel, body := range files {
