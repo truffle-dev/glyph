@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-const version = "0.1.0-dev"
+// version is the human-readable CLI version string. The source-only value
+// always carries a "-dev" suffix; release binaries are built with goreleaser,
+// which overrides this with the tag via -ldflags "-X main.version=...".
+var version = "0.1.0-dev"
 
 // versionString returns the human-readable CLI version. When the binary was
 // built with VCS info embedded (typical for `go install` and `go build`), it

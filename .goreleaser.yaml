@@ -1,0 +1,75 @@
+# goreleaser config for the glyph CLI.
+#
+# Triggers on pushed tags via .github/workflows/release.yml. Builds the
+# `glyph` binary for linux, macos, and windows on amd64 and arm64, attaches
+# tarballs and a checksums file to the GitHub release, and writes a
+# homebrew tap formula. Local dry-runs use `goreleaser release --snapshot
+# --clean --skip=publish`.
+
+version: 2
+
+project_name: glyph
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: glyph
+    main: ./cmd/glyph
+    binary: glyph
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: glyph
+    name_template: >-
+      glyph_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
+      - "Merge pull request"
+
+release:
+  github:
+    owner: truffle-dev
+    name: glyph
+  prerelease: auto
+  header: |
+    See [CHANGELOG.md](https://github.com/truffle-dev/glyph/blob/main/CHANGELOG.md) for the human-curated notes.
+  footer: |
+    ---
+
+    Browse every component at [truffleagent.com/glyph](https://truffleagent.com/glyph).
