@@ -117,7 +117,7 @@ func TestBuildEmitsCatalogAndPerItemManifests(t *testing.T) {
 	root := inBuildSandbox(t)
 	writeBuildFixture(t, root)
 
-	if err := run("components", "r", "https://example.test/glyph/r"); err != nil {
+	if err := run("components", "r", "https://example.test/glyph/r", nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestBuildPreservesRegistryDependenciesAndMultipleFiles(t *testing.T) {
 	root := inBuildSandbox(t)
 	writeBuildFixture(t, root)
 
-	if err := run("components", "r", "https://example.test/glyph/r"); err != nil {
+	if err := run("components", "r", "https://example.test/glyph/r", nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -210,7 +210,7 @@ func TestBuildSetsCatalogMetadata(t *testing.T) {
 	root := inBuildSandbox(t)
 	writeBuildFixture(t, root)
 
-	if err := run("components", "r", "https://example.test/glyph/r"); err != nil {
+	if err := run("components", "r", "https://example.test/glyph/r", nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -283,7 +283,7 @@ func TestBuildRejectsInvalidManifests(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "components", "x", "x.go"), []byte("package x\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			err := run("components", "r", "https://example.test/glyph/r")
+			err := run("components", "r", "https://example.test/glyph/r", nil)
 			if err == nil {
 				t.Fatalf("expected validation error containing %q", tc.wantSub)
 			}
@@ -294,12 +294,138 @@ func TestBuildRejectsInvalidManifests(t *testing.T) {
 	}
 }
 
+// TestBuildSchemaRejectsInvalidPatterns drives the schema-validation
+// layer that runs after the in-code validator catches missing fields.
+// Each case has every required field present, but one field violates a
+// pattern or enum that lives in schema/registry-item.json. The schema
+// is loaded from disk; if anyone breaks the link between the manifest
+// shape and the published schema, this test fails.
+func TestBuildSchemaRejectsInvalidPatterns(t *testing.T) {
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	schemaAbs := filepath.Join(pkgDir, "..", "..", "schema", "registry-item.json")
+	if _, err := os.Stat(schemaAbs); err != nil {
+		t.Skipf("schema file not present at %s: %v", schemaAbs, err)
+	}
+	sch, err := loadSchema(schemaAbs)
+	if err != nil {
+		t.Fatalf("loadSchema: %v", err)
+	}
+
+	cases := []struct {
+		name     string
+		manifest string
+		wantSub  string
+	}{
+		{
+			"name not kebab-case",
+			`{"$schema":"test","name":"FooBar","type":"glyph:component","title":"x","description":"x","version":"0.1.0","frame":"bubbletea","files":[{"path":"components/x/x.go","type":"glyph:component","target":"@components/x/x.go"}]}`,
+			"name",
+		},
+		{
+			"version not semver",
+			`{"$schema":"test","name":"x","type":"glyph:component","title":"x","description":"x","version":"1.0","frame":"bubbletea","files":[{"path":"components/x/x.go","type":"glyph:component","target":"@components/x/x.go"}]}`,
+			"version",
+		},
+		{
+			"unknown frame",
+			`{"$schema":"test","name":"x","type":"glyph:component","title":"x","description":"x","version":"0.1.0","frame":"qt","files":[{"path":"components/x/x.go","type":"glyph:component","target":"@components/x/x.go"}]}`,
+			"frame",
+		},
+		{
+			"target missing alias prefix",
+			`{"$schema":"test","name":"x","type":"glyph:component","title":"x","description":"x","version":"0.1.0","frame":"bubbletea","files":[{"path":"components/x/x.go","type":"glyph:component","target":"components/x/x.go"}]}`,
+			"target",
+		},
+		{
+			"unknown item type",
+			`{"$schema":"test","name":"x","type":"glyph:widget","title":"x","description":"x","version":"0.1.0","frame":"bubbletea","files":[{"path":"components/x/x.go","type":"glyph:component","target":"@components/x/x.go"}]}`,
+			"type",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := inBuildSandbox(t)
+			if err := os.MkdirAll(filepath.Join(root, "components", "x"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "components", "x", "x.json"), []byte(tc.manifest), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "components", "x", "x.go"), []byte("package x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := run("components", "r", "https://example.test/glyph/r", sch)
+			if err == nil {
+				t.Fatalf("expected schema error mentioning %q", tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), "schema validating") {
+				t.Errorf("error = %v, want 'schema validating' prefix", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error = %v, want substring %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestBuildSchemaAcceptsRealManifests compiles the on-disk schema and
+// validates every committed component manifest against it. If a manifest
+// ever drifts out of conformance with the schema (or the schema tightens
+// in a way that breaks a real manifest) this test catches it.
+func TestBuildSchemaAcceptsRealManifests(t *testing.T) {
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	repoRoot := filepath.Join(pkgDir, "..", "..")
+	schemaAbs := filepath.Join(repoRoot, "schema", "registry-item.json")
+	if _, err := os.Stat(schemaAbs); err != nil {
+		t.Skipf("schema file not present at %s: %v", schemaAbs, err)
+	}
+	sch, err := loadSchema(schemaAbs)
+	if err != nil {
+		t.Fatalf("loadSchema: %v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(repoRoot, "components"))
+	if err != nil {
+		t.Fatalf("read components dir: %v", err)
+	}
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		manifestPath := filepath.Join(repoRoot, "components", e.Name(), e.Name()+".json")
+		b, err := os.ReadFile(manifestPath)
+		if err != nil {
+			continue // not every directory has a manifest; skip silently
+		}
+		var raw any
+		if err := json.Unmarshal(b, &raw); err != nil {
+			t.Errorf("%s: parse: %v", manifestPath, err)
+			continue
+		}
+		if err := sch.Validate(raw); err != nil {
+			t.Errorf("%s: schema validation failed: %v", e.Name(), err)
+		}
+		count++
+	}
+	if count == 0 {
+		t.Fatal("found no component manifests to validate")
+	}
+}
+
 func TestBuildRefusesEmptyComponentTree(t *testing.T) {
 	root := inBuildSandbox(t)
 	if err := os.MkdirAll(filepath.Join(root, "components"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := run("components", "r", "https://example.test/glyph/r")
+	err := run("components", "r", "https://example.test/glyph/r", nil)
 	if err == nil {
 		t.Fatal("expected error on empty components tree")
 	}
@@ -317,7 +443,7 @@ func TestBuildOutputServesAsValidRegistry(t *testing.T) {
 	writeBuildFixture(t, root)
 
 	const baseURL = "https://example.test/glyph/r"
-	if err := run("components", "r", baseURL); err != nil {
+	if err := run("components", "r", baseURL, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 

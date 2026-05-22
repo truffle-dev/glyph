@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type registryFile struct {
@@ -66,15 +68,44 @@ func main() {
 	srcDir := flag.String("src", "components", "source directory containing components/<name>/<name>.json")
 	outDir := flag.String("out", "r", "output directory (will be created fresh)")
 	baseURL := flag.String("base-url", "https://truffleagent.com/glyph/r", "absolute base URL embedded into file URLs")
+	schemaPath := flag.String("schema", "schema/registry-item.json", "path to JSON Schema for manifest validation (empty to skip)")
 	flag.Parse()
 
-	if err := run(*srcDir, *outDir, strings.TrimRight(*baseURL, "/")); err != nil {
+	var sch *jsonschema.Schema
+	if *schemaPath != "" {
+		s, err := loadSchema(*schemaPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "build: load schema:", err)
+			os.Exit(1)
+		}
+		sch = s
+	}
+
+	if err := run(*srcDir, *outDir, strings.TrimRight(*baseURL, "/"), sch); err != nil {
 		fmt.Fprintln(os.Stderr, "build:", err)
 		os.Exit(1)
 	}
 }
 
-func run(srcDir, outDir, baseURL string) error {
+// loadSchema reads a JSON Schema file from disk and compiles it.
+func loadSchema(path string) (*jsonschema.Schema, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	doc, err := jsonschema.UnmarshalJSON(f)
+	if err != nil {
+		return nil, err
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource(path, doc); err != nil {
+		return nil, err
+	}
+	return c.Compile(path)
+}
+
+func run(srcDir, outDir, baseURL string, sch *jsonschema.Schema) error {
 	if err := os.RemoveAll(outDir); err != nil {
 		return err
 	}
@@ -97,12 +128,17 @@ func run(srcDir, outDir, baseURL string) error {
 	}
 
 	for _, m := range manifests {
-		item, err := loadManifest(m)
+		item, raw, err := loadManifest(m)
 		if err != nil {
 			return fmt.Errorf("loading %s: %w", m, err)
 		}
 		if err := validate(item); err != nil {
 			return fmt.Errorf("validating %s: %w", item.Name, err)
+		}
+		if sch != nil {
+			if err := sch.Validate(raw); err != nil {
+				return fmt.Errorf("schema validating %s: %w", item.Name, err)
+			}
 		}
 		if err := emitItem(item, srcDir, outDir, baseURL); err != nil {
 			return fmt.Errorf("emitting %s: %w", item.Name, err)
@@ -151,16 +187,20 @@ func findManifests(srcDir string) ([]string, error) {
 	return out, nil
 }
 
-func loadManifest(path string) (*registryItem, error) {
+func loadManifest(path string) (*registryItem, any, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var item registryItem
 	if err := json.Unmarshal(b, &item); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &item, nil
+	var raw any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, nil, err
+	}
+	return &item, raw, nil
 }
 
 func validate(it *registryItem) error {
