@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "diff-view",
+  "type": "glyph:component",
+  "title": "Diff View",
+  "description": "Color-coded unified diff renderer. Additions green, removals red, hunk headers highlighted, line numbers on both sides. Includes a ParseUnified helper for diff -u output.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/diff-view/diff-view.go",
+      "type": "glyph:component",
+      "target": "@components/diff-view/diff-view.go"
+    },
+    {
+      "path": "components/diff-view/diff-view_test.go",
+      "type": "glyph:test",
+      "target": "@components/diff-view/diff-view_test.go"
+    }
+  ],
+  "docs": "Pass WithLines(ParseUnified(diff)) to render `git diff -u` output. To render a diff you generated yourself, construct []Line directly. Up/Down scrolls one line, PgUp/PgDn scrolls a window, Home/End jumps. Lines longer than the body width truncate with an ellipsis.",
+  "categories": ["diff", "viewer", "version-control"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

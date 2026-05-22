@@ -20,5 +20,6 @@
 .DS_Store
 Thumbs.db
 
-# Stray local binary from go build at repo root
+# Stray local binaries from go build at repo root
 /glyph
+/story

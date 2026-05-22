@@ -29,8 +29,12 @@ That's the whole onboarding. The third command writes Go files into `internal/ui
 | `chat-bubble` | Role-aware speech bubble with width-aware wrapping. user / assistant / system / tool. |
 | `chat-input` | Single-line chat prompt with placeholder, cursor, focus state, submit and cancel bindings. |
 | `chat-thread` | Vertically scrolling conversation surface. Composes `chat-bubble`. Arrow keys, PgUp/PgDn, Home/End. |
-
-More on the way: `command-palette`, `markdown-viewer`, `log-stream`, `diff-view`, `notification-toast`, `status-bar`.
+| `command-palette` | Filterable modal command picker. Substring matcher by default; swap in your own. |
+| `markdown-viewer` | Scrollable terminal markdown. Headings, paragraphs, bullets, blockquotes, code, links. |
+| `log-stream` | Bounded color-coded log view that tails like `tail -f`. Level filter, capacity ring. |
+| `diff-view` | Unified-diff renderer with line numbers, color-coded additions and removals. Ships with a `ParseUnified` helper. |
+| `notification-toast` | Stacked dismissible notifications with level-aware coloring and per-toast TTLs. |
+| `status-bar` | Single-line three-segment status bar. Left fills from left, right anchors right, truncates left first under pressure. |
 
 ## How it works
 

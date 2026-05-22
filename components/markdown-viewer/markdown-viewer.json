@@ -1,0 +1,34 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "markdown-viewer",
+  "type": "glyph:component",
+  "title": "Markdown Viewer",
+  "description": "Small markdown subset rendered to a scrollable terminal block. Headings, paragraphs, bullet lists, blockquotes, code blocks, inline bold/italic/code, and links. Bubble Tea model.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0",
+    "github.com/muesli/reflow@v0.3.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/markdown-viewer/markdown-viewer.go",
+      "type": "glyph:component",
+      "target": "@components/markdown-viewer/markdown-viewer.go"
+    },
+    {
+      "path": "components/markdown-viewer/markdown-viewer_test.go",
+      "type": "glyph:test",
+      "target": "@components/markdown-viewer/markdown-viewer_test.go"
+    }
+  ],
+  "docs": "Pass WithSource to load a markdown string. The viewer renders only the visible window. Up/Down scrolls one line, PgUp/PgDn scrolls a window, Home/End jumps. Tables, images, and nested lists are deliberately out of scope; for those, edit renderLines.",
+  "categories": ["content", "viewer"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "notification-toast",
+  "type": "glyph:component",
+  "title": "Notification Toast",
+  "description": "Stacked, dismissible notifications with level-aware coloring. Push to add, Tick(now) to expire, Dismiss(id) to remove. Pairs with any Bubble Tea app.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0",
+    "github.com/muesli/reflow@v0.3.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/notification-toast/notification-toast.go",
+      "type": "glyph:component",
+      "target": "@components/notification-toast/notification-toast.go"
+    },
+    {
+      "path": "components/notification-toast/notification-toast_test.go",
+      "type": "glyph:test",
+      "target": "@components/notification-toast/notification-toast_test.go"
+    }
+  ],
+  "docs": "Drive expiry from a tea.Cmd that sends a tick message every second: tr = tr.Tick(time.Now()). The tray renders nothing when empty; lay it over your main view with lipgloss.JoinVertical or .Place to position it.",
+  "categories": ["notification", "feedback", "overlay"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

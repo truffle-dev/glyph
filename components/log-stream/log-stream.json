@@ -1,0 +1,34 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "log-stream",
+  "type": "glyph:component",
+  "title": "Log Stream",
+  "description": "Bounded, color-coded log view that tails like `tail -f`. Drops oldest on capacity overflow, filters by level, and sticks to the tail unless the user scrolls up.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0",
+    "github.com/muesli/reflow@v0.3.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/log-stream/log-stream.go",
+      "type": "glyph:component",
+      "target": "@components/log-stream/log-stream.go"
+    },
+    {
+      "path": "components/log-stream/log-stream_test.go",
+      "type": "glyph:test",
+      "target": "@components/log-stream/log-stream_test.go"
+    }
+  ],
+  "docs": "Call Append(Entry{Time, Level, Source, Message}) on every new log line. The view auto-tails unless the user has scrolled up. WithCapacity caps the ring; WithMinLevel hides entries below the threshold (the buffer is unchanged).",
+  "categories": ["log", "diagnostics", "stream"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

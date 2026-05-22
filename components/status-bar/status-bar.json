@@ -1,0 +1,32 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "status-bar",
+  "type": "glyph:component",
+  "title": "Status Bar",
+  "description": "Single-line three-segment status bar. Left fills from the left, right anchors to the far edge, optional center placed at the visual middle. Truncates the left segment first under width pressure.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/status-bar/status-bar.go",
+      "type": "glyph:component",
+      "target": "@components/status-bar/status-bar.go"
+    },
+    {
+      "path": "components/status-bar/status-bar_test.go",
+      "type": "glyph:test",
+      "target": "@components/status-bar/status-bar_test.go"
+    }
+  ],
+  "docs": "Compose with your main view: lipgloss.JoinVertical(lipgloss.Left, mainView, bar.View()). Item styles available: Default, Primary, Success, Warning, Error, Muted.",
+  "categories": ["layout", "status", "navigation"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}
