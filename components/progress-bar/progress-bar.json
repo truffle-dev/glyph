@@ -1,0 +1,32 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "progress-bar",
+  "type": "glyph:component",
+  "title": "Progress bar",
+  "description": "Determinate progress indicator with an optional label and percentage readout. Color-tunable fill, glyph-tunable bar runes. Pair with spinner if you need an indeterminate indicator.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/progress-bar/progress_bar.go",
+      "type": "glyph:component",
+      "target": "@components/progress-bar/progress_bar.go"
+    },
+    {
+      "path": "components/progress-bar/progress_bar_test.go",
+      "type": "glyph:test",
+      "target": "@components/progress-bar/progress_bar_test.go"
+    }
+  ],
+  "docs": "Pure render: call WithPercent(0..1) and View(). No internal tick. Drive percent from your model's Update on whatever signal feeds it (HTTP progress, job step counter, file write offset).",
+  "categories": ["feedback", "progress", "indicator"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

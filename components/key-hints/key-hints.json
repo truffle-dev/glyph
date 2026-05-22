@@ -1,0 +1,32 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "key-hints",
+  "type": "glyph:component",
+  "title": "Key hints",
+  "description": "Compact footer of key-and-description pairs separated by a thin divider. The bottom-row cheatsheet every TUI grows into; build it as a primitive so it's not rewritten in every parent model.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/key-hints/key_hints.go",
+      "type": "glyph:component",
+      "target": "@components/key-hints/key_hints.go"
+    },
+    {
+      "path": "components/key-hints/key_hints_test.go",
+      "type": "glyph:test",
+      "target": "@components/key-hints/key_hints_test.go"
+    }
+  ],
+  "docs": "Pure render. Build a []keyhints.Hint{{Key, Desc}, ...} from your model's current binding set; the bar lays it out left-to-right and clamps to WithWidth.",
+  "categories": ["navigation", "primitive", "feedback"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

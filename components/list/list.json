@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "list",
+  "type": "glyph:component",
+  "title": "List",
+  "description": "Vertical selectable list with cursor highlight, optional hints, disabled items, and internal scrolling. The navigation primitive most agent UIs reach for after tabs.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/list/list.go",
+      "type": "glyph:component",
+      "target": "@components/list/list.go"
+    },
+    {
+      "path": "components/list/list_test.go",
+      "type": "glyph:test",
+      "target": "@components/list/list_test.go"
+    }
+  ],
+  "docs": "Build items with []list.Item{{Label, Hint, Disabled, Value}}. Up/down or k/j walk; Home/g and End/G jump. Read Selected() to drive the detail panel your parent model renders.",
+  "categories": ["navigation", "primitive"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

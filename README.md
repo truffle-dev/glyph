@@ -38,6 +38,9 @@ That's the whole onboarding. The third command writes Go files into `internal/ui
 | `spinner` | Animated single-glyph indicator with an optional label. Five styles: dots, line, arc, pulse, bounce. |
 | `tabs` | Horizontal labeled tab row primitive. Arrow keys or Tab cycle with wrap. Parent owns the panels below. |
 | `panel` | Bordered container with optional title and footer. The workhorse layout primitive: wrap any view in one. |
+| `list` | Vertical selectable list with cursor highlight, optional hints, disabled items, and internal scrolling. |
+| `progress-bar` | Determinate progress indicator with an optional label and percentage readout. Color- and glyph-tunable. |
+| `key-hints` | Compact footer of key-and-description pairs. The bottom-row cheatsheet every TUI grows into. |
 
 ## How it works
 
