@@ -22,8 +22,45 @@ components/<name>/        # One component per directory
   <name>.json             # Registry manifest
   story/main.go           # Story (//go:build glyph_story)
 tools/build/              # Flattens components/* into a static registry
-research/                 # Design notes
+schema/                   # JSON Schema for registry-item.json
+docs/                     # Long-form docs (architecture, registry)
+examples/                 # Runnable end-to-end demos (showcase, reel)
+visuals/                  # vhs tapes + recorded casts/GIFs for demos
+research/                 # Design notes (Phase 0 artifacts)
+r/                        # Built registry output (gitignored, regenerated)
 ```
+
+## Registry contract
+
+Each component ships a single `<name>.json` manifest. `tools/build` reads every manifest under `components/`, validates it, copies the listed source files into `r/<name>/`, and writes a flat `r/<name>.json` with every file's URL embedded. The CLI consumer (`glyph add <name>`) fetches `r/<name>.json`, walks `registryDependencies`, downloads each file from its URL, and writes it into the alias-resolved target path in the consumer's repo. The schema is `schema/registry-item.json`.
+
+Required fields:
+
+- `name` — kebab-case slug. Matches the directory name. The install command.
+- `type` — one of `glyph:component`, `glyph:theme`, `glyph:lib`. Used by the consumer to pick the install alias.
+- `version` — semver. Bump on breaking source-level changes.
+- `frame` — currently always `bubbletea`. Reserved for ratatui/textual/ink in v0.2+.
+- `files` — array of file descriptors. Each has `path` (where it lives in this repo), `type` (`glyph:component` or `glyph:test`), and `target` (where it lands in the consumer's repo, written as `@components/<file>` or `@lib/<file>`; the alias resolves via the consumer's `glyph.json`).
+
+Optional fields:
+
+- `dependencies` — Go module imports the component pulls in (`github.com/foo/bar@v1.0.0`). `glyph add` runs `go get` for each. Use exact-version pins so consumers reproduce.
+- `registryDependencies` — other glyph components this one depends on. The CLI walks this graph and installs each first. Examples: `chat-thread` lists `["chat-bubble"]`, every component lists `["theme"]`.
+- `title`, `description`, `docs`, `categories`, `meta` — used by the demo site and the README's component table.
+
+The contract: a manifest is correct when `go run ./tools/build` succeeds, the produced `r/<name>.json` round-trips through `cmd/glyph`'s install logic (`go test ./cmd/glyph -run Integration`), and the produced `r/<name>/<file>` URLs each resolve when served. The build and integration tests verify all three.
+
+## Story files
+
+Every component ships a story file at `components/<name>/story/main.go` with the `//go:build glyph_story` build tag. The tag keeps the story out of the default Go build and lets `go test ./components/...` ignore it. Stories are runnable via `go run -tags glyph_story ./components/<name>/story/`.
+
+A good story does three things:
+
+1. Renders the component in three to five canonical states (idle, hover, error, empty, etc.). One state per "scene" if the component is stateful.
+2. Uses only constructors and `With...` builders. No I/O, no clocks, no random sources. The output should be byte-identical across runs.
+3. Reads from `theme.Default` (never hardcoded colors), so a future `theme.Light` swap retones everything.
+
+Stories drive the visual pipeline: `visuals/tapes/<name>.tape` records each story into a GIF for the component card on the demo site. The story is also the screenshot test fixture and the README's worked example.
 
 ## Adding a component
 
@@ -57,6 +94,25 @@ We don't snapshot-test the rendered terminal output. Tests assert behavior (corr
 Prefer values over pointers for the public API. Builders return new structs (`(b Bubble) WithText(s string) Bubble`).
 
 Components reference theme tokens via `theme.Theme`. No hardcoded colors in components. If a token you need doesn't exist, propose adding it to `components/theme/`.
+
+## Commits and PRs
+
+One change per commit when reasonable. Subject in imperative mood, under 72 chars. Reference an issue if one exists.
+
+```
+chat-bubble: tighten role-label alignment for narrow widths
+
+The role label drifted right by one column when width < 40.
+Anchor it to the bubble's left edge instead of the wrapper.
+
+Closes #42.
+```
+
+PR titles follow the same shape as commit subjects. PR bodies explain the why and link the demo: which states changed in the story, which screenshots were re-rendered. Keep bodies short.
+
+## Code of conduct
+
+Participation in this project is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Reports go to truffleagent@gmail.com.
 
 ## License
 
