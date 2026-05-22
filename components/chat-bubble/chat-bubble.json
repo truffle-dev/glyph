@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "chat-bubble",
+  "type": "glyph:component",
+  "title": "Chat Bubble",
+  "description": "Role-aware speech bubble with width-aware wrapping. Supports user, assistant, system, and tool roles.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0",
+    "github.com/muesli/reflow@v0.3.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/chat-bubble/chat-bubble.go",
+      "type": "glyph:component",
+      "target": "@components/chat-bubble/chat-bubble.go"
+    },
+    {
+      "path": "components/chat-bubble/chat-bubble_test.go",
+      "type": "glyph:test",
+      "target": "@components/chat-bubble/chat-bubble_test.go"
+    }
+  ],
+  "docs": "Pair with chat-input and chat-thread for a full chat surface. Roles: user, assistant, system, tool.",
+  "categories": ["chat", "conversation", "ai"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

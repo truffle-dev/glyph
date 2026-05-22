@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "chat-thread",
+  "type": "glyph:component",
+  "title": "Chat Thread",
+  "description": "Vertically scrolling conversation surface. Composes chat-bubble. Supports arrow keys, PgUp/PgDn, Home/End for scroll.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme", "chat-bubble"],
+  "files": [
+    {
+      "path": "components/chat-thread/chat-thread.go",
+      "type": "glyph:component",
+      "target": "@components/chat-thread/chat-thread.go"
+    },
+    {
+      "path": "components/chat-thread/chat-thread_test.go",
+      "type": "glyph:test",
+      "target": "@components/chat-thread/chat-thread_test.go"
+    }
+  ],
+  "docs": "Pair with chat-input for a full chat surface. Drive Append() from your tea.Model when the input fires SubmitMsg.",
+  "categories": ["chat", "conversation", "ai"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

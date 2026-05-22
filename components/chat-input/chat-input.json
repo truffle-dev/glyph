@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "chat-input",
+  "type": "glyph:component",
+  "title": "Chat Input",
+  "description": "Single-line chat prompt with placeholder, cursor, focus state, and submit/cancel key bindings. Bubble Tea model.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/chat-input/chat-input.go",
+      "type": "glyph:component",
+      "target": "@components/chat-input/chat-input.go"
+    },
+    {
+      "path": "components/chat-input/chat-input_test.go",
+      "type": "glyph:test",
+      "target": "@components/chat-input/chat-input_test.go"
+    }
+  ],
+  "docs": "Emits chatinput.SubmitMsg on Enter and chatinput.CancelMsg on Esc. Pair with chat-thread and chat-bubble for a full chat surface.",
+  "categories": ["chat", "input", "ai"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}

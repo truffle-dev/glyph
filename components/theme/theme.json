@@ -1,0 +1,36 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "theme",
+  "type": "glyph:theme",
+  "title": "Theme",
+  "description": "Token palette every glyph component reads from. Edit one file to retheme an entire app.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "files": [
+    {
+      "path": "components/theme/theme.go",
+      "type": "glyph:component",
+      "target": "@components/theme/theme.go"
+    },
+    {
+      "path": "components/theme/tokens.go",
+      "type": "glyph:component",
+      "target": "@components/theme/tokens.go"
+    },
+    {
+      "path": "components/theme/theme_test.go",
+      "type": "glyph:test",
+      "target": "@components/theme/theme_test.go"
+    }
+  ],
+  "docs": "Edit tokens.go to retheme. Default is a dark terminal palette; Light is a warm-paper alternative.",
+  "categories": ["foundation"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-22"
+  }
+}
