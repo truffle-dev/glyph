@@ -76,20 +76,20 @@ type CursorMsg struct {
 // Model is the table's Bubble Tea model. Construct with New and chain
 // builder calls; every method returns a new Model.
 type Model struct {
-	theme        theme.Theme
-	columns      []Column
-	rows         []Row
-	cursor       int
-	offset       int
-	activeCol    int
-	width        int
-	height       int
-	sortKey      string
-	sortDesc     bool
-	rowSelect    bool
-	highlight    bool
-	hasSize      bool
-	placeholder  string
+	theme       theme.Theme
+	columns     []Column
+	rows        []Row
+	cursor      int
+	offset      int
+	activeCol   int
+	width       int
+	height      int
+	sortKey     string
+	sortDesc    bool
+	rowSelect   bool
+	highlight   bool
+	hasSize     bool
+	placeholder string
 }
 
 // minAutoWidth and maxAutoWidth bound the auto-fit algorithm. Below the

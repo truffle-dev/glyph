@@ -140,8 +140,8 @@ type model struct {
 	picker   selectinput.Select
 
 	// session state
-	modelName  string
-	msgCount   int
+	modelName   string
+	msgCount    int
 	toastSerial int
 }
 

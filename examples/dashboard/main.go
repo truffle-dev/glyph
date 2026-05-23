@@ -10,14 +10,15 @@
 // single-binary demo with no backing service.
 //
 // Keys:
-//   tab / shift-tab      cycle the tab row
-//   up / down / k / j    move the table cursor
-//   left / right / h / l move the table's active sort column
-//   s                    toggle sort asc/desc on the active column
-//   enter                fire a toast (and "open" the selected row)
-//   /                    open the filter prompt (text-input modal)
-//   esc                  close the filter prompt
-//   q / ctrl-c           quit
+//
+//	tab / shift-tab      cycle the tab row
+//	up / down / k / j    move the table cursor
+//	left / right / h / l move the table's active sort column
+//	s                    toggle sort asc/desc on the active column
+//	enter                fire a toast (and "open" the selected row)
+//	/                    open the filter prompt (text-input modal)
+//	esc                  close the filter prompt
+//	q / ctrl-c           quit
 package main
 
 import (
@@ -61,21 +62,21 @@ const (
 
 // engagement is the canonical row shape, used by the Engagements tab.
 type engagement struct {
-	Repo     string
-	Owner    string
-	Opened   string
-	PRs      int
-	OpenIss  int
-	State    string
-	MRR      int
+	Repo    string
+	Owner   string
+	Opened  string
+	PRs     int
+	OpenIss int
+	State   string
+	MRR     int
 }
 
 // model is the dashboard.
 type model struct {
 	width, height int
 
-	mode        mode
-	activeTab   tabIndex
+	mode      mode
+	activeTab tabIndex
 
 	cards   []statcard.Model // a row of four
 	tbl     table.Model
@@ -387,7 +388,7 @@ func buildThroughputTable() table.Model {
 		{Key: "rep", Title: "Repos touched", Width: 16, Align: table.AlignRight, Sortable: true},
 	}
 	days := []struct {
-		Day                   string
+		Day               string
 		PR, Rev, Iss, Rep int
 	}{
 		{"2026-05-23 Sat", 4, 12, 8, 6},
@@ -427,7 +428,7 @@ func buildRevenueTable() table.Model {
 		{Key: "arr", Title: "ARR (run)", Width: 12, Align: table.AlignRight, Sortable: true},
 	}
 	months := []struct {
-		M                 string
+		M                    string
 		New, Churn, MRR, ARR int
 	}{
 		{"2026-05", 0, 0, 0, 0},
