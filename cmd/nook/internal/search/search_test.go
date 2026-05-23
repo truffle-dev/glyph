@@ -47,9 +47,9 @@ func writeTree(t *testing.T, files map[string]string) string {
 func TestRunFindsMatches(t *testing.T) {
 	requireRg(t)
 	root := writeTree(t, map[string]string{
-		"a.go":         "package a\n\nfunc foo() {}\n",
-		"sub/b.go":     "package b\n\nfunc Foo() string { return \"x\" }\n",
-		"sub/c.txt":    "no match here\n",
+		"a.go":          "package a\n\nfunc foo() {}\n",
+		"sub/b.go":      "package b\n\nfunc Foo() string { return \"x\" }\n",
+		"sub/c.txt":     "no match here\n",
 		"sub/deep/d.go": "// foo at module top\nvar foo = 1\n",
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

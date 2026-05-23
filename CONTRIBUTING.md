@@ -14,6 +14,8 @@ Go 1.22+. No other prerequisites for the test suite.
 
 Before pushing, run `make ci-local`. It mirrors the gates CI enforces (`gofmt -l`, `go vet`, the same test selector) and fails fast on anything that would land red on `main`. `make fmt` rewrites in place if `make ci-local` reports unformatted files.
 
+Once per clone, run `make hooks` to install a pre-commit hook that runs `make ci-local` automatically before every commit. The hook lives in `.githooks/pre-commit` and is opt-in (the target sets `core.hooksPath`); `git commit --no-verify` still bypasses it when you genuinely need to.
+
 ## Repo layout
 
 ```

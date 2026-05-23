@@ -1,0 +1,7 @@
+#!/bin/sh
+# Runs `make ci-local` before every commit. Mirrors the CI lint + vet + test
+# gates exactly. Skipped under `git commit --no-verify`.
+#
+# Install: `make hooks` once per clone (sets core.hooksPath to .githooks).
+set -e
+exec make ci-local

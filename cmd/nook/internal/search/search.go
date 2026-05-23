@@ -129,8 +129,8 @@ type rgEvent struct {
 		Lines struct {
 			Text string `json:"text"`
 		} `json:"lines"`
-		LineNumber int           `json:"line_number"`
-		Submatches []rgSubmatch  `json:"submatches"`
+		LineNumber int          `json:"line_number"`
+		Submatches []rgSubmatch `json:"submatches"`
 	} `json:"data"`
 }
 
