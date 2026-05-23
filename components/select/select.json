@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "select",
+  "type": "glyph:component",
+  "title": "Select",
+  "description": "Bounded single-choice popover with optional typeahead filter. The picker most agent UIs reach for when there are five to fifty options.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/select/select.go",
+      "type": "glyph:component",
+      "target": "@components/select/select.go"
+    },
+    {
+      "path": "components/select/select_test.go",
+      "type": "glyph:test",
+      "target": "@components/select/select_test.go"
+    }
+  ],
+  "docs": "Build options with []select.Option{{Label, Hint, Value}}. Up/Down walks; Enter commits with selectinput.SelectMsg{Option, Index}; Esc cancels with selectinput.CancelMsg. Turn on WithFilter(true) for substring typeahead.",
+  "categories": ["form", "input", "navigation"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}
