@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "code-view",
+  "type": "glyph:component",
+  "title": "Code view",
+  "description": "Render a source-code block with optional line numbers and per-line marks. A tiny built-in tokenizer tints keywords, strings, numbers, and comments for Go, JavaScript/TypeScript, Python, Rust, JSON, and Bash.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/code-view/code-view.go",
+      "type": "glyph:component",
+      "target": "@components/code-view/code-view.go"
+    },
+    {
+      "path": "components/code-view/code-view_test.go",
+      "type": "glyph:test",
+      "target": "@components/code-view/code-view_test.go"
+    }
+  ],
+  "docs": "Stateless rendering primitive. Build a codeview.Block with Source, Language, ShowGutter, and a Marks map keyed by 1-based line number. Use MarkHighlight for the focus row, MarkAdded/MarkRemoved for diff hunks, MarkError/MarkWarning to call out a failing or risky line. Set MaxWidth>0 to truncate long lines with an ellipsis. The tokenizer is intentionally tiny — production syntax highlighting belongs in a chroma/tree-sitter wrapper component.",
+  "categories": ["display", "code"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}

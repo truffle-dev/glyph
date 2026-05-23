@@ -25,6 +25,10 @@ Thumbs.db
 /story
 /showcase
 /reel
+/file-explorer
+/chat-cli
+/dashboard
+/log-viewer
 
 # Visual recordings. Source-of-truth lives in visuals/tapes/.
 # Casts are intermediate (regenerate locally via visuals/render-cast.sh);

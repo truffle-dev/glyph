@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "file-tree",
+  "type": "glyph:component",
+  "title": "File tree",
+  "description": "Interactive directory tree with expand/collapse, vim-style navigation, and optional multi-select. Renders any nested data — file system, JSON document, outline — that fits a directory analogy.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/file-tree/file-tree.go",
+      "type": "glyph:component",
+      "target": "@components/file-tree/file-tree.go"
+    },
+    {
+      "path": "components/file-tree/file-tree_test.go",
+      "type": "glyph:test",
+      "target": "@components/file-tree/file-tree_test.go"
+    }
+  ],
+  "docs": "Construct a filetree.Node literal — Children makes a node a directory — and pass it to filetree.New. The model handles ↑↓/jk for cursor, →/l to expand, ←/h to collapse-or-jump-to-parent, Enter to toggle, Space for multi-select toggle (when enabled). Read Selected() for the current path, SelectedNode() for the Node literal, SelectedPaths() for the multi-select set. SelectMsg fires through Cmd on every expand/collapse/leaf-Enter — wire it into a parent Update to drive a sibling pane.",
+  "categories": ["navigation", "input"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}

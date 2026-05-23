@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "breadcrumb",
+  "type": "glyph:component",
+  "title": "Breadcrumb",
+  "description": "Render a path-style breadcrumb trail with custom separators, optional icons, and middle-collapse for long paths. Stateless render primitive — pass crumbs in, place the line at the top of your navigator pane.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/breadcrumb/breadcrumb.go",
+      "type": "glyph:component",
+      "target": "@components/breadcrumb/breadcrumb.go"
+    },
+    {
+      "path": "components/breadcrumb/breadcrumb_test.go",
+      "type": "glyph:test",
+      "target": "@components/breadcrumb/breadcrumb_test.go"
+    }
+  ],
+  "docs": "Stateless rendering primitive. Build a []breadcrumb.Crumb and call Render(crumbs, Options{}). Crumb.Icon is rendered before Label when set. Use Options.MaxItems to cap the trail length — longer paths collapse the middle into a '…' crumb while keeping the root and the last few segments. Use Options.Separator to change the default ' › ' glyph. RenderPath is a one-liner that splits a slash-joined path into Crumbs.",
+  "categories": ["navigation", "display"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}
