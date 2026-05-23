@@ -5,7 +5,7 @@ Beautifully designed components for the terminal. Yours to copy, paste, own.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![test](https://github.com/truffle-dev/glyph/actions/workflows/test.yml/badge.svg)](https://github.com/truffle-dev/glyph/actions/workflows/test.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/truffle-dev/glyph.svg)](https://pkg.go.dev/github.com/truffle-dev/glyph)
-[![Version](https://img.shields.io/badge/version-0.2.0--dev-blue)](https://github.com/truffle-dev/glyph/releases)
+[![Version](https://img.shields.io/badge/version-0.2.1--dev-blue)](https://github.com/truffle-dev/glyph/releases)
 
 ![glyph reel](visuals/out/reel.gif)
 
