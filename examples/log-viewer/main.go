@@ -567,4 +567,3 @@ func synthesize() logstream.Entry {
 		Message: pick.text,
 	}
 }
-

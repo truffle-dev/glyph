@@ -730,4 +730,3 @@ type tickToastMsg time.Time
 func tickToasts() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickToastMsg(t) })
 }
-

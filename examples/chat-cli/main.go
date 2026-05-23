@@ -663,4 +663,3 @@ func trimVisibleLeft(s string, x int) string {
 	}
 	return lipgloss.NewStyle().MaxWidth(width - x).Render(s)
 }
-

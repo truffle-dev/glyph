@@ -51,12 +51,12 @@ type CloseMsg struct{}
 
 // Bar is a Bubble Tea model for the find bar.
 type Bar struct {
-	theme        theme.Theme
-	query        []rune
-	col          int // cursor in the query, rune-indexed
+	theme         theme.Theme
+	query         []rune
+	col           int // cursor in the query, rune-indexed
 	caseSensitive bool
-	width        int
-	focused      bool
+	width         int
+	focused       bool
 
 	matches []Match
 	current int // 0-based; -1 when no matches

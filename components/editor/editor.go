@@ -253,7 +253,7 @@ func (m Model) insertRunes(rs []rune) Model {
 	m.redo = nil
 	m.undo = append(m.undo, op{
 		kind: opInsert, row: prevRow, col: prevCol,
-		runes: append([]rune{}, rs...),
+		runes:   append([]rune{}, rs...),
 		prevRow: prevRow, prevCol: prevCol,
 	})
 	return m
