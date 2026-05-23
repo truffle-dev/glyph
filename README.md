@@ -109,6 +109,14 @@ Every screenshot below is a recording of the component's own `story/` binary run
 <td><a href="components/modal/"><img src="visuals/out/modal.gif" alt="modal" /></a><br/><sub><b>modal</b> — Bordered overlay container with title, body, footer, and a close key.</sub></td>
 <td><a href="components/confirmation/"><img src="visuals/out/confirmation.gif" alt="confirmation" /></a><br/><sub><b>confirmation</b> — Two-button yes/no prompt with focus-managed buttons.</sub></td>
 </tr>
+<tr>
+<td><a href="components/kbd/"><img src="visuals/out/kbd.gif" alt="kbd" /></a><br/><sub><b>kbd</b> — Stateless keycap atom: <code>ctrl+k</code> as <code>⌃ + K</code>, chord and sequence helpers.</sub></td>
+<td><a href="components/table/"><img src="visuals/out/table.gif" alt="table" /></a><br/><sub><b>table</b> — Sortable scrollable data grid with cursor, alignment, row selection.</sub></td>
+</tr>
+<tr>
+<td><a href="components/stat-card/"><img src="visuals/out/stat-card.gif" alt="stat-card" /></a><br/><sub><b>stat-card</b> — Dashboard tile: label, value, trend glyph, delta, sublabel.</sub></td>
+<td></td>
+</tr>
 </table>
 
 Browse all twenty-three with live demos at [truffleagent.com/glyph](https://truffleagent.com/glyph).

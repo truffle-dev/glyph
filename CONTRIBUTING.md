@@ -27,7 +27,7 @@ tools/build/              # Flattens components/* into a static registry
 schema/                   # JSON Schema for registry-item.json
 docs/                     # Long-form docs (architecture, registry)
 examples/                 # Runnable end-to-end demos (showcase, reel)
-visuals/                  # vhs tapes + recorded casts/GIFs for demos
+visuals/                  # render-cast.sh + casts + recorded GIFs for the gallery
 research/                 # Design notes (Phase 0 artifacts)
 r/                        # Built registry output (gitignored, regenerated)
 ```
@@ -64,7 +64,9 @@ A good story does three things:
 2. Uses only constructors and `With...` builders. No I/O, no clocks, no random sources. The output should be byte-identical across runs.
 3. Reads from `theme.Default` (never hardcoded colors), so a future `theme.Light` swap retones everything.
 
-Stories drive the visual pipeline: `visuals/tapes/<name>.tape` records each story into a GIF for the component card on the demo site. The story is also the screenshot test fixture and the README's worked example.
+Stories drive the visual pipeline. `bash visuals/render-cast.sh` walks every `components/*/story/` directory, builds the binary with the appropriate `glyph_story` (interactive) or `glyph_snap` (single-frame) tag, records with asciinema, and renders to GIF with agg. The rendered output lands in `visuals/out/<name>.gif` and is committed so the README gallery resolves on github.com. The story is also the screenshot test fixture and the README's worked example.
+
+If a story uses `tea.NewProgram` and never exits on its own, drop a sibling `story/snap.go` with the build tag `//go:build glyph_snap` that prints `View()` once and returns. The renderer prefers `snap.go` when present so the gallery captures a clean frame instead of the alt-screen state.
 
 ## Adding a component
 

@@ -26,10 +26,11 @@ Thumbs.db
 /showcase
 /reel
 
-# Visual recordings. Source-of-truth lives in visuals/tapes/. Most
-# rendered output is regenerated locally and not committed, but the
-# headline reel (cast + gif) is the hero asset and ships in-repo.
+# Visual recordings. Source-of-truth lives in visuals/tapes/.
+# Casts are intermediate (regenerate locally via visuals/render-cast.sh);
+# the reel cast is the only one committed because it has a stable tape.
 /visuals/casts/*
 !/visuals/casts/reel.cast
-/visuals/out/*
-!/visuals/out/reel.gif
+
+# Rendered gallery GIFs ship in-repo so the README gallery resolves on
+# github.com. Regenerated with `bash visuals/render-cast.sh`.
