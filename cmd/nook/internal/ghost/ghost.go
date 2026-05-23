@@ -104,13 +104,13 @@ type Manager struct {
 // NewManager constructs a Manager.
 //
 // If client is nil the manager is disabled and Tick/Accept/etc. are no-ops.
-// This lets nook keep ghost-text behavior wired in without crashing when
-// ANTHROPIC_API_KEY is missing.
+// This lets nook keep ghost-text behavior wired in without crashing when the
+// claude CLI is missing.
 //
 // If the NOOK_GHOST_DEMO env var is set, the manager is enabled regardless of
 // the client (demo path); each debounce fire emits the configured demo text
 // instead of calling the real AI. This is how screencasts and the PTY snapshot
-// tour render ghost-text without an API key.
+// tour render ghost-text without spawning claude.
 func NewManager(client *ai.Client) *Manager {
 	demo := os.Getenv(DemoEnvVar)
 	if demo != "" {

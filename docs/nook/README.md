@@ -40,14 +40,20 @@ other languages.
 ## Run it
 
 ```bash
+npm install -g @anthropic-ai/claude-code
+claude /login   # or set ANTHROPIC_API_KEY in your shell
 go install github.com/truffle-dev/glyph/cmd/nook@latest
-export ANTHROPIC_API_KEY=sk-ant-...
 nook .
 ```
 
-Without the env var, the editor, picker, search, git pane, and terminal all
-still work. Only the AI wedges go dark — they show "ANTHROPIC_API_KEY not set"
-in place of streaming.
+nook drives its AI wedges by spawning the `claude` CLI in `--print
+--output-format stream-json` mode, so whatever auth `claude` is already
+configured with (OAuth session or `ANTHROPIC_API_KEY`) is what nook uses.
+There is no separate key to manage and no direct API call to Anthropic.
+
+Without `claude` on PATH, the editor, picker, search, git pane, terminal,
+and LSP all still work. Only the AI wedges go dark — they show "claude CLI
+not found on PATH" in place of streaming.
 
 ## Files
 

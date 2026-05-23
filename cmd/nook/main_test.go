@@ -25,9 +25,18 @@ import (
 
 func newClientForTest(t *testing.T) *ai.Client {
 	t.Helper()
-	c, err := ai.NewClient()
+	// Use a stub `claude` binary so the test suite stays hermetic and never
+	// shells out to a real CLI. The tests that build ghost.Manager via this
+	// helper inject SuggestMsg/AcceptMsg directly; the client is never asked
+	// to spawn anything.
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "claude")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write stub claude: %v", err)
+	}
+	c, err := ai.NewClientWithBinary(stub)
 	if err != nil {
-		t.Fatalf("expected client (key faked in env): %v", err)
+		t.Fatalf("ai.NewClientWithBinary: %v", err)
 	}
 	return c
 }
@@ -443,16 +452,10 @@ func TestGhostEscDismissesProposal(t *testing.T) {
 }
 
 // forceEnabledManager builds a ghost.Manager that reports Enabled() but never
-// actually issues an AI request. We do this by reaching into the package via a
-// helper that the test uses to bypass NewClient's env requirement.
+// actually issues an AI request. The stub `claude` binary makes the client
+// non-nil; the tests inject SuggestMsg/AcceptMsg directly.
 func forceEnabledManager(t *testing.T) *ghost.Manager {
 	t.Helper()
-	// We can't construct a Client without an API key; instead, set the env
-	// for this test only. Since the test never triggers a real Stream (we
-	// only inject SuggestMsg directly), the key doesn't need to be real.
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		t.Setenv("ANTHROPIC_API_KEY", "test-key-not-real")
-	}
 	return mustGhostManager(t)
 }
 

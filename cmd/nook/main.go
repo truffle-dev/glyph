@@ -144,7 +144,7 @@ func newModel(root string) model {
 	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
 	status := "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+k ai edit • ctrl+l composer • tab ghost • ctrl+s save • ctrl+q quit"
 	if aiClient == nil {
-		status = "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+s save • ctrl+q quit  (set ANTHROPIC_API_KEY for AI)"
+		status = "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+s save • ctrl+q quit  (install claude CLI for AI)"
 	}
 	return model{
 		theme:       t,

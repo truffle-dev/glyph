@@ -69,8 +69,8 @@ func TestSubmitWithoutClientErrors(t *testing.T) {
 	if p.State() != StateError {
 		t.Fatalf("expected StateError without client, got %d", p.State())
 	}
-	if !strings.Contains(p.errMsg, "ANTHROPIC_API_KEY") {
-		t.Fatalf("expected env error, got %q", p.errMsg)
+	if !strings.Contains(p.errMsg, "claude CLI") {
+		t.Fatalf("expected claude CLI error, got %q", p.errMsg)
 	}
 }
 

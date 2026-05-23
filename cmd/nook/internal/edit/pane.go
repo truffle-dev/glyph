@@ -204,7 +204,7 @@ func (p Pane) retry() (Pane, tea.Cmd) {
 
 func (p Pane) startStream() (Pane, tea.Cmd) {
 	if p.client == nil {
-		p.errMsg = "ANTHROPIC_API_KEY not set"
+		p.errMsg = "claude CLI not found on PATH"
 		p.state = StateError
 		return p, nil
 	}
