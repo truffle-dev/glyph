@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "table",
+  "type": "glyph:component",
+  "title": "Table",
+  "description": "Column-aligned data table with sortable headers, keyboard navigation, internal scrolling, and optional row selection. The grid primitive every operator surface reaches for.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/table/table.go",
+      "type": "glyph:component",
+      "target": "@components/table/table.go"
+    },
+    {
+      "path": "components/table/table_test.go",
+      "type": "glyph:test",
+      "target": "@components/table/table_test.go"
+    }
+  ],
+  "docs": "Build with table.New().WithColumns(...).WithRows(...). Listen for table.SelectMsg{Row, Index} on Enter (after WithRowSelection(true)) and call Cursor() / SelectedRow() to drive a detail panel beside the table.",
+  "categories": ["data", "navigation"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}
