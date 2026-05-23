@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "find-bar",
+  "type": "glyph:component",
+  "title": "Find Bar",
+  "description": "In-buffer search overlay: a narrow query input with a match counter chip and Next/Prev/Close messages. Pair with editor for Ctrl-F search, or with any buffer-like component that owns text rows.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/find-bar/find-bar.go",
+      "type": "glyph:component",
+      "target": "@components/find-bar/find-bar.go"
+    },
+    {
+      "path": "components/find-bar/find-bar_test.go",
+      "type": "glyph:test",
+      "target": "@components/find-bar/find-bar_test.go"
+    }
+  ],
+  "docs": "Build with findbar.New(theme). Optionally chain WithWidth(n) (min 24), WithQuery(s) to preseat the input, WithCaseSensitive(true) to flip the match mode, WithMatches(matches, current) once you've walked your buffer. The bar emits four messages on its Cmd: QueryMsg{Value} on every edit, NextMsg/PrevMsg on Enter or F3 (Alt for prev), CloseMsg on Esc. The consumer runs the actual search via the stateless helper FindMatches(lines, query, caseSensitive) []Match and reseats the bar with WithMatches. The bar is purely an input; it does not scroll the underlying buffer.",
+  "categories": ["input", "search", "overlay"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}

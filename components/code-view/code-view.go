@@ -63,6 +63,17 @@ type Block struct {
 	MaxWidth   int // 0 means no truncation; otherwise hard-wrap with ellipsis
 }
 
+// Tokenize returns a single styled line for the given language without any
+// gutter, mark, or row chrome. Intended for components that own their own
+// row layout (an editable buffer with its own cursor) and only want to
+// reuse the tokenizer. Empty line returns "".
+func Tokenize(line string, lang Language) string {
+	if line == "" {
+		return ""
+	}
+	return tokenizerFor(lang)(line)
+}
+
 // Render returns the multi-line styled string. Empty source returns "".
 func Render(b Block) string {
 	if b.Source == "" {

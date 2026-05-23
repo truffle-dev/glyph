@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "editor",
+  "type": "glyph:component",
+  "title": "Editor",
+  "description": "Editable multi-line text buffer with a 2D cursor, viewport scrolling, line-number gutter, undo/redo, and optional per-line syntax tint via codeview's tokenizer. The primitive a terminal-native code editor is built around.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme", "code-view"],
+  "files": [
+    {
+      "path": "components/editor/editor.go",
+      "type": "glyph:component",
+      "target": "@components/editor/editor.go"
+    },
+    {
+      "path": "components/editor/editor_test.go",
+      "type": "glyph:test",
+      "target": "@components/editor/editor_test.go"
+    }
+  ],
+  "docs": "Build with editor.New(theme). Optionally chain WithContent(string), WithLanguage(codeview.LangGo|LangJS|LangTS|LangPy|LangRust|LangJSON|LangBash), WithWidth/WithHeight, WithGutter(false) to hide line numbers, WithTabSize(n) for the tab-to-spaces width. Drive it from your parent Update: arrows move, Home/End jump line edges, Ctrl-Home/Ctrl-End jump document edges, PgUp/PgDn jump by viewport height, Enter splits the line, Backspace/Delete remove, Tab inserts spaces, Ctrl-Z undo, Ctrl-Y redo. Every edit emits ChangeMsg{Value, Row, Col} via Cmd so a parent model can mark a tab dirty or run autosave. Cursor() reports the current 0-based (row, col); LineCount() and Dirty() power status-bars and tab indicators. The cursor line stays untokenized for clean cursor injection; all other lines route through codeview.Tokenize for syntax color.",
+  "categories": ["input", "code", "form"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}

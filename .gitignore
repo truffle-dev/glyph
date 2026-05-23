@@ -29,6 +29,7 @@ Thumbs.db
 /chat-cli
 /dashboard
 /log-viewer
+/code-editor
 
 # Visual recordings. Source-of-truth lives in visuals/tapes/.
 # Casts are intermediate (regenerate locally via visuals/render-cast.sh);
