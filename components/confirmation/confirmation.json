@@ -1,0 +1,34 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "confirmation",
+  "type": "glyph:component",
+  "title": "Confirmation",
+  "description": "Two-button yes/no prompt with focus-managed buttons, y/n shortcuts, dangerous-action styling, and prompt reflow. Pair with modal for destructive operations.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0",
+    "github.com/muesli/reflow@v0.3.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/confirmation/confirmation.go",
+      "type": "glyph:component",
+      "target": "@components/confirmation/confirmation.go"
+    },
+    {
+      "path": "components/confirmation/confirmation_test.go",
+      "type": "glyph:test",
+      "target": "@components/confirmation/confirmation_test.go"
+    }
+  ],
+  "docs": "Tab/Left/Right walk between Yes and No; y/Y and n/N commit with one keystroke regardless of focus; Enter commits the focused button. Emits confirmation.ConfirmMsg{Value bool} on commit, confirmation.CancelMsg on Esc. Set WithDangerous(true) to style Yes with theme.Error for destructive actions.",
+  "categories": ["form", "input", "feedback"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}
