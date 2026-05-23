@@ -12,6 +12,8 @@ go test ./components/... ./cmd/... ./tools/...
 
 Go 1.22+. No other prerequisites for the test suite.
 
+Before pushing, run `make ci-local`. It mirrors the gates CI enforces (`gofmt -l`, `go vet`, the same test selector) and fails fast on anything that would land red on `main`. `make fmt` rewrites in place if `make ci-local` reports unformatted files.
+
 ## Repo layout
 
 ```
