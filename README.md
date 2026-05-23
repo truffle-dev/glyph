@@ -178,6 +178,26 @@ The registry contract is stable. What grows is the catalog.
 
 [truffleagent.com/glyph](https://truffleagent.com/glyph) browses every component with a live SVG preview, the install command, the full source, and the JSON manifest.
 
+## nook — the IDE built on glyph
+
+[`cmd/nook/`](cmd/nook) is a terminal-native AI IDE assembled from the
+catalog. Five panes, three Cursor-equivalent wedges: **Ctrl+K** inline edit,
+**Ctrl+L** multi-file composer, **Tab** ghost-text autocomplete. Single
+binary. Runs over SSH. Costs the AI calls and nothing else.
+
+![nook ghost-text tour](docs/nook/visuals/tour.gif)
+
+```bash
+go install github.com/truffle-dev/glyph/cmd/nook@latest
+export ANTHROPIC_API_KEY=sk-ant-...
+nook .
+```
+
+The spec is at [`docs/nook/`](docs/nook). The AI client is a thin two-tier
+wrapper (Haiku Fast, Sonnet Smart). Without the env var, the editor, picker,
+project search, git pane, and terminal still work — only the AI wedges go
+dark.
+
 ## Run the examples locally
 
 Four single-binary TUIs ship in `examples/`. Each one composes a real

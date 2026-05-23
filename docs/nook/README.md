@@ -4,8 +4,38 @@ A terminal-native AI IDE built from glyph components. Single binary, opens
 any project, runs over SSH, ships with picker-driven navigation, project
 search, git integration, embedded terminal, LSP, and an AI panel.
 
-This directory holds the design docs. The binary itself lives at
-`cmd/nook/` once we start shipping it.
+![nook ghost-text tour](visuals/tour.gif)
+
+The clip above is the ghost-text wedge: Ctrl+P to find a file, type a prefix
+in the editor, idle past the debounce, Tab to accept the proposal. Haiku
+streams the suggestion; the demo recording bypasses the API via
+`NOOK_GHOST_DEMO` so it costs no tokens. See `visuals/record-cast.py` for the
+exact PTY tour.
+
+## Cursor tripod, terminal-native
+
+Three keybindings ported from Cursor, each pinned to the right model.
+
+- **Ctrl+K** — inline edit on the current line. Haiku streams a replacement;
+  preview, then Enter to accept or `r` to retry. Stop sequences fence the
+  output so the apply step is exactly one line.
+- **Ctrl+L** — multi-file composer. Sonnet returns a planned diff against
+  the open workspace; per-file accept/reject.
+- **Tab** — ghost-text autocomplete. 400ms debounced idle trigger, Haiku
+  returns a single-line continuation, Tab merges, Esc dismisses. Stale
+  generations are discarded by tag.
+
+## Run it
+
+```bash
+go install github.com/truffle-dev/glyph/cmd/nook@latest
+export ANTHROPIC_API_KEY=sk-ant-...
+nook .
+```
+
+Without the env var, the editor, picker, search, git pane, and terminal all
+still work. Only the AI wedges go dark — they show "ANTHROPIC_API_KEY not set"
+in place of streaming.
 
 ## Files
 
