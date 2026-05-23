@@ -32,7 +32,6 @@ package main
 import (
 	"fmt"
 	"math/rand"
-	"os"
 	"strings"
 	"time"
 
@@ -665,11 +664,3 @@ func trimVisibleLeft(s string, x int) string {
 	return lipgloss.NewStyle().MaxWidth(width - x).Render(s)
 }
 
-func main() {
-	rand.Seed(time.Now().UnixNano())
-	p := tea.NewProgram(newModel(), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "chat-cli:", err)
-		os.Exit(1)
-	}
-}

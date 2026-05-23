@@ -23,7 +23,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"time"
 
@@ -732,11 +731,3 @@ func tickToasts() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickToastMsg(t) })
 }
 
-// --- entry --------------------------------------------------------------
-
-func main() {
-	if _, err := tea.NewProgram(newModel(), tea.WithAltScreen()).Run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-}

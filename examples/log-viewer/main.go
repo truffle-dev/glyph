@@ -31,7 +31,6 @@ package main
 import (
 	"fmt"
 	"math/rand"
-	"os"
 	"strings"
 	"time"
 
@@ -569,11 +568,3 @@ func synthesize() logstream.Entry {
 	}
 }
 
-func main() {
-	rand.Seed(time.Now().UnixNano())
-	p := tea.NewProgram(newModel(), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "log-viewer:", err)
-		os.Exit(1)
-	}
-}
