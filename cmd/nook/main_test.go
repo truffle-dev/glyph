@@ -10,6 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+	"go.lsp.dev/protocol"
+	"go.lsp.dev/uri"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
@@ -476,5 +478,116 @@ func TestWalkRepoSkipsHiddenDirs(t *testing.T) {
 	}
 	if len(files) == 0 || files[0] != "real.go" {
 		t.Fatalf("expected real.go in walkRepo, got %+v", files)
+	}
+}
+
+// LSP helper tests ---------------------------------------------------------
+
+func TestIsGoFile(t *testing.T) {
+	t.Parallel()
+	cases := map[string]bool{
+		"main.go":      true,
+		"sub/x.go":     true,
+		"main.rs":      false,
+		"main":         false,
+		"go.mod":       false,
+		"go.sum":       false,
+		"main.go.tmpl": false,
+		"":             false,
+	}
+	for path, want := range cases {
+		if got := isGoFile(path); got != want {
+			t.Errorf("isGoFile(%q)=%v want %v", path, got, want)
+		}
+	}
+}
+
+func TestPathFromURI(t *testing.T) {
+	t.Parallel()
+	if got := pathFromURI(uri.File("/tmp/x.go")); got != "/tmp/x.go" {
+		t.Errorf("pathFromURI roundtrip: got %q want /tmp/x.go", got)
+	}
+	if got := pathFromURI(uri.URI("https://example.com/x.go")); got != "" {
+		t.Errorf("non-file URI should be empty, got %q", got)
+	}
+}
+
+func TestMapSeverity(t *testing.T) {
+	t.Parallel()
+	cases := map[protocol.DiagnosticSeverity]editor.Severity{
+		protocol.DiagnosticSeverityError:       editor.SeverityError,
+		protocol.DiagnosticSeverityWarning:     editor.SeverityWarning,
+		protocol.DiagnosticSeverityInformation: editor.SeverityInfo,
+		protocol.DiagnosticSeverityHint:        editor.SeverityHint,
+	}
+	for in, want := range cases {
+		if got := mapSeverity(in); got != want {
+			t.Errorf("mapSeverity(%v)=%v want %v", in, got, want)
+		}
+	}
+}
+
+func TestIsMutatingKey(t *testing.T) {
+	t.Parallel()
+	mutating := []tea.KeyType{tea.KeyRunes, tea.KeyEnter, tea.KeyTab, tea.KeySpace, tea.KeyBackspace, tea.KeyDelete}
+	for _, k := range mutating {
+		if !isMutatingKey(k) {
+			t.Errorf("isMutatingKey(%v) should be true", k)
+		}
+	}
+	nonMutating := []tea.KeyType{tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight, tea.KeyHome, tea.KeyEnd, tea.KeyPgUp, tea.KeyPgDown, tea.KeyEsc}
+	for _, k := range nonMutating {
+		if isMutatingKey(k) {
+			t.Errorf("isMutatingKey(%v) should be false", k)
+		}
+	}
+}
+
+// TestApplyDiagnosticsToEditor confirms that a publishDiagnostics for the open
+// file results in a row→severity map flowing into the editor pane, with
+// error winning over warning on the same row.
+func TestApplyDiagnosticsToEditor(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.editor = m.editor.Open(path).Focus()
+
+	m.diagnostics[path] = []protocol.Diagnostic{
+		{Range: protocol.Range{Start: protocol.Position{Line: 2}}, Severity: protocol.DiagnosticSeverityWarning, Message: "warn"},
+		{Range: protocol.Range{Start: protocol.Position{Line: 2}}, Severity: protocol.DiagnosticSeverityError, Message: "err"},
+		{Range: protocol.Range{Start: protocol.Position{Line: 0}}, Severity: protocol.DiagnosticSeverityWarning, Message: "header"},
+	}
+	m = m.applyDiagnosticsToEditor()
+	if got := m.editor.DiagnosticAt(2); got != editor.SeverityError {
+		t.Errorf("row 2 should be Error (worst-severity wins); got %v", got)
+	}
+	if got := m.editor.DiagnosticAt(0); got != editor.SeverityWarning {
+		t.Errorf("row 0 should be Warning; got %v", got)
+	}
+	if got := m.editor.DiagnosticAt(1); got != editor.SeverityNone {
+		t.Errorf("row 1 should be None; got %v", got)
+	}
+}
+
+func TestDiagCounts(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.editor = m.editor.Open(path).Focus()
+	m.diagnostics[path] = []protocol.Diagnostic{
+		{Severity: protocol.DiagnosticSeverityError, Message: "e1"},
+		{Severity: protocol.DiagnosticSeverityError, Message: "e2"},
+		{Severity: protocol.DiagnosticSeverityWarning, Message: "w1"},
+		{Severity: protocol.DiagnosticSeverityHint, Message: "h1"}, // not counted
+	}
+	errs, warns := m.diagCounts()
+	if errs != 2 || warns != 1 {
+		t.Errorf("diagCounts=(%d,%d) want (2,1)", errs, warns)
 	}
 }

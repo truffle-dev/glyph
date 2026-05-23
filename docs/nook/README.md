@@ -25,6 +25,16 @@ Three keybindings ported from Cursor, each pinned to the right model.
   returns a single-line continuation, Tab merges, Esc dismisses. Stale
   generations are discarded by tag.
 
+## LSP diagnostics
+
+Opening a `.go` file starts `gopls` under the project root. Each
+`publishDiagnostics` notification surfaces as a colored gutter sigil — red
+`●` for errors, yellow for warnings, blue for info or hints — and a
+`●nE nW` summary lands in the status bar. Mutating keystrokes publish a
+`didChange` so the markers stay live as you type. `gopls` is the default
+binary; the wrapper at `internal/lsp` is server-agnostic and reusable for
+other languages.
+
 ## Run it
 
 ```bash

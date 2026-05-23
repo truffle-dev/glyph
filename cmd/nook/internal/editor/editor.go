@@ -30,6 +30,19 @@ type SavedMsg struct {
 // CancelMsg is emitted on Esc when not editing inline.
 type CancelMsg struct{}
 
+// Severity tags the kind of diagnostic associated with a buffer row. It mirrors
+// the LSP DiagnosticSeverity enum so the editor doesn't need to depend on the
+// protocol package.
+type Severity int
+
+const (
+	SeverityNone Severity = iota
+	SeverityError
+	SeverityWarning
+	SeverityInfo
+	SeverityHint
+)
+
 // Buffer is a line-oriented text buffer.
 type Buffer struct {
 	Lines []string
@@ -88,6 +101,11 @@ type Pane struct {
 	// the cursor — Cursor-style inline completion. The host owns the lifecycle
 	// (see internal/ghost); the editor only renders.
 	ghostText string
+
+	// diagnostics maps 0-based row to the worst-severity LSP diagnostic on
+	// that row. The host updates it via SetDiagnosticRows whenever the LSP
+	// publishes for the open file.
+	diagnostics map[int]Severity
 }
 
 // NewPane constructs an empty pane.
@@ -253,6 +271,21 @@ func (p Pane) SetGhostText(s string) Pane {
 // GhostText returns the current ghost-text proposal.
 func (p Pane) GhostText() string {
 	return p.ghostText
+}
+
+// SetDiagnosticRows replaces the diagnostic-row map. nil clears it. The map
+// is keyed by 0-based row and values name the worst severity on the row.
+func (p Pane) SetDiagnosticRows(rows map[int]Severity) Pane {
+	p.diagnostics = rows
+	return p
+}
+
+// DiagnosticAt returns the severity for a 0-based row, or SeverityNone.
+func (p Pane) DiagnosticAt(row int) Severity {
+	if p.diagnostics == nil {
+		return SeverityNone
+	}
+	return p.diagnostics[row]
 }
 
 // InsertText inserts s at the cursor, advancing the cursor. Newlines split the
@@ -490,6 +523,9 @@ func (p Pane) View() string {
 	t := p.theme
 	gutterStyle := lipgloss.NewStyle().Foreground(t.TextMuted)
 	cursorLineGutterStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	errStyle := lipgloss.NewStyle().Foreground(t.Error).Bold(true)
+	warnStyle := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
+	infoStyle := lipgloss.NewStyle().Foreground(t.Info)
 	header := lipgloss.NewStyle().Foreground(t.TextMuted).Bold(true)
 	dirty := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
 	muted := lipgloss.NewStyle().Foreground(t.TextMuted)
@@ -518,6 +554,17 @@ func (p Pane) View() string {
 		} else {
 			gut = gutterStyle.Render(num)
 		}
+		// Diagnostic marker: replace the column-divider with a sigil colored
+		// by severity. Errors take precedence over warnings over info.
+		marker := " │"
+		switch p.DiagnosticAt(i) {
+		case SeverityError:
+			marker = " " + errStyle.Render("●")
+		case SeverityWarning:
+			marker = " " + warnStyle.Render("●")
+		case SeverityInfo, SeverityHint:
+			marker = " " + infoStyle.Render("●")
+		}
 		line := p.buf.Lines[i]
 		// expand tabs to 4 spaces for display
 		line = strings.ReplaceAll(line, "\t", "    ")
@@ -533,7 +580,7 @@ func (p Pane) View() string {
 		} else {
 			line = clip(line, contentWidth)
 		}
-		rows = append(rows, gut+" │ "+line)
+		rows = append(rows, gut+marker+" "+line)
 	}
 	for len(rows) < visible {
 		rows = append(rows, gutterStyle.Render(strings.Repeat(" ", gw))+" │ "+muted.Render("~"))
