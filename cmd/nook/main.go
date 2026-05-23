@@ -934,15 +934,15 @@ func isGoFile(path string) bool {
 	return strings.HasSuffix(path, ".go")
 }
 
-// pathFromURI strips the file:// prefix back to a local path. uri.URI is a
-// stringer; pathFromURI returns "" if the URI isn't a file URI.
+// pathFromURI returns the local filesystem path for a file:// URI, or "" if
+// the URI is not a file URI. uri.URI.Filename handles the Windows drive-letter
+// prefix (file:///C:/foo → C:\foo) that a literal "file://" strip would leave
+// as the un-openable "/C:/foo".
 func pathFromURI(u uri.URI) string {
-	s := string(u)
-	const prefix = "file://"
-	if !strings.HasPrefix(s, prefix) {
+	if !strings.HasPrefix(string(u), "file://") {
 		return ""
 	}
-	return s[len(prefix):]
+	return u.Filename()
 }
 
 // ensureLSPForFile is invoked on every file open. If gopls is not yet running

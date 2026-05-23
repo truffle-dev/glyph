@@ -507,8 +507,13 @@ func TestIsGoFile(t *testing.T) {
 
 func TestPathFromURI(t *testing.T) {
 	t.Parallel()
-	if got := pathFromURI(uri.File("/tmp/x.go")); got != "/tmp/x.go" {
-		t.Errorf("pathFromURI roundtrip: got %q want /tmp/x.go", got)
+	// Round-trip a platform-aware temp path through uri.File. A literal
+	// "/tmp/x.go" would get resolved against the current drive on Windows
+	// and fail the comparison; t.TempDir gives an absolute path that
+	// uri.File and pathFromURI can both reproduce verbatim.
+	in := filepath.Join(t.TempDir(), "x.go")
+	if got := pathFromURI(uri.File(in)); got != in {
+		t.Errorf("pathFromURI roundtrip: got %q want %q", got, in)
 	}
 	if got := pathFromURI(uri.URI("https://example.com/x.go")); got != "" {
 		t.Errorf("non-file URI should be empty, got %q", got)
