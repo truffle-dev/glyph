@@ -11,13 +11,24 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
 )
+
+func newClientForTest(t *testing.T) *ai.Client {
+	t.Helper()
+	c, err := ai.NewClient()
+	if err != nil {
+		t.Fatalf("expected client (key faked in env): %v", err)
+	}
+	return c
+}
 
 func TestMain(m *testing.M) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -336,6 +347,117 @@ func TestComposerCancelMsgClosesPane(t *testing.T) {
 	if mm.right != rightNone {
 		t.Fatalf("expected right none, got %v", mm.right)
 	}
+}
+
+func TestGhostSuggestMsgSetsEditorGhostText(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	// Force-enable ghost so SuggestMsg is honored even without ANTHROPIC_API_KEY.
+	m.ghost = forceEnabledManager(t)
+
+	site := ghost.Site{
+		Path:   filepath.Join(root, "a.go"),
+		Row:    2,
+		Col:    7,
+		Prefix: "fmt.Pri",
+	}
+	m.editor = m.editor.Open(site.Path).Focus()
+	// Seed manager state so the message lands at the right site.
+	m.ghost.Tick(site, false, false)
+
+	updated, _ := m.Update(ghost.SuggestMsg{Site: site, Text: "ntln(\"hi\")"})
+	mm := updated.(model)
+	if got := mm.editor.GhostText(); got != "ntln(\"hi\")" {
+		t.Fatalf("expected editor ghost text set, got %q", got)
+	}
+}
+
+func TestGhostTabAcceptInsertsAndClears(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.ghost = forceEnabledManager(t)
+
+	path := filepath.Join(root, "a.go")
+	m.editor = m.editor.Open(path).Focus()
+	// Type "fmt.Pri" so we have a real cursor position to merge from.
+	for _, r := range "fmt.Pri" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	// Plant ghost-text directly (skip the AI call) by routing a SuggestMsg.
+	site := ghost.Site{Path: path, Row: m.editor.CursorRow(), Col: m.editor.CursorCol(), Prefix: m.editor.LinePrefix()}
+	m.ghost.Tick(site, false, false)
+	updated, _ := m.Update(ghost.SuggestMsg{Site: site, Text: "ntln(\"hi\")"})
+	m = updated.(model)
+	if m.editor.GhostText() == "" {
+		t.Fatal("expected ghost text planted")
+	}
+	// Press Tab.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	mm := updated.(model)
+	// The editor row should now contain the merged line at cursor.
+	got := mm.editor.Line(mm.editor.CursorRow())
+	if !strings.HasPrefix(got, "fmt.Println(\"hi\")") {
+		t.Fatalf("expected merged line starting with fmt.Println, got %q", got)
+	}
+	if mm.editor.GhostText() != "" {
+		t.Fatalf("expected ghost text cleared after accept, got %q", mm.editor.GhostText())
+	}
+}
+
+func TestGhostEscDismissesProposal(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.ghost = forceEnabledManager(t)
+
+	path := filepath.Join(root, "a.go")
+	m.editor = m.editor.Open(path).Focus()
+	for _, r := range "fmt.Pri" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	site := ghost.Site{Path: path, Row: m.editor.CursorRow(), Col: m.editor.CursorCol(), Prefix: m.editor.LinePrefix()}
+	m.ghost.Tick(site, false, false)
+	updated, _ := m.Update(ghost.SuggestMsg{Site: site, Text: "ntln(\"hi\")"})
+	m = updated.(model)
+	if m.editor.GhostText() == "" {
+		t.Fatal("expected ghost text planted")
+	}
+	// Esc should dismiss.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mm := updated.(model)
+	if mm.editor.GhostText() != "" {
+		t.Fatalf("expected ghost dismissed, got %q", mm.editor.GhostText())
+	}
+}
+
+// forceEnabledManager builds a ghost.Manager that reports Enabled() but never
+// actually issues an AI request. We do this by reaching into the package via a
+// helper that the test uses to bypass NewClient's env requirement.
+func forceEnabledManager(t *testing.T) *ghost.Manager {
+	t.Helper()
+	// We can't construct a Client without an API key; instead, set the env
+	// for this test only. Since the test never triggers a real Stream (we
+	// only inject SuggestMsg directly), the key doesn't need to be real.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+	}
+	return mustGhostManager(t)
+}
+
+func mustGhostManager(t *testing.T) *ghost.Manager {
+	t.Helper()
+	c := newClientForTest(t)
+	return ghost.NewManager(c)
 }
 
 func TestWalkRepoSkipsHiddenDirs(t *testing.T) {

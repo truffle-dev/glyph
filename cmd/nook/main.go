@@ -15,8 +15,9 @@
 //	ctrl+l     composer multi-file AI edit (Sonnet)
 //	ctrl+`     terminal pane
 //	ctrl+s     save current buffer
+//	tab        accept ghost-text completion (when present)
 //	ctrl+q     quit
-//	esc        close overlay / blur
+//	esc        close overlay / blur / dismiss ghost-text
 package main
 
 import (
@@ -37,6 +38,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
@@ -79,6 +81,7 @@ type model struct {
 	search   search.Pane
 	editPane edit.Pane
 	composer composer.Pane
+	ghost    *ghost.Manager
 
 	right     rightPane
 	diffBody  string
@@ -122,7 +125,7 @@ func main() {
 func newModel(root string) model {
 	t := theme.Default
 	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
-	status := "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+k ai edit • ctrl+l composer • ctrl+s save • ctrl+q quit"
+	status := "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+k ai edit • ctrl+l composer • tab ghost • ctrl+s save • ctrl+q quit"
 	if aiClient == nil {
 		status = "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+s save • ctrl+q quit  (set ANTHROPIC_API_KEY for AI)"
 	}
@@ -138,6 +141,7 @@ func newModel(root string) model {
 		search:   search.NewPane(t, root),
 		editPane: edit.NewPane(t, aiClient),
 		composer: composer.NewPane(t, aiClient),
+		ghost:    ghost.NewManager(aiClient),
 		right:    rightNone,
 		status:   status,
 		aiClient: aiClient,
@@ -366,9 +370,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.resize()
 		return m, nil
 
+	case ghost.SuggestMsg:
+		cmd := m.ghost.Update(msg)
+		m.editor = m.editor.SetGhostText(m.ghost.Proposal())
+		return m, cmd
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
+	}
+	// Ghost may also accept debounceMsg from its own Tick. We forward unknown
+	// messages to the manager so it can handle internal lifecycle.
+	if cmd := m.ghost.Update(msg); cmd != nil {
+		return m, cmd
 	}
 	return m, nil
 }
@@ -466,9 +480,62 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !m.editor.Focused() {
 		m.editor = m.editor.Focus()
 	}
+
+	// Ghost-text key handling: Tab accepts a pending proposal; Esc dismisses
+	// it (and doesn't propagate). Any other key invalidates the current
+	// proposal but otherwise falls through.
+	if m.editor.Path() != "" && m.ghost.Enabled() {
+		if km.Type == tea.KeyTab && m.editor.GhostText() != "" {
+			text := m.ghost.Accept()
+			m.editor = m.editor.InsertText(text).SetGhostText("")
+			m.status = "ghost accepted"
+			return m, nil
+		}
+		if km.Type == tea.KeyEsc && m.editor.GhostText() != "" {
+			m.ghost.Dismiss()
+			m.editor = m.editor.SetGhostText("")
+			return m, nil
+		}
+		// Any other key clears the pending proposal — it's stale now.
+		if m.editor.GhostText() != "" {
+			m.ghost.Dismiss()
+			m.editor = m.editor.SetGhostText("")
+		}
+	}
+
 	var cmd tea.Cmd
 	m.editor, cmd = m.editor.Update(km)
+
+	// After the editor state changes, ask ghost whether to schedule a request.
+	if tcmd := m.scheduleGhost(); tcmd != nil {
+		if cmd == nil {
+			return m, tcmd
+		}
+		return m, tea.Batch(cmd, tcmd)
+	}
 	return m, cmd
+}
+
+// scheduleGhost asks the ghost manager whether to schedule a new debounced
+// completion request based on the editor's current cursor position. Returns
+// the debounce cmd (or nil). m.ghost is a pointer so its state mutates
+// regardless of value-vs-pointer receiver semantics here.
+func (m model) scheduleGhost() tea.Cmd {
+	if m.ghost == nil || !m.ghost.Enabled() {
+		return nil
+	}
+	if m.editor.Path() == "" {
+		return nil
+	}
+	site := ghost.Site{
+		Path:   m.editor.Path(),
+		Row:    m.editor.CursorRow(),
+		Col:    m.editor.CursorCol(),
+		Prefix: m.editor.LinePrefix(),
+	}
+	// Suppress while an overlay is up.
+	suppress := m.overlay != overlayNone || (m.right == rightComposer && m.composer.Focused())
+	return m.ghost.Tick(site, false, suppress)
 }
 
 func (m model) openInlineEdit() (tea.Model, tea.Cmd) {

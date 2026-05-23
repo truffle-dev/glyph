@@ -242,6 +242,90 @@ func TestContentsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLinePrefixAndSuffix(t *testing.T) {
+	p := NewPane(theme.Default).Focus()
+	p, _ = p.Update(runeMsg("fmt.Println"))
+	// cursor is at col 11 (end of "fmt.Println")
+	if got := p.LinePrefix(); got != "fmt.Println" {
+		t.Fatalf("expected prefix 'fmt.Println', got %q", got)
+	}
+	if got := p.LineSuffix(); got != "" {
+		t.Fatalf("expected empty suffix, got %q", got)
+	}
+	// move cursor back 4 columns to land at col 7 (mid-word)
+	for i := 0; i < 4; i++ {
+		p, _ = p.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	}
+	if got := p.LinePrefix(); got != "fmt.Pri" {
+		t.Fatalf("expected prefix 'fmt.Pri', got %q", got)
+	}
+	if got := p.LineSuffix(); got != "ntln" {
+		t.Fatalf("expected suffix 'ntln', got %q", got)
+	}
+}
+
+func TestSetAndGhostText(t *testing.T) {
+	p := NewPane(theme.Default).Focus()
+	p = p.SetGhostText("ntln(\"hi\")")
+	if got := p.GhostText(); got != "ntln(\"hi\")" {
+		t.Fatalf("expected ghost text round-trip, got %q", got)
+	}
+	p = p.SetGhostText("")
+	if got := p.GhostText(); got != "" {
+		t.Fatalf("expected empty ghost after clear, got %q", got)
+	}
+}
+
+func TestInsertTextSingleLine(t *testing.T) {
+	p := NewPane(theme.Default).Focus()
+	p, _ = p.Update(runeMsg("fmt.Pri"))
+	p = p.InsertText("ntln(\"hi\")")
+	if got := p.Line(0); got != "fmt.Println(\"hi\")" {
+		t.Fatalf("expected merged line, got %q", got)
+	}
+	if p.CursorCol() != len("fmt.Println(\"hi\")") {
+		t.Fatalf("expected cursor at end, got col %d", p.CursorCol())
+	}
+}
+
+func TestInsertTextMultiLine(t *testing.T) {
+	p := NewPane(theme.Default).Focus()
+	p = p.InsertText("a\nb\nc")
+	if p.LineCount() != 3 {
+		t.Fatalf("expected 3 lines, got %d", p.LineCount())
+	}
+	if p.Line(0) != "a" || p.Line(1) != "b" || p.Line(2) != "c" {
+		t.Fatalf("multi-line insert wrong: %q %q %q", p.Line(0), p.Line(1), p.Line(2))
+	}
+}
+
+func TestGhostTextRendersWhenFocused(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 6).Focus()
+	p, _ = p.Update(runeMsg("fmt.Pri"))
+	p = p.SetGhostText("ntln")
+	out := p.View()
+	// First ghost rune is cursor-styled, the rest is muted-faint. The "tln"
+	// tail renders contiguously after the styled cursor escape; check both
+	// the prefix and that ghost tail.
+	if !strings.Contains(out, "fmt.Pri") {
+		t.Fatalf("expected prefix in view:\n%s", out)
+	}
+	if !strings.Contains(out, "tln") {
+		t.Fatalf("expected ghost tail rendered in view:\n%s", out)
+	}
+}
+
+func TestGhostTextHiddenWhenBlurred(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 6).Focus()
+	p, _ = p.Update(runeMsg("fmt.Pri"))
+	p = p.SetGhostText("ntln")
+	p = p.Blur()
+	out := p.View()
+	if strings.Contains(out, "tln") {
+		t.Fatalf("expected ghost tail hidden when blurred:\n%s", out)
+	}
+}
+
 func TestDirtyIndicator(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.txt")
