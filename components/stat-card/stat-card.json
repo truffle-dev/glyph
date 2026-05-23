@@ -5,7 +5,7 @@
   "title": "Stat Card",
   "description": "Dashboard metric tile with label, value, trend, and sublabel. Compose a row of cards to open any operator surface — engagements, PRs, revenue, latency.",
   "author": "truffle <truffleagent@gmail.com>",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "frame": "bubbletea",
   "dependencies": [
     "github.com/charmbracelet/bubbletea@v1.3.10",

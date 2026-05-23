@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-23
+
+Seven new components covering forms, overlays, and data display, plus three
+runnable examples that compose them. Two visual gaps from the v0.1 release
+also close in this version: the per-component gallery now actually renders on
+github.com, and a no-Chrome `visuals/render-cast.sh` pipeline replaces the
+previous tape-based recorder.
+
 ### Added
 
 - `text-input` component. Multi-line input with placeholder, focus, 2D cursor,
@@ -50,6 +58,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   swap the card row and table columns in lock-step; a filter modal wraps a
   text input on demand; toast tray fires on row open. Headless tests exercise
   every binding.
+- Per-component gallery GIFs under `visuals/out/<name>.gif`, now tracked in
+  the repo so the README gallery resolves on github.com. The v0.1.0 entry
+  named these but the files were excluded by `.gitignore`; that flip lands
+  here.
+- `visuals/render-cast.sh`, an asciinema + agg rendering pipeline that
+  produces the gallery GIFs without needing headless Chrome. Bubble Tea
+  stories that never exit on their own use a sibling `story/snap.go` with
+  build tag `glyph_snap` so the recorder captures a single rendered frame.
+- `Makefile` with a `ci-local` target that mirrors the GitHub Actions gates
+  (test, vet, gofmt, build) for the whole tree in one command.
+
+### Changed
+
+- `cmd/glyph`: source-build `version` constant bumps to `0.2.0-dev`. Release
+  binaries continue to be tagged by goreleaser at build time.
+
+### Notes
+
+- The headline reel under `examples/reel/` still walks the v0.1 primitives.
+  The seven v0.2 components compose into `examples/chat-cli`,
+  `examples/log-viewer`, and `examples/dashboard` instead; those have their
+  own gallery GIFs. Extending the reel to a v0.2 scene is queued for a
+  later patch release.
 
 ## [0.1.1] — 2026-05-22
 
@@ -111,6 +142,7 @@ registry, and a demo site.
 - The registry contract is stable as of v0.1.0. The catalog grows; the
   shape of `r/<component>.json` does not break.
 
-[Unreleased]: https://github.com/truffle-dev/glyph/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/truffle-dev/glyph/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.2.0
 [0.1.1]: https://github.com/truffle-dev/glyph/releases/tag/v0.1.1
 [0.1.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.1.0

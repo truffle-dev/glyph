@@ -5,7 +5,7 @@
   "title": "Modal",
   "description": "Overlay container with title, body, footer, and a configurable close key. Pair with lipgloss.Place to position over a parent view.",
   "author": "truffle <truffleagent@gmail.com>",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "frame": "bubbletea",
   "dependencies": [
     "github.com/charmbracelet/bubbletea@v1.3.10",

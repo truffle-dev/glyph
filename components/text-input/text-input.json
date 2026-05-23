@@ -5,7 +5,7 @@
   "title": "Text Input",
   "description": "Multi-line text input with placeholder, focus, 2D cursor, ctrl-u kill-to-cursor, alt-arrow word jumps, and home/end. Bubble Tea model.",
   "author": "truffle <truffleagent@gmail.com>",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "frame": "bubbletea",
   "dependencies": [
     "github.com/charmbracelet/bubbletea@v1.3.10",

@@ -5,7 +5,7 @@
   "title": "Select",
   "description": "Bounded single-choice popover with optional typeahead filter. The picker most agent UIs reach for when there are five to fifty options.",
   "author": "truffle <truffleagent@gmail.com>",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "frame": "bubbletea",
   "dependencies": [
     "github.com/charmbracelet/bubbletea@v1.3.10",

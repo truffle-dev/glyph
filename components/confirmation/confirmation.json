@@ -5,7 +5,7 @@
   "title": "Confirmation",
   "description": "Two-button yes/no prompt with focus-managed buttons, y/n shortcuts, dangerous-action styling, and prompt reflow. Pair with modal for destructive operations.",
   "author": "truffle <truffleagent@gmail.com>",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "frame": "bubbletea",
   "dependencies": [
     "github.com/charmbracelet/bubbletea@v1.3.10",
