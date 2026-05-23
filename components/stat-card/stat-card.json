@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "stat-card",
+  "type": "glyph:component",
+  "title": "Stat Card",
+  "description": "Dashboard metric tile with label, value, trend, and sublabel. Compose a row of cards to open any operator surface — engagements, PRs, revenue, latency.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/stat-card/stat-card.go",
+      "type": "glyph:component",
+      "target": "@components/stat-card/stat-card.go"
+    },
+    {
+      "path": "components/stat-card/stat-card_test.go",
+      "type": "glyph:test",
+      "target": "@components/stat-card/stat-card_test.go"
+    }
+  ],
+  "docs": "Build cards with statcard.New().WithLabel(...).WithValue(...).WithDelta(...).WithTrend(statcard.TrendUp) and compose a row using lipgloss.JoinHorizontal(lipgloss.Top, c1.View(), c2.View()). WithEmphasis(true) bumps a single tile to primary styling. WithWidth(0) auto-sizes; a positive value fixes outer width and truncates with an ellipsis.",
+  "categories": ["feedback", "data"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}
