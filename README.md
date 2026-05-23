@@ -24,7 +24,13 @@ glyph add chat-thread
 
 That's the whole onboarding. The third command writes Go files into `internal/ui/` (or wherever your `glyph.json` aliases say) and runs `go get` for the upstream libraries the component needs.
 
-## Components (v0.1)
+## Components
+
+Twenty components ship today: sixteen primitives from v0.1 and four input and
+overlay components from v0.2. All targeted at Bubble Tea; the registry shape
+is framework-agnostic and adapters for other frames are in progress.
+
+### v0.1 — primitives
 
 | Component | Description |
 |---|---|
@@ -44,6 +50,15 @@ That's the whole onboarding. The third command writes Go files into `internal/ui
 | `list` | Vertical selectable list with cursor highlight, optional hints, disabled items, and internal scrolling. |
 | `progress-bar` | Determinate progress indicator with an optional label and percentage readout. Color- and glyph-tunable. |
 | `key-hints` | Compact footer of key-and-description pairs. The bottom-row cheatsheet every TUI grows into. |
+
+### v0.2 — form and overlay
+
+| Component | Description |
+|---|---|
+| `text-input` | Multi-line text input with placeholder, focus, 2D cursor, Alt+Left/Right word jumps, Ctrl-U/K kill bindings. Enter inserts a newline; Ctrl-D commits. |
+| `select` | Bounded single-choice popover with optional substring typeahead, scroll window, hint column, and inlaid title. |
+| `modal` | Border-with-title overlay container with body, footer, and a configurable close key. Pairs with `lipgloss.Place`. |
+| `confirmation` | Two-button yes/no prompt with focus-managed buttons, single-keystroke y/n shortcuts, dangerous-action styling, and prompt reflow. |
 
 ## Gallery
 
@@ -84,11 +99,15 @@ Every screenshot below is a recording of the component's own `story/` binary run
 </tr>
 <tr>
 <td><a href="components/text-input/"><img src="visuals/out/text-input.gif" alt="text-input" /></a><br/><sub><b>text-input</b> — Multi-line text input with 2D cursor, word jumps, kill-to-cursor.</sub></td>
-<td></td>
+<td><a href="components/select/"><img src="visuals/out/select.gif" alt="select" /></a><br/><sub><b>select</b> — Single-choice popover with optional typeahead filter.</sub></td>
+</tr>
+<tr>
+<td><a href="components/modal/"><img src="visuals/out/modal.gif" alt="modal" /></a><br/><sub><b>modal</b> — Bordered overlay container with title, body, footer, and a close key.</sub></td>
+<td><a href="components/confirmation/"><img src="visuals/out/confirmation.gif" alt="confirmation" /></a><br/><sub><b>confirmation</b> — Two-button yes/no prompt with focus-managed buttons.</sub></td>
 </tr>
 </table>
 
-Browse all seventeen with live demos at [truffleagent.com/glyph](https://truffleagent.com/glyph).
+Browse all twenty with live demos at [truffleagent.com/glyph](https://truffleagent.com/glyph).
 
 ## How it works
 
@@ -135,9 +154,9 @@ The rules that fall out of that bet:
 
 ## What's next
 
-v0.1 ships sixteen Bubble Tea components and the CLI. The shape that follows:
+Twenty Bubble Tea components and the CLI ship today. The shape that follows:
 
-- **v0.2 — form and structure.** Text input, select / dropdown, modal, confirmation dialog, code view with syntax highlighting (via chroma), table, file tree, breadcrumb, key-binding chord. The set rounds out the toolkit a config-heavy or browse-heavy TUI needs.
+- **v0.2 — finishing form and overlay.** Four landed: `text-input`, `select`, `modal`, `confirmation`. Still to come: code view with syntax highlighting (via chroma), table, file tree, breadcrumb, key-binding chord.
 - **v0.3 — first non-Bubble-Tea adapter.** Likely ratatui (Rust), based on demand. The registry shape already encodes `frame`, so each component re-ships as a sibling source file with the same manifest contract.
 - **v0.4 and beyond.** Textual (Python) and Ink (TypeScript). The catalog grows, the registry shape stays.
 
@@ -147,15 +166,32 @@ The registry contract is stable. What grows is the catalog.
 
 [truffleagent.com/glyph](https://truffleagent.com/glyph) browses every component with a live SVG preview, the install command, the full source, and the JSON manifest.
 
-## Run the showcase locally
+## Run the examples locally
 
-`examples/showcase/` is a single-binary TUI demo: five tabs (Chat, Commands, Markdown, Logs, Diff), a status bar, and a toast overlay. The tab primitive, spinner, and panel each ship with their own runnable story under `components/<name>/story/`.
+Three single-binary TUIs ship in `examples/`. Each one composes a real
+subset of the catalog into one application — they are how you learn what
+glyph looks like in your own app.
 
 ```bash
-go run ./examples/showcase
+go run ./examples/showcase      # five tabs: chat, commands, markdown, logs, diff
+go run ./examples/chat-cli      # agent-style chat REPL composing 13 components
+go run ./examples/log-viewer    # journalctl-style live feed composing 9 components
 ```
 
-Tab cycles tabs forward, Shift-Tab cycles back. On any non-chat tab, `t` fires a toast and `l` appends a log entry. `q` or Ctrl-C quits.
+`chat-cli` puts a chat-input at the bottom, a chat-thread above it, a
+spinner inline while a reply is in flight, a status-bar with the current
+mode and message count, and pops a command-palette / modal+text-input /
+modal+confirmation / select on demand. `log-viewer` synthesizes a steady
+log feed across four sources and lets you filter by level (tabs), source
+(select popover), and substring (text-input prompt). Both binaries
+double as headless test surfaces and include a `main_test.go` that
+exercises every binding through `model.Update`.
+
+Each component also has its own runnable `story/` binary:
+
+```bash
+go run -tags glyph_story ./components/select/story/
+```
 
 ## Contributing
 

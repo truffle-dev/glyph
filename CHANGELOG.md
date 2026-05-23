@@ -12,6 +12,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Alt+Left/Right word jumps, Ctrl-U kill-to-cursor, Ctrl-K kill-to-end-of-line,
   and `Enter` for newline / `Ctrl-D` for accept. Pairs with `panel` for a
   labeled commit-message surface.
+- `select` component. Bounded single-choice popover with optional substring
+  typeahead, scroll window, hint column, and inlaid title. Emits
+  `selectinput.SelectMsg{Option, Index}` on commit and
+  `selectinput.CancelMsg` on Esc.
+- `modal` component. Border-with-title overlay container with body, footer,
+  and a configurable close key. Pairs with `lipgloss.Place` to position over a
+  parent view; emits `modal.CloseMsg` on Esc by default.
+- `confirmation` component. Two-button yes/no prompt with focus-managed
+  buttons, single-keystroke y/n shortcuts, dangerous-action styling, and
+  prompt reflow via `muesli/reflow`. Emits `confirmation.ConfirmMsg{Value}`
+  on commit, `confirmation.CancelMsg` on Esc.
+- `examples/chat-cli`, a single-binary agent-style REPL composing **thirteen**
+  components into one chat surface: `status-bar`, `chat-thread`, `chat-bubble`,
+  `chat-input`, `key-hints`, `notification-toast`, `spinner`, `command-palette`,
+  `modal`, `text-input`, `confirmation`, `select`, and `theme`. Headless tests
+  exercise every overlay and message-routing path.
+- `examples/log-viewer`, a journalctl-style live feed composing **nine**
+  components: `log-stream`, `tabs`, `status-bar`, `key-hints`,
+  `notification-toast`, `panel`, `text-input`, `select`, and `theme`. Filters
+  by level, source, and substring; pause/resume the live tick; clear the
+  buffer. Headless tests exercise every binding.
 
 ## [0.1.1] — 2026-05-22
 
