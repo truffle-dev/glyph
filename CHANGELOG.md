@@ -23,6 +23,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   buttons, single-keystroke y/n shortcuts, dangerous-action styling, and
   prompt reflow via `muesli/reflow`. Emits `confirmation.ConfirmMsg{Value}`
   on commit, `confirmation.CancelMsg` on Esc.
+- `kbd` component. Stateless keycap atom that renders a single key or a chord
+  as Unicode-cap glyphs (`ctrl+k` → `⌃ + K`, `enter` → `⏎`, `up` → `↑`).
+  Exposes `Render`, `RenderStyled`, `Chord`, and `Sequence`. No `Model`,
+  no `Update`. Use inside hint rows, command palettes, and modals.
+- `table` component. Sortable data grid with column alignment, numeric-aware
+  sort, cursor highlight, optional row selection, PgUp/PgDn/Home/End,
+  arrow-key column nav, and `s` to toggle sort. Emits `table.SelectMsg`,
+  `table.SortMsg`, and `table.CursorMsg`.
+- `stat-card` component. Dashboard metric tile with label, value, trend
+  glyph (`▲`/`▼`/`—`), delta, sublabel, and optional emphasis treatment that
+  swaps the border + surface tokens.
 - `examples/chat-cli`, a single-binary agent-style REPL composing **thirteen**
   components into one chat surface: `status-bar`, `chat-thread`, `chat-bubble`,
   `chat-input`, `key-hints`, `notification-toast`, `spinner`, `command-palette`,
@@ -33,6 +44,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `notification-toast`, `panel`, `text-input`, `select`, and `theme`. Filters
   by level, source, and substring; pause/resume the live tick; clear the
   buffer. Headless tests exercise every binding.
+- `examples/dashboard`, an engagements control room composing **nine**
+  components: `tabs`, `stat-card`, `table`, `text-input`, `modal`,
+  `status-bar`, `key-hints`, `notification-toast`, and `theme`. Three tabs
+  swap the card row and table columns in lock-step; a filter modal wraps a
+  text input on demand; toast tray fires on row open. Headless tests exercise
+  every binding.
 
 ## [0.1.1] — 2026-05-22
 

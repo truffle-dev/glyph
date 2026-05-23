@@ -26,9 +26,10 @@ That's the whole onboarding. The third command writes Go files into `internal/ui
 
 ## Components
 
-Twenty components ship today: sixteen primitives from v0.1 and four input and
-overlay components from v0.2. All targeted at Bubble Tea; the registry shape
-is framework-agnostic and adapters for other frames are in progress.
+Twenty-three components ship today: sixteen primitives from v0.1 and seven
+input, overlay, and data-display components from v0.2. All targeted at
+Bubble Tea; the registry shape is framework-agnostic and adapters for other
+frames are in progress.
 
 ### v0.1 — primitives
 
@@ -51,7 +52,7 @@ is framework-agnostic and adapters for other frames are in progress.
 | `progress-bar` | Determinate progress indicator with an optional label and percentage readout. Color- and glyph-tunable. |
 | `key-hints` | Compact footer of key-and-description pairs. The bottom-row cheatsheet every TUI grows into. |
 
-### v0.2 — form and overlay
+### v0.2 — form, overlay, data
 
 | Component | Description |
 |---|---|
@@ -59,6 +60,9 @@ is framework-agnostic and adapters for other frames are in progress.
 | `select` | Bounded single-choice popover with optional substring typeahead, scroll window, hint column, and inlaid title. |
 | `modal` | Border-with-title overlay container with body, footer, and a configurable close key. Pairs with `lipgloss.Place`. |
 | `confirmation` | Two-button yes/no prompt with focus-managed buttons, single-keystroke y/n shortcuts, dangerous-action styling, and prompt reflow. |
+| `kbd` | Stateless keycap atom. Renders `ctrl+k` as `⌃ + K`, `enter` as `⏎`, and so on. Use inside hint rows, command palettes, modals. |
+| `table` | Sortable, scrollable data grid with column alignment, numeric-aware sort, cursor highlight, optional row selection, and PgUp/PgDn/Home/End. |
+| `stat-card` | Dashboard metric tile. Label, value, trend glyph, delta, sublabel, optional emphasis treatment. |
 
 ## Gallery
 
@@ -107,7 +111,7 @@ Every screenshot below is a recording of the component's own `story/` binary run
 </tr>
 </table>
 
-Browse all twenty with live demos at [truffleagent.com/glyph](https://truffleagent.com/glyph).
+Browse all twenty-three with live demos at [truffleagent.com/glyph](https://truffleagent.com/glyph).
 
 ## How it works
 
@@ -154,9 +158,9 @@ The rules that fall out of that bet:
 
 ## What's next
 
-Twenty Bubble Tea components and the CLI ship today. The shape that follows:
+Twenty-three Bubble Tea components and the CLI ship today. The shape that follows:
 
-- **v0.2 — finishing form and overlay.** Four landed: `text-input`, `select`, `modal`, `confirmation`. Still to come: code view with syntax highlighting (via chroma), table, file tree, breadcrumb, key-binding chord.
+- **v0.2 — finishing form, overlay, and data.** Seven landed: `text-input`, `select`, `modal`, `confirmation`, `kbd`, `table`, `stat-card`. Still to come: code view with syntax highlighting (via chroma), file tree, breadcrumb.
 - **v0.3 — first non-Bubble-Tea adapter.** Likely ratatui (Rust), based on demand. The registry shape already encodes `frame`, so each component re-ships as a sibling source file with the same manifest contract.
 - **v0.4 and beyond.** Textual (Python) and Ink (TypeScript). The catalog grows, the registry shape stays.
 
@@ -168,7 +172,7 @@ The registry contract is stable. What grows is the catalog.
 
 ## Run the examples locally
 
-Three single-binary TUIs ship in `examples/`. Each one composes a real
+Four single-binary TUIs ship in `examples/`. Each one composes a real
 subset of the catalog into one application — they are how you learn what
 glyph looks like in your own app.
 
@@ -176,6 +180,7 @@ glyph looks like in your own app.
 go run ./examples/showcase      # five tabs: chat, commands, markdown, logs, diff
 go run ./examples/chat-cli      # agent-style chat REPL composing 13 components
 go run ./examples/log-viewer    # journalctl-style live feed composing 9 components
+go run ./examples/dashboard     # engagements control room composing 9 components
 ```
 
 `chat-cli` puts a chat-input at the bottom, a chat-thread above it, a
@@ -183,9 +188,12 @@ spinner inline while a reply is in flight, a status-bar with the current
 mode and message count, and pops a command-palette / modal+text-input /
 modal+confirmation / select on demand. `log-viewer` synthesizes a steady
 log feed across four sources and lets you filter by level (tabs), source
-(select popover), and substring (text-input prompt). Both binaries
-double as headless test surfaces and include a `main_test.go` that
-exercises every binding through `model.Update`.
+(select popover), and substring (text-input prompt). `dashboard` swaps
+its stat-card row and table columns across three tabs (engagements,
+throughput, revenue), opens a filter modal over a text-input prompt, and
+fires a toast on row "open." All four binaries double as headless test
+surfaces with a `main_test.go` that exercises every binding through
+`model.Update`.
 
 Each component also has its own runnable `story/` binary:
 
