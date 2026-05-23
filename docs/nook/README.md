@@ -27,6 +27,8 @@ Three keybindings ported from Cursor, each pinned to the right model.
 
 ## LSP diagnostics
 
+![nook LSP wedge](visuals/lsp.gif)
+
 Opening a `.go` file starts `gopls` under the project root. Each
 `publishDiagnostics` notification surfaces as a colored gutter sigil — red
 `●` for errors, yellow for warnings, blue for info or hints — and a
