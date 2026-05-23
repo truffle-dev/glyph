@@ -156,6 +156,82 @@ func (p Pane) JumpTo(line, col int) Pane {
 	return p
 }
 
+// SetLine replaces the contents of a 0-based row with newText. The replacement
+// preserves the original leading indentation of the row so AI edits don't
+// silently flatten indentation when the model forgets to.
+func (p Pane) SetLine(row int, newText string) Pane {
+	if row < 0 {
+		return p
+	}
+	for row >= len(p.buf.Lines) {
+		p.buf.Lines = append(p.buf.Lines, "")
+	}
+	orig := p.buf.Lines[row]
+	indent := leadingIndent(orig)
+	// If newText already begins with whitespace, trust the model; otherwise
+	// re-attach the original indent.
+	if !startsWithWhitespace(newText) && indent != "" {
+		newText = indent + newText
+	}
+	p.buf.Lines[row] = newText
+	p.buf.Dirty = true
+	if p.col > len(newText) {
+		p.col = len(newText)
+	}
+	return p
+}
+
+// ReplaceAllFromString resets the buffer to the given full file contents.
+// Used by the composer to apply a full-file edit to the currently-open file
+// without re-reading from disk.
+func (p Pane) ReplaceAllFromString(contents string) Pane {
+	lines := splitLines(contents)
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	p.buf.Lines = lines
+	p.buf.Dirty = true
+	if p.row >= len(lines) {
+		p.row = len(lines) - 1
+	}
+	if p.col > len(lines[p.row]) {
+		p.col = len(lines[p.row])
+	}
+	return p
+}
+
+// Contents returns the full buffer as a single string with \n separators.
+// Used by the composer to ground the model on the current file state.
+func (p Pane) Contents() string {
+	return strings.Join(p.buf.Lines, "\n")
+}
+
+func leadingIndent(s string) string {
+	for i, r := range s {
+		if r != ' ' && r != '\t' {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func startsWithWhitespace(s string) bool {
+	return s != "" && (s[0] == ' ' || s[0] == '\t')
+}
+
+func splitLines(s string) []string {
+	// strings.Split keeps trailing empty on "\n"-terminated files; we want
+	// the buffer to drop that empty line for symmetry with Load().
+	if s == "" {
+		return []string{""}
+	}
+	lines := strings.Split(s, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
 // SaveCmd returns a tea.Cmd that writes the buffer to disk.
 func (p Pane) SaveCmd() tea.Cmd {
 	path := p.path

@@ -6,17 +6,17 @@
 //
 // If project-root is omitted, nook opens the current working directory.
 //
-// Keymap (MVP):
+// Keymap:
 //
 //	ctrl+p     file picker
 //	ctrl+f     project search
 //	ctrl+g     git pane
+//	ctrl+k     inline AI edit on current line (Haiku)
+//	ctrl+l     composer multi-file AI edit (Sonnet)
 //	ctrl+`     terminal pane
 //	ctrl+s     save current buffer
 //	ctrl+q     quit
 //	esc        close overlay / blur
-//
-// Phase 2 will add LSP and the AI panel (`ctrl+l`).
 package main
 
 import (
@@ -33,6 +33,9 @@ import (
 
 	"github.com/truffle-dev/glyph/components/theme"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
@@ -47,9 +50,10 @@ const (
 	overlayNone overlay = iota
 	overlayFilePicker
 	overlayProjectSearch
+	overlayInlineEdit
 )
 
-// rightPane is which of git/term/diff occupies the lower-right slot.
+// rightPane is which of git/term/diff/composer occupies the lower-right slot.
 type rightPane int
 
 const (
@@ -57,6 +61,7 @@ const (
 	rightGit
 	rightTerm
 	rightDiff
+	rightComposer
 )
 
 type model struct {
@@ -72,11 +77,15 @@ type model struct {
 	termPane term.Pane
 	picker   picker.Picker
 	search   search.Pane
+	editPane edit.Pane
+	composer composer.Pane
 
 	right     rightPane
 	diffBody  string
 	diffTitle string
 	status    string
+
+	aiClient *ai.Client
 
 	// streaming search context
 	searchCancel context.CancelFunc
@@ -112,6 +121,11 @@ func main() {
 
 func newModel(root string) model {
 	t := theme.Default
+	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
+	status := "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+k ai edit • ctrl+l composer • ctrl+s save • ctrl+q quit"
+	if aiClient == nil {
+		status = "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+s save • ctrl+q quit  (set ANTHROPIC_API_KEY for AI)"
+	}
 	return model{
 		theme:    t,
 		root:     root,
@@ -122,8 +136,11 @@ func newModel(root string) model {
 		termPane: term.NewPane(t, root),
 		picker:   picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
 		search:   search.NewPane(t, root),
+		editPane: edit.NewPane(t, aiClient),
+		composer: composer.NewPane(t, aiClient),
 		right:    rightNone,
-		status:   "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+` term • ctrl+s save • ctrl+q quit",
+		status:   status,
+		aiClient: aiClient,
 	}
 }
 
@@ -317,10 +334,65 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.termPane = m.termPane.Append(msg.data)
 		return m, m.termPumpCmd(msg.ch)
 
+	case edit.AcceptMsg:
+		m.editor = m.editor.SetLine(msg.Line, msg.NewText).Focus()
+		m.overlay = overlayNone
+		m.status = fmt.Sprintf("ai edit applied at line %d", msg.Line+1)
+		return m, nil
+
+	case edit.CancelMsg:
+		m.overlay = overlayNone
+		m.editor = m.editor.Focus()
+		return m, nil
+
+	case composer.ApplyMsg:
+		return m.applyComposerEdit(msg.Edit)
+
+	case composer.ApplyAllMsg:
+		var cmds []tea.Cmd
+		for _, e := range msg.Edits {
+			_, cmd := m.applyComposerEdit(e)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		m.status = fmt.Sprintf("applied %d edits", len(msg.Edits))
+		return m, tea.Batch(cmds...)
+
+	case composer.CancelMsg:
+		m.composer = m.composer.Blur()
+		m.right = rightNone
+		m.editor = m.editor.Focus()
+		m = m.resize()
+		return m, nil
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
 	}
+	return m, nil
+}
+
+// applyComposerEdit writes one composer edit to disk and refreshes the editor
+// if it's currently showing that file.
+func (m model) applyComposerEdit(e composer.Edit) (tea.Model, tea.Cmd) {
+	abs := filepath.Join(m.root, e.Path)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		m.status = "mkdir failed: " + err.Error()
+		return m, nil
+	}
+	body := e.Proposed
+	if !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+		m.status = "write failed: " + err.Error()
+		return m, nil
+	}
+	if m.editor.Path() == abs {
+		m.editor = m.editor.Open(abs)
+	}
+	m.status = "wrote " + e.Path
 	return m, nil
 }
 
@@ -348,6 +420,10 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m = m.resize()
 		return m, m.refreshGitCmd()
+	case tea.KeyCtrlK:
+		return m.openInlineEdit()
+	case tea.KeyCtrlL:
+		return m.toggleComposer()
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
 	if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '`' {
@@ -362,9 +438,20 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case overlayProjectSearch:
 		return m.routeProjectSearch(km)
+	case overlayInlineEdit:
+		var cmd tea.Cmd
+		m.editPane, cmd = m.editPane.Update(km)
+		return m, cmd
 	}
 
-	// No overlay: route to focused pane
+	// No overlay: composer takes keys when focused
+	if m.right == rightComposer && m.composer.Focused() {
+		var cmd tea.Cmd
+		m.composer, cmd = m.composer.Update(km)
+		return m, cmd
+	}
+
+	// Focused pane
 	if m.gitPane.Focused() {
 		var cmd tea.Cmd
 		m.gitPane, cmd = m.gitPane.Update(km)
@@ -382,6 +469,50 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.editor, cmd = m.editor.Update(km)
 	return m, cmd
+}
+
+func (m model) openInlineEdit() (tea.Model, tea.Cmd) {
+	if m.editor.Path() == "" {
+		m.status = "open a file first (ctrl+p)"
+		return m, nil
+	}
+	row := m.editor.CursorRow()
+	original := m.editor.Line(row)
+	m.editPane = m.editPane.Open(m.editor.Path(), row, original)
+	m.editPane = m.editPane.WithSize(min(70, m.width-4), 10)
+	m.overlay = overlayInlineEdit
+	m.editor = m.editor.Blur()
+	return m, nil
+}
+
+func (m model) toggleComposer() (tea.Model, tea.Cmd) {
+	if m.right == rightComposer {
+		m.right = rightNone
+		m.composer = m.composer.Blur()
+		m.editor = m.editor.Focus()
+		m = m.resize()
+		return m, nil
+	}
+	// Snap context onto the composer.
+	ctx := composer.Context{
+		Root:     m.root,
+		Files:    m.files,
+		OpenPath: m.editor.Path(),
+	}
+	if m.editor.Path() != "" {
+		ctx.OpenContents = m.editor.Contents()
+	}
+	m.composer = m.composer.WithContext(ctx).Focus()
+	m.right = rightComposer
+	m = m.resize()
+	return m, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (m model) routeProjectSearch(km tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -548,6 +679,8 @@ func (m model) resize() model {
 	m.editor = m.editor.WithSize(leftW, bodyH)
 	m.gitPane = m.gitPane.WithSize(rightW, bodyH)
 	m.termPane = m.termPane.WithSize(rightW, bodyH)
+	m.composer = m.composer.WithSize(rightW, bodyH)
+	m.editPane = m.editPane.WithSize(min(70, m.width-4), 10)
 	m.search = m.search.WithSize(m.width-4, m.height-6)
 	m.picker = m.picker.WithSize(m.width-8, m.height-6)
 	return m
@@ -571,6 +704,10 @@ func (m model) View() string {
 	if m.overlay == overlayProjectSearch {
 		return lipgloss.JoinVertical(lipgloss.Left, centerOverlay(m.width, m.height-1, m.search.View()), statusBar)
 	}
+	if m.overlay == overlayInlineEdit {
+		float := centerOverlay(m.width, m.height-1, m.editPane.View())
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
 
 	left := m.editor.View()
 	if m.right == rightNone {
@@ -585,6 +722,8 @@ func (m model) View() string {
 		right = m.termPane.View()
 	case rightDiff:
 		right = renderDiff(t, m.diffTitle, m.diffBody, m.width/3, m.height-2)
+	case rightComposer:
+		right = m.composer.View()
 	}
 
 	sep := strings.Repeat(string('│'), m.height-2)

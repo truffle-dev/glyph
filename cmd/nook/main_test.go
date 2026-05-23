@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
@@ -232,6 +234,107 @@ func TestViewRendersWithoutPanic(t *testing.T) {
 	out := m.View()
 	if out == "" {
 		t.Fatal("expected non-empty view")
+	}
+}
+
+func TestCtrlKWithoutOpenFileIsStatusHint(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	mm := updated.(model)
+	if mm.overlay != overlayNone {
+		t.Fatalf("expected no overlay without open file, got %v", mm.overlay)
+	}
+	if !strings.Contains(mm.status, "open a file") {
+		t.Fatalf("expected hint, got status %q", mm.status)
+	}
+}
+
+func TestCtrlKOpensInlineEditWhenFileOpen(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.editor = m.editor.Open(filepath.Join(root, "a.go")).Focus()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	mm := updated.(model)
+	if mm.overlay != overlayInlineEdit {
+		t.Fatalf("expected overlayInlineEdit, got %v", mm.overlay)
+	}
+}
+
+func TestEditAcceptApplies(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.editor = m.editor.Open(filepath.Join(root, "a.go")).Focus()
+	updated, _ := m.Update(edit.AcceptMsg{Path: filepath.Join(root, "a.go"), Line: 0, NewText: "package replaced"})
+	mm := updated.(model)
+	if got := mm.editor.Line(0); got != "package replaced" {
+		t.Fatalf("expected line replaced, got %q", got)
+	}
+	if !mm.editor.Dirty() {
+		t.Fatal("expected dirty after edit accept")
+	}
+}
+
+func TestCtrlLOpensComposer(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	mm := updated.(model)
+	if mm.right != rightComposer {
+		t.Fatalf("expected rightComposer, got %v", mm.right)
+	}
+	if !mm.composer.Focused() {
+		t.Fatal("expected composer focused")
+	}
+}
+
+func TestComposerApplyMsgWritesFile(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	updated, _ := m.Update(composer.ApplyMsg{Edit: composer.Edit{
+		Path:     "new/file.go",
+		Proposed: "package newp\n",
+	}})
+	mm := updated.(model)
+	data, err := os.ReadFile(filepath.Join(root, "new/file.go"))
+	if err != nil {
+		t.Fatalf("expected file written: %v", err)
+	}
+	if !strings.Contains(string(data), "package newp") {
+		t.Fatalf("expected proposed content written, got %q", data)
+	}
+	if !strings.Contains(mm.status, "wrote new/file.go") {
+		t.Fatalf("expected status update, got %q", mm.status)
+	}
+}
+
+func TestComposerCancelMsgClosesPane(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.right = rightComposer
+	m.composer = m.composer.Focus()
+	updated, _ := m.Update(composer.CancelMsg{})
+	mm := updated.(model)
+	if mm.right != rightNone {
+		t.Fatalf("expected right none, got %v", mm.right)
 	}
 }
 

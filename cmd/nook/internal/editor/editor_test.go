@@ -182,6 +182,66 @@ func TestViewRendersGutter(t *testing.T) {
 	}
 }
 
+func TestSetLineReplacesAndPreservesIndent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.go")
+	os.WriteFile(path, []byte("package main\n\n    fmt.Println(\"old\")\n"), 0o644)
+	p := NewPane(theme.Default).Focus().Open(path)
+	if p.Dirty() {
+		t.Fatal("expected clean after open")
+	}
+	// Replace the 3rd line (index 2). Model omits indentation; we should re-attach.
+	p = p.SetLine(2, "fmt.Println(\"new\")")
+	if !p.Dirty() {
+		t.Fatal("expected dirty after SetLine")
+	}
+	got := p.Line(2)
+	want := "    fmt.Println(\"new\")"
+	if got != want {
+		t.Fatalf("expected indent re-attached, got %q want %q", got, want)
+	}
+}
+
+func TestSetLineRespectsExplicitIndent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.go")
+	os.WriteFile(path, []byte("    x := 1\n"), 0o644)
+	p := NewPane(theme.Default).Focus().Open(path)
+	p = p.SetLine(0, "\tx := 2")
+	if got := p.Line(0); got != "\tx := 2" {
+		t.Fatalf("expected explicit indent honored, got %q", got)
+	}
+}
+
+func TestReplaceAllFromStringResetsBuffer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.go")
+	os.WriteFile(path, []byte("a\nb\nc\n"), 0o644)
+	p := NewPane(theme.Default).Focus().Open(path)
+	p = p.ReplaceAllFromString("x\ny\n")
+	if p.LineCount() != 2 {
+		t.Fatalf("expected 2 lines, got %d", p.LineCount())
+	}
+	if p.Line(0) != "x" || p.Line(1) != "y" {
+		t.Fatalf("ReplaceAllFromString contents wrong: %q %q", p.Line(0), p.Line(1))
+	}
+	if !p.Dirty() {
+		t.Fatal("expected dirty after ReplaceAllFromString")
+	}
+}
+
+func TestContentsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.go")
+	os.WriteFile(path, []byte("package main\n\nfunc main() {}\n"), 0o644)
+	p := NewPane(theme.Default).Focus().Open(path)
+	got := p.Contents()
+	want := "package main\n\nfunc main() {}"
+	if got != want {
+		t.Fatalf("Contents mismatch:\nwant: %q\ngot:  %q", want, got)
+	}
+}
+
 func TestDirtyIndicator(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.txt")
