@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "kbd",
+  "type": "glyph:component",
+  "title": "Kbd",
+  "description": "Render terminal-styled keycap glyphs for single keys, chords, and key sequences. The atom that turns 'ctrl+k' into a readable ⌃ K in your hint rows and palettes.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/kbd/kbd.go",
+      "type": "glyph:component",
+      "target": "@components/kbd/kbd.go"
+    },
+    {
+      "path": "components/kbd/kbd_test.go",
+      "type": "glyph:test",
+      "target": "@components/kbd/kbd_test.go"
+    }
+  ],
+  "docs": "Stateless rendering primitive. Call kbd.Render(\"Ctrl\") or kbd.Chord(\"Ctrl\", \"K\") from inside your existing View() and place the result wherever a keycap belongs. The atom reads theme.Default automatically; pass a Style to RenderStyled when you need to override a single color. Compose into hint rows with kbd.Sequence(kbd.Chord(\"g\"), kbd.Chord(\"g\")) for keystroke series.",
+  "categories": ["primitive", "feedback"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}
