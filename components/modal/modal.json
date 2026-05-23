@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "modal",
+  "type": "glyph:component",
+  "title": "Modal",
+  "description": "Overlay container with title, body, footer, and a configurable close key. Pair with lipgloss.Place to position over a parent view.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/modal/modal.go",
+      "type": "glyph:component",
+      "target": "@components/modal/modal.go"
+    },
+    {
+      "path": "components/modal/modal_test.go",
+      "type": "glyph:test",
+      "target": "@components/modal/modal_test.go"
+    }
+  ],
+  "docs": "Render m.View() into a string, then lipgloss.Place(parentW, parentH, lipgloss.Center, lipgloss.Center, m.View(), lipgloss.WithWhitespaceChars(\" \")) over your background. The modal emits modal.CloseMsg on Esc by default.",
+  "categories": ["layout", "overlay"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-05-23"
+  }
+}
