@@ -68,6 +68,7 @@ func Default() []Section {
 		{Name: "Language server", Bindings: []Binding{
 			{"alt+i", "Hover info for symbol under cursor"},
 			{"ctrl+]", "Go to definition"},
+			{"ctrl+space", "Completion popup (↑/↓ to navigate, enter to accept)"},
 		}},
 		{Name: "Panes", Bindings: []Binding{
 			{"ctrl+g", "Toggle git pane"},

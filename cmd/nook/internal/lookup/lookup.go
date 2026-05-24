@@ -49,6 +49,19 @@ type DefinitionMsg struct {
 	Err       error
 }
 
+// CompletionMsg carries the result of a completion lookup. Items is
+// empty when the server returned nothing useful. PrefixLen is the
+// word-prefix length the host captured at request time so it can be
+// fed straight back into complete.Popup.WithItems.
+type CompletionMsg struct {
+	Path      string
+	Row       int
+	Col       int
+	PrefixLen int
+	Items     []nooklsp.CompletionItem
+	Err       error
+}
+
 // HoverCmd returns a tea.Cmd that calls client.Hover and wraps the
 // result in HoverMsg. A nil client short-circuits to a HoverMsg with
 // errNoClient — the host can bind the key unconditionally.
@@ -76,5 +89,21 @@ func DefinitionCmd(client *nooklsp.Client, path string, row, col int) tea.Cmd {
 		defer cancel()
 		locs, err := client.Definition(ctx, path, row, col)
 		return DefinitionMsg{Path: path, Row: row, Col: col, Locations: locs, Err: err}
+	}
+}
+
+// CompletionCmd returns a tea.Cmd that calls client.Completion and
+// wraps the result in CompletionMsg. nil-client returns a message
+// carrying errNoClient so the host can bind a trigger key (Ctrl+Space)
+// regardless of LSP readiness.
+func CompletionCmd(client *nooklsp.Client, path string, row, col, prefixLen int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return CompletionMsg{Path: path, Row: row, Col: col, PrefixLen: prefixLen, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		items, err := client.Completion(ctx, path, row, col)
+		return CompletionMsg{Path: path, Row: row, Col: col, PrefixLen: prefixLen, Items: items, Err: err}
 	}
 }

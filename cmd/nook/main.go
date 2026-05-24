@@ -17,6 +17,7 @@
 //	ctrl+s     save current buffer
 //	alt+i      LSP hover info for symbol under cursor
 //	ctrl+]     LSP go to definition
+//	ctrl+space LSP completion popup (↑/↓ to navigate, enter to accept)
 //	tab        accept ghost-text completion (when present)
 //	ctrl+q     quit
 //	esc        close overlay / blur / dismiss ghost-text
@@ -46,6 +47,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/bufman"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
@@ -73,6 +75,7 @@ const (
 	overlayInlineEdit
 	overlayHelp
 	overlayHover
+	overlayCompletion
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -129,6 +132,14 @@ type model struct {
 	hoverPath     string
 	hoverRow      int
 	hoverCol      int
+
+	// LSP completion popup: filled by lookup.CompletionMsg, displayed
+	// under overlayCompletion. completeReqPath/Row/Col echo the request
+	// inputs so a late response after the cursor moved gets discarded.
+	completePopup   complete.Popup
+	completeReqPath string
+	completeReqRow  int
+	completeReqCol  int
 }
 
 func main() {
@@ -526,6 +537,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("jumped to %s:%d:%d", filepath.Base(loc.Path), loc.Line+1, loc.Col+1)
 		return m, m.ensureLSPForFile(loc.Path)
 
+	case lookup.CompletionMsg:
+		// Discard late responses for a stale request: the user moved
+		// the cursor or switched buffers before gopls answered.
+		if msg.Path != m.completeReqPath || msg.Row != m.completeReqRow || msg.Col != m.completeReqCol {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.status = "completion: " + msg.Err.Error()
+			return m, nil
+		}
+		if len(msg.Items) == 0 {
+			m.status = "no completions"
+			return m, nil
+		}
+		m.completePopup = m.completePopup.WithItems(msg.Items, msg.PrefixLen)
+		m.overlay = overlayCompletion
+		return m, nil
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
@@ -590,6 +619,30 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// eaten).
 	}
 
+	// Completion popup intercepts navigation keys: ↑/↓ move selection,
+	// Enter accepts (replacing the trailing word-prefix with the chosen
+	// item's InsertText), Esc dismisses silently. Any other key dismisses
+	// AND falls through to the editor so the user can keep typing — this
+	// matches VS Code's behavior where pressing 'a' after the popup is
+	// open closes the menu and types 'a'.
+	if m.overlay == overlayCompletion {
+		switch km.Type {
+		case tea.KeyUp:
+			m.completePopup = m.completePopup.MoveUp()
+			return m, nil
+		case tea.KeyDown:
+			m.completePopup = m.completePopup.MoveDown()
+			return m, nil
+		case tea.KeyEnter:
+			return m.acceptCompletion()
+		case tea.KeyEsc:
+			m.dismissCompletion()
+			return m, nil
+		}
+		// Any other key: dismiss the popup and fall through.
+		m.dismissCompletion()
+	}
+
 	// Global keys
 	switch km.Type {
 	case tea.KeyCtrlQ:
@@ -626,6 +679,11 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p := m.bufs.Active(); p != nil && p.Path() != "" {
 			return m, lookup.DefinitionCmd(m.lsp, p.Path(), p.CursorRow(), p.CursorCol())
 		}
+	case tea.KeyCtrlAt:
+		// Ctrl+Space is delivered as NUL (KeyCtrlAt) under standard
+		// terminals because ASCII space has no separate control code.
+		// Treat it as the completion trigger.
+		return m.triggerCompletion()
 	}
 	// Alt+] / Alt+[ cycle through open buffers. bubbletea surfaces Alt as
 	// km.Alt with the modified key in km.Runes when KeyRunes; for "]" with
@@ -807,6 +865,73 @@ func (m model) openInlineEdit() (tea.Model, tea.Cmd) {
 	m.overlay = overlayInlineEdit
 	*p = p.Blur()
 	return m, nil
+}
+
+// triggerCompletion fires an LSP completion request at the cursor. The
+// popup arms on the response message — there's nothing to show until the
+// server answers. We stash the request inputs so a late response after
+// the user moves on gets discarded in the CompletionMsg handler.
+func (m model) triggerCompletion() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
+		m.status = "open a file first (ctrl+p)"
+		return m, nil
+	}
+	row := p.CursorRow()
+	col := p.CursorCol()
+	prefix := complete.WordPrefix(p.LinePrefix())
+	m.completeReqPath = p.Path()
+	m.completeReqRow = row
+	m.completeReqCol = col
+	m.status = "asking gopls for completions…"
+	return m, lookup.CompletionCmd(m.lsp, p.Path(), row, col, len(prefix))
+}
+
+// acceptCompletion inserts the highlighted item's InsertText at the
+// cursor, first deleting the word-prefix the user already typed so the
+// resulting buffer reads correctly. Selecting an item is a buffer edit
+// — we send a didChange to the language server if it's running.
+func (m model) acceptCompletion() (tea.Model, tea.Cmd) {
+	item, ok := m.completePopup.Selected()
+	m.dismissCompletion()
+	if !ok {
+		return m, nil
+	}
+	p := m.bufs.Active()
+	if p == nil {
+		return m, nil
+	}
+	pl := len(complete.WordPrefix(p.LinePrefix()))
+	if pl > 0 {
+		row := p.CursorRow()
+		col := p.CursorCol()
+		line := p.Line(row)
+		if col-pl >= 0 && col <= len(line) {
+			newLine := line[:col-pl] + line[col:]
+			*p = p.SetLine(row, newLine).JumpTo(row, col-pl)
+		}
+	}
+	*p = p.InsertText(item.InsertText)
+	m.status = "inserted " + item.Label
+	var cmd tea.Cmd
+	if m.lsp != nil && isGoFile(p.Path()) {
+		v := m.lspVersions[p.Path()] + 1
+		m.lspVersions[p.Path()] = v
+		cmd = m.lspChangeCmd(p.Path(), v, p.Contents())
+	}
+	return m, cmd
+}
+
+// dismissCompletion clears the completion popup state. Safe to call
+// even when no popup is active.
+func (m *model) dismissCompletion() {
+	m.completePopup = complete.New()
+	m.completeReqPath = ""
+	m.completeReqRow = 0
+	m.completeReqCol = 0
+	if m.overlay == overlayCompletion {
+		m.overlay = overlayNone
+	}
 }
 
 func (m model) toggleComposer() (tea.Model, tea.Cmd) {
@@ -1078,6 +1203,22 @@ func (m model) View() string {
 			maxLines = 4
 		}
 		box := hover.View(t, m.hoverContents, boxW, maxLines)
+		float := centerOverlay(m.width, m.height-1, box)
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlayCompletion {
+		// Completion menu floats centered like hover. We cap width at
+		// ~50ch so labels stay readable and rows at a third of the
+		// screen so the menu doesn't dominate the editor.
+		boxW := 50
+		if boxW > m.width-4 {
+			boxW = m.width - 4
+		}
+		maxRows := (m.height - 2) / 3
+		if maxRows < 4 {
+			maxRows = 4
+		}
+		box := m.completePopup.View(t, boxW, maxRows)
 		float := centerOverlay(m.width, m.height-1, box)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}

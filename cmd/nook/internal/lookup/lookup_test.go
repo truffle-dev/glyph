@@ -55,3 +55,28 @@ func TestDefinitionCmdNilClient(t *testing.T) {
 		t.Errorf("Locations should be empty on nil client, got %d", len(msg.Locations))
 	}
 }
+
+// TestCompletionCmdNilClient confirms completion against a nil client
+// returns a CompletionMsg with errNoClient and preserves the prefix
+// length, so the host's accept path stays consistent across the
+// nil-client edge.
+func TestCompletionCmdNilClient(t *testing.T) {
+	t.Parallel()
+	cmd := CompletionCmd(nil, "main.go", 5, 9, 3)
+	if cmd == nil {
+		t.Fatal("CompletionCmd returned nil tea.Cmd")
+	}
+	msg, ok := cmd().(CompletionMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want CompletionMsg", cmd())
+	}
+	if msg.Path != "main.go" || msg.Row != 5 || msg.Col != 9 || msg.PrefixLen != 3 {
+		t.Errorf("inputs not echoed: got %+v", msg)
+	}
+	if !errors.Is(msg.Err, errNoClient) {
+		t.Errorf("err = %v, want errNoClient", msg.Err)
+	}
+	if len(msg.Items) != 0 {
+		t.Errorf("Items should be empty on nil client, got %d", len(msg.Items))
+	}
+}
