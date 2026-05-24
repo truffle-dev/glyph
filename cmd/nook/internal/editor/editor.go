@@ -23,6 +23,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -151,6 +152,16 @@ type Pane struct {
 	// lineNumbers controls whether the gutter prints the 1-based row number.
 	// Defaults to true. The marker column (git + diagnostic) renders regardless.
 	lineNumbers bool
+
+	// Snippet mode: when snippetMode is true, Tab/Shift+Tab cycle the cursor
+	// between snippetStops in declaration order, Esc exits. Any edit key
+	// (rune insert, backspace, enter) auto-exits. snippetStopIdx is the
+	// position into snippetStops (-1 before the first Tab); snippetFinal,
+	// when non-nil, is the $0 cursor target visited after the last stop.
+	snippetMode    bool
+	snippetStops   []SnippetTabstop
+	snippetStopIdx int
+	snippetFinal   *SnippetTabstop
 }
 
 // extraCursor is an additional editing cursor beyond the primary at
@@ -164,6 +175,17 @@ type extraCursor struct {
 type CursorPos struct {
 	Row int
 	Col int
+}
+
+// SnippetTabstop is the (row, col) position of one tabstop placed by
+// ExpandSnippet, with the byte length of any default text that lived
+// at that position at expand time (used by callers that want to
+// preselect the default; the editor itself only places the cursor).
+type SnippetTabstop struct {
+	Row    int
+	Col    int
+	Length int
+	Index  int
 }
 
 // Range is a byte-range mark inside a single row (used for search matches).
@@ -481,6 +503,166 @@ func (p Pane) InsertText(s string) Pane {
 	(&p).insertRunes([]rune(last))
 	(&p).applyHighlight()
 	return p
+}
+
+// DeleteRange removes the inclusive byte range [startCol, endCol) on the
+// current cursor row. Used by snippet expansion to remove the prefix the
+// user typed before splicing the body in. Marks dirty.
+func (p Pane) DeleteRange(row, startCol, endCol int) Pane {
+	if row < 0 || row >= len(p.buf.Lines) {
+		return p
+	}
+	line := p.buf.Lines[row]
+	if startCol < 0 {
+		startCol = 0
+	}
+	if endCol > len(line) {
+		endCol = len(line)
+	}
+	if startCol >= endCol {
+		return p
+	}
+	p.buf.Lines[row] = line[:startCol] + line[endCol:]
+	p.buf.Dirty = true
+	if p.row == row && p.col > startCol {
+		if p.col >= endCol {
+			p.col -= endCol - startCol
+		} else {
+			p.col = startCol
+		}
+	}
+	p.bufVer++
+	(&p).applyHighlight()
+	return p
+}
+
+// ExpandSnippet replaces the prefix [prefixStart, p.col) on the cursor row
+// with exp.Text and enters snippet mode. Tabstops in exp are converted from
+// byte offsets in exp.Text into (row, col) buffer coordinates; the cursor
+// lands on the first tabstop (or the final tabstop, or end of insertion).
+// If exp has no tabstops and no final, snippet mode is not entered.
+func (p Pane) ExpandSnippet(prefixStart int, exp snippets.Expansion) Pane {
+	if prefixStart < 0 {
+		prefixStart = 0
+	}
+	if prefixStart > p.col {
+		prefixStart = p.col
+	}
+	// Delete the typed prefix, then insert the body at the cursor.
+	p = p.DeleteRange(p.row, prefixStart, p.col)
+	startRow, startCol := p.row, p.col
+	p = p.InsertText(exp.Text)
+
+	convert := func(off int) (int, int) {
+		// Count newlines before off; column is bytes since last newline,
+		// or startCol + off when on the start row.
+		row := startRow
+		col := startCol
+		last := 0
+		for i := 0; i < off; i++ {
+			if exp.Text[i] == '\n' {
+				row++
+				last = i + 1
+			}
+		}
+		if row == startRow {
+			col = startCol + off
+		} else {
+			col = off - last
+		}
+		return row, col
+	}
+
+	stops := make([]SnippetTabstop, 0, len(exp.Tabstops))
+	for _, t := range exp.Tabstops {
+		r, c := convert(t.Offset)
+		stops = append(stops, SnippetTabstop{Row: r, Col: c, Length: t.Length, Index: t.Index})
+	}
+	var final *SnippetTabstop
+	if exp.Final != nil {
+		r, c := convert(exp.Final.Offset)
+		final = &SnippetTabstop{Row: r, Col: c, Length: exp.Final.Length, Index: exp.Final.Index}
+	}
+
+	p.snippetStops = stops
+	p.snippetFinal = final
+	p.snippetStopIdx = -1
+
+	switch {
+	case len(stops) > 0:
+		p.snippetMode = true
+		p.snippetStopIdx = 0
+		p.row = stops[0].Row
+		p.col = stops[0].Col
+	case final != nil:
+		p.row = final.Row
+		p.col = final.Col
+	}
+	p.extras = nil
+	p.ensureVisible()
+	return p
+}
+
+// SnippetNext advances to the next tabstop, or to the final $0 target after
+// the last, or exits snippet mode if there is no final.
+func (p Pane) SnippetNext() Pane {
+	if !p.snippetMode {
+		return p
+	}
+	next := p.snippetStopIdx + 1
+	if next < len(p.snippetStops) {
+		p.snippetStopIdx = next
+		p.row = p.snippetStops[next].Row
+		p.col = p.snippetStops[next].Col
+		p.ensureVisible()
+		return p
+	}
+	if p.snippetFinal != nil {
+		p.row = p.snippetFinal.Row
+		p.col = p.snippetFinal.Col
+		p.ensureVisible()
+	}
+	return p.SnippetExit()
+}
+
+// SnippetPrev returns to the previous tabstop. At the first stop it stays.
+func (p Pane) SnippetPrev() Pane {
+	if !p.snippetMode {
+		return p
+	}
+	prev := p.snippetStopIdx - 1
+	if prev < 0 {
+		prev = 0
+	}
+	p.snippetStopIdx = prev
+	p.row = p.snippetStops[prev].Row
+	p.col = p.snippetStops[prev].Col
+	p.ensureVisible()
+	return p
+}
+
+// SnippetExit leaves snippet mode and clears the recorded stops.
+func (p Pane) SnippetExit() Pane {
+	p.snippetMode = false
+	p.snippetStops = nil
+	p.snippetFinal = nil
+	p.snippetStopIdx = -1
+	return p
+}
+
+// InSnippetMode reports whether the pane is currently navigating tabstops.
+func (p Pane) InSnippetMode() bool { return p.snippetMode }
+
+// CurrentSnippetTabstop returns the tabstop the cursor is currently on (when
+// in snippet mode and at least one stop exists). The bool is false otherwise.
+func (p Pane) CurrentSnippetTabstop() (SnippetTabstop, bool) {
+	if !p.snippetMode {
+		return SnippetTabstop{}, false
+	}
+	if p.snippetStopIdx < 0 || p.snippetStopIdx >= len(p.snippetStops) {
+		return SnippetTabstop{}, false
+	}
+	return p.snippetStops[p.snippetStopIdx], true
 }
 
 func leadingIndent(s string) string {
@@ -850,6 +1032,21 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 	km, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return p, nil
+	}
+	// Snippet mode owns Tab, Shift+Tab, and Esc. Any other key auto-exits
+	// the mode and falls through to normal handling so the user can keep
+	// typing without an explicit Esc.
+	if p.snippetMode {
+		switch km.Type {
+		case tea.KeyTab:
+			return p.SnippetNext(), nil
+		case tea.KeyShiftTab:
+			return p.SnippetPrev(), nil
+		case tea.KeyEsc:
+			return p.SnippetExit(), nil
+		default:
+			p = p.SnippetExit()
+		}
 	}
 	switch km.Type {
 	case tea.KeyEsc:

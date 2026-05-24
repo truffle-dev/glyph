@@ -6,6 +6,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-05-24
+
+VSCode-format snippets for `nook`. Type a prefix in any buffer, hit
+`Alt+J`, and the prefix is replaced with a parsed snippet body whose
+tabstops you can cycle through with Tab / Shift+Tab. `Esc` exits
+snippet mode; any non-snippet keystroke auto-exits and falls through
+to normal editing.
+
+The shipped library covers Go (`fn`, `iferr`, `tfn`), TypeScript /
+JavaScript (`afn`, `intf`), Python (`def`, `main`), Markdown
+(`link`, `code`), Rust (`fn`), and a global scope (`todo`, `fixme`)
+keyed off the active buffer's file extension. The grammar is VSCode-
+compatible — `$1`, `${1:default}`, `$0` for the final cursor, and the
+variables `$TM_FILENAME`, `$TM_FILENAME_BASE`, `$CURRENT_YEAR`,
+`$CURRENT_DATE` — so existing snippet packs port over without
+translation.
+
+Users can drop their own VSCode snippet JSON files under
+`~/.config/nook/snippets/<scope>.json` (e.g. `go.json`, `ts.json`,
+`global.json`); the host loads them at startup and overlays them
+on top of the built-in defaults. Missing directories are silently
+skipped — first-run nook ships with sensible defaults out of the box.
+
+Why `Alt+J` and not `Tab`: Tab is already taken by ghost-text accept
+and would compete with snippet expansion the moment you both want a
+suggestion *and* a snippet expansion in the same buffer. Ctrl+J
+collapses to Enter (byte `0x0a`) in most terminals; Ctrl+Shift+V is
+reserved for paste. `Alt+J` (mnemonic: "jot") is the portable surface.
+
+### Added
+
+- `cmd/nook/internal/snippets`: VSCode-format parser + library with
+  exact-prefix lookup, scope routing by file extension, JSON
+  `LoadFile` / `LoadDir`, and a 12-entry default pack.
+- Editor-level snippet mode: `editor.Pane.ExpandSnippet`,
+  `SnippetNext`, `SnippetPrev`, `SnippetExit`, `InSnippetMode`,
+  `CurrentSnippetTabstop`, and a `SnippetTabstop` value type.
+- `Alt+J` host keybinding that resolves the prefix-before-cursor
+  against the active buffer's language scope and hands the matched
+  expansion to the editor.
+- `~/.config/nook/snippets/<scope>.json` overlay loaded at startup.
+- Help overlay entry under "Snippets" listing the four bindings.
+
 ## [0.17.0] — 2026-05-24
 
 Markdown preview pane for `nook`. Alt+V toggles a right-column preview

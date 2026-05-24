@@ -13,6 +13,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -822,5 +823,218 @@ func TestExtrasStayConsistentAfterDedup(t *testing.T) {
 	(&p).dedupCursors()
 	if len(p.extras) != 1 {
 		t.Fatalf("expected 1 extra (primary overlap dropped), got %d", len(p.extras))
+	}
+}
+
+// snippetPane constructs a focused pane with one line of content and the
+// cursor parked at the right edge (simulating the user having just typed a
+// prefix).
+func snippetPane(t *testing.T, line string) Pane {
+	t.Helper()
+	p := NewPane(theme.Default).WithSize(60, 10).Focus()
+	p, _ = p.Update(runeMsg(line))
+	return p
+}
+
+func TestExpandSnippetSingleLineNoTabstops(t *testing.T) {
+	p := snippetPane(t, "todo")
+	exp := snippets.Expansion{Text: "// TODO:", Tabstops: nil, Final: nil}
+	p = p.ExpandSnippet(0, exp)
+	if p.Line(0) != "// TODO:" {
+		t.Fatalf("line = %q", p.Line(0))
+	}
+	if p.InSnippetMode() {
+		t.Fatalf("expected no snippet mode when expansion has no tabstops or final")
+	}
+	if p.CursorCol() != len("// TODO:") {
+		t.Fatalf("cursor col = %d, expected %d", p.CursorCol(), len("// TODO:"))
+	}
+}
+
+func TestExpandSnippetPlacesCursorOnFirstTabstop(t *testing.T) {
+	p := snippetPane(t, "fn")
+	// Body: "func ${1:name}() ${2:err}" — two stops, first at byte 5
+	// (after "func "), second at byte 17 (after "func name() ").
+	exp := snippets.Expansion{
+		Text: "func name() err",
+		Tabstops: []snippets.Tabstop{
+			{Index: 1, Offset: 5, Length: 4},
+			{Index: 2, Offset: 12, Length: 3},
+		},
+	}
+	p = p.ExpandSnippet(0, exp)
+	if p.Line(0) != "func name() err" {
+		t.Fatalf("line = %q", p.Line(0))
+	}
+	if !p.InSnippetMode() {
+		t.Fatal("expected snippet mode active after expansion with tabstops")
+	}
+	if got := p.CursorCol(); got != 5 {
+		t.Fatalf("cursor col = %d, want 5", got)
+	}
+	ts, ok := p.CurrentSnippetTabstop()
+	if !ok {
+		t.Fatal("CurrentSnippetTabstop returned !ok")
+	}
+	if ts.Index != 1 || ts.Length != 4 {
+		t.Fatalf("got %+v, want index=1 length=4", ts)
+	}
+}
+
+func TestSnippetTabAdvancesAndExits(t *testing.T) {
+	p := snippetPane(t, "fn")
+	exp := snippets.Expansion{
+		Text: "func name() err",
+		Tabstops: []snippets.Tabstop{
+			{Index: 1, Offset: 5, Length: 4},
+			{Index: 2, Offset: 12, Length: 3},
+		},
+	}
+	p = p.ExpandSnippet(0, exp)
+	// Tab -> second stop
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if got := p.CursorCol(); got != 12 {
+		t.Fatalf("after first Tab cursor col = %d, want 12", got)
+	}
+	// Tab again -> exit
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if p.InSnippetMode() {
+		t.Fatal("expected snippet mode to exit after last Tab")
+	}
+}
+
+func TestSnippetTabToFinalThenExit(t *testing.T) {
+	p := snippetPane(t, "fn")
+	exp := snippets.Expansion{
+		Text: "func name() { body }",
+		Tabstops: []snippets.Tabstop{
+			{Index: 1, Offset: 5, Length: 4},
+		},
+		Final: &snippets.Tabstop{Index: 0, Offset: 13, Length: 4},
+	}
+	p = p.ExpandSnippet(0, exp)
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if p.InSnippetMode() {
+		t.Fatal("snippet mode should exit after Tab past last stop")
+	}
+	if p.CursorCol() != 13 {
+		t.Fatalf("expected cursor at final ($0) col=13, got %d", p.CursorCol())
+	}
+}
+
+func TestSnippetShiftTabReturns(t *testing.T) {
+	p := snippetPane(t, "fn")
+	exp := snippets.Expansion{
+		Text: "func name() err",
+		Tabstops: []snippets.Tabstop{
+			{Index: 1, Offset: 5, Length: 4},
+			{Index: 2, Offset: 12, Length: 3},
+		},
+	}
+	p = p.ExpandSnippet(0, exp)
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if p.CursorCol() != 12 {
+		t.Fatalf("after Tab col = %d, want 12", p.CursorCol())
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if p.CursorCol() != 5 {
+		t.Fatalf("after Shift+Tab col = %d, want 5", p.CursorCol())
+	}
+	if !p.InSnippetMode() {
+		t.Fatal("snippet mode should still be active after Shift+Tab")
+	}
+}
+
+func TestSnippetEscExits(t *testing.T) {
+	p := snippetPane(t, "fn")
+	exp := snippets.Expansion{
+		Text: "func x()",
+		Tabstops: []snippets.Tabstop{
+			{Index: 1, Offset: 5, Length: 1},
+		},
+	}
+	p = p.ExpandSnippet(0, exp)
+	if !p.InSnippetMode() {
+		t.Fatal("expected snippet mode active")
+	}
+	p, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if p.InSnippetMode() {
+		t.Fatal("Esc should exit snippet mode")
+	}
+	if cmd != nil {
+		t.Fatal("Esc in snippet mode should not emit CancelMsg")
+	}
+}
+
+func TestSnippetEditKeyAutoExits(t *testing.T) {
+	p := snippetPane(t, "fn")
+	exp := snippets.Expansion{
+		Text: "func x()",
+		Tabstops: []snippets.Tabstop{
+			{Index: 1, Offset: 5, Length: 1},
+		},
+	}
+	p = p.ExpandSnippet(0, exp)
+	p, _ = p.Update(runeMsg("y"))
+	if p.InSnippetMode() {
+		t.Fatal("typing a rune should exit snippet mode")
+	}
+	// And the rune was inserted at the tabstop position.
+	if !strings.Contains(p.Line(0), "func yx()") {
+		t.Fatalf("expected 'y' inserted at tabstop col, got %q", p.Line(0))
+	}
+}
+
+func TestExpandSnippetDeletesPrefix(t *testing.T) {
+	p := snippetPane(t, "tdo")
+	// User cursor sits at col=3 ("tdo|"); prefix start at 0; expansion replaces.
+	exp := snippets.Expansion{Text: "// TODO:"}
+	p = p.ExpandSnippet(0, exp)
+	if p.Line(0) != "// TODO:" {
+		t.Fatalf("line = %q (expected prefix to be removed)", p.Line(0))
+	}
+}
+
+func TestExpandSnippetMultilineRowsAreCorrect(t *testing.T) {
+	p := snippetPane(t, "iferr")
+	// Body has a newline; first tabstop on row 1 at col 1.
+	// Text bytes:           0         1
+	//             0123456789012345678901
+	//             "if err != nil {\n\treturn err\n}"
+	// Offsets used:   3 (err),  24 (err in return).
+	exp := snippets.Expansion{
+		Text: "if err != nil {\n\treturn err\n}",
+		Tabstops: []snippets.Tabstop{
+			{Index: 1, Offset: 3, Length: 3},  // first "err" on row 0
+			{Index: 2, Offset: 24, Length: 3}, // second "err" on row 1
+		},
+	}
+	p = p.ExpandSnippet(0, exp)
+	if p.LineCount() != 3 {
+		t.Fatalf("expected 3 lines after multiline snippet, got %d: %v", p.LineCount(), p.Lines())
+	}
+	if got := p.CursorRow(); got != 0 {
+		t.Fatalf("cursor row = %d, want 0 (first tabstop)", got)
+	}
+	if got := p.CursorCol(); got != 3 {
+		t.Fatalf("cursor col = %d, want 3", got)
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if got := p.CursorRow(); got != 1 {
+		t.Fatalf("after Tab cursor row = %d, want 1", got)
+	}
+	if got := p.CursorCol(); got != 8 {
+		t.Fatalf("after Tab cursor col = %d, want 8", got)
+	}
+}
+
+func TestDeleteRangeRemovesBytes(t *testing.T) {
+	p := snippetPane(t, "abcdef")
+	p = p.DeleteRange(0, 1, 4)
+	if p.Line(0) != "aef" {
+		t.Fatalf("DeleteRange line = %q, want 'aef'", p.Line(0))
+	}
+	if p.CursorCol() != 3 {
+		t.Fatalf("CursorCol = %d, want 3 (was 6, removed 3)", p.CursorCol())
 	}
 }

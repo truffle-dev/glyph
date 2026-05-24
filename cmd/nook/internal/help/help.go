@@ -102,6 +102,12 @@ func Default() []Section {
 			{"tab", "Accept ghost-text suggestion"},
 			{"esc", "Dismiss ghost text"},
 		}},
+		{Name: "Snippets", Bindings: []Binding{
+			{"alt+j", "Expand snippet at cursor"},
+			{"tab", "Next tabstop (while in snippet mode)"},
+			{"shift+tab", "Previous tabstop (while in snippet mode)"},
+			{"esc", "Exit snippet mode"},
+		}},
 		{Name: "Language server", Bindings: []Binding{
 			{"alt+i", "Hover info for symbol under cursor"},
 			{"ctrl+]", "Go to definition"},

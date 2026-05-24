@@ -19,6 +19,7 @@
 //	ctrl+`     terminal pane
 //	ctrl+s     save current buffer
 //	alt+i      LSP hover info for symbol under cursor
+//	alt+j      expand snippet at cursor (Tab cycles tabstops, Esc exits)
 //	alt+y      toggle gopls inlay hints (type annotations, parameter names)
 //	ctrl+]     LSP go to definition
 //	ctrl+space LSP completion popup (↑/↓ to navigate, enter to accept)
@@ -79,6 +80,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tabbar"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/term"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/welcome"
@@ -231,6 +233,12 @@ type model struct {
 	// tabWidth is the editor's hard-tab expansion. Sourced from config at
 	// startup and reload; forwarded to bufman and lookup.FormattingCmd.
 	tabWidth int
+
+	// snipLib is the snippet library. Seeded with the builtin defaults at
+	// startup and topped up from ~/.config/nook/snippets/<scope>.json when
+	// the user has placed their own. Alt+J looks up the prefix-before-cursor
+	// against the active buffer's language scope.
+	snipLib snippets.Library
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -298,6 +306,11 @@ func newModel(root string) model {
 
 	t, themeOK := resolveTheme(cfg.Editor.Theme)
 	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
+	snipLib := snippets.LoadDefaults()
+	if home, err := os.UserHomeDir(); err == nil {
+		// Best-effort overlay; missing dir is not an error.
+		_ = snipLib.LoadDir(filepath.Join(home, ".config", "nook", "snippets"))
+	}
 	// The welcome card carries the full keymap; the status bar just nudges
 	// new users toward the help overlay. Once a file is open, callers
 	// overwrite m.status with feedback for whatever they just did.
@@ -340,6 +353,7 @@ func newModel(root string) model {
 		cfgPath:      cfgPath,
 		themeName:    cfg.Editor.Theme,
 		tabWidth:     cfg.Editor.TabWidth,
+		snipLib:      snipLib,
 	}
 }
 
@@ -1235,6 +1249,12 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.refreshInlayHintsCmd()
 			}
 			return m, nil
+		case 'j':
+			// Alt+j expands a VSCode-format snippet whose prefix the user has
+			// just typed. Tab (collides with ghost-text accept), Ctrl+J (most
+			// terminals collapse to Enter), and Ctrl+Shift+V (terminal paste)
+			// are all unsuitable; alt+j is the portable surface. Mnemonic: "jot".
+			return m.expandSnippetAtCursor()
 		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
@@ -2321,6 +2341,55 @@ func (m model) toggleMdPreview() (tea.Model, tea.Cmd) {
 	m.right = rightPreview
 	m = m.resize()
 	m.status = "preview: " + filepath.Base(p.Path())
+	return m, nil
+}
+
+// expandSnippetAtCursor looks at the word immediately before the cursor in
+// the active buffer, looks it up against the snippet library under the
+// buffer's language scope, and (if it matches) replaces the prefix with the
+// expansion. Multiple matches pick the first; the rest are reachable via
+// `nook snippets list` (future surface).
+func (m model) expandSnippetAtCursor() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil {
+		m.status = "open a file first"
+		return m, nil
+	}
+	row := p.CursorRow()
+	col := p.CursorCol()
+	line := p.Line(row)
+	if col < 0 || col > len(line) {
+		return m, nil
+	}
+	prefix := snippets.PrefixAt(line[:col])
+	if prefix == "" {
+		m.status = "snippet: place cursor after a word prefix"
+		return m, nil
+	}
+	scope := snippets.ScopeFor(p.Path())
+	hits := m.snipLib.Lookup(scope, prefix)
+	if len(hits) == 0 {
+		m.status = "snippet: no match for " + prefix
+		return m, nil
+	}
+	vars := snippets.DefaultVariables()
+	if path := p.Path(); path != "" {
+		base := filepath.Base(path)
+		vars.Filename = base
+		vars.FilenameBase = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	exp, err := snippets.Expand(hits[0].Body, vars)
+	if err != nil {
+		m.status = "snippet: " + err.Error()
+		return m, nil
+	}
+	prefixStart := col - len(prefix)
+	*p = p.ExpandSnippet(prefixStart, exp)
+	if p.InSnippetMode() {
+		m.status = "snippet: " + hits[0].Name + " — Tab to advance, Esc to exit"
+	} else {
+		m.status = "snippet: " + hits[0].Name
+	}
 	return m, nil
 }
 
