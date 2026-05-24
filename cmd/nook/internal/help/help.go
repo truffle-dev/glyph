@@ -73,6 +73,13 @@ func Default() []Section {
 			{"enter", "Insert newline"},
 			{"tab", "Insert tab (or accept ghost text)"},
 		}},
+		{Name: "Multi-cursor", Bindings: []Binding{
+			{"ctrl+d", "Add cursor at next match of word under cursor"},
+			{"ctrl+↑", "Add cursor on row above (column edit)"},
+			{"ctrl+↓", "Add cursor on row below (column edit)"},
+			{"esc", "Clear extra cursors"},
+			{"any movement", "Collapse to primary cursor"},
+		}},
 		{Name: "AI wedges", Bindings: []Binding{
 			{"ctrl+k", "Inline edit on current line (Haiku 4.5)"},
 			{"ctrl+l", "Multi-file composer (Sonnet 4.6)"},

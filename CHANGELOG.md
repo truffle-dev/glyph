@@ -6,6 +6,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-05-24
+
+Multi-cursor editing inside `nook`. The primary cursor at `(p.row, p.col)`
+is joined by zero or more extras (`p.extras []extraCursor`) that take
+the same edits in lockstep. `ctrl+d` finds the next whole-word
+occurrence of the identifier under the primary and adds a cursor at
+the end of that match (with buffer-end wrap). `ctrl+↑` / `ctrl+↓`
+stack a cursor on the row above / below the topmost / bottommost
+existing cursor — Zed-style column edit. `esc` clears extras without
+closing the editor; any movement key (arrows, home/end, pgup/pgdn)
+collapses to the primary.
+
+Edits at multiple cursors are processed front-to-back in `(row, col)`
+order, with each shift function (`shiftAfterInsertRunes`,
+`shiftAfterDeleteChar`, `shiftAfterInsertNewline`,
+`shiftAfterMergeWithAbove`, `shiftAfterMergeWithBelow`) keeping later
+positions consistent with the in-place buffer mutation. Insert,
+backspace, delete, enter, tab, and space all fan out across every
+cursor. `applyAtAllCursors` dedups before and after each pass so
+cursors that converge after an edit collapse naturally.
+
+### Added
+
+- `editor.Pane.AddNextMatchCursor()` — `ctrl+d`. Whole-word identifier
+  search (`isWordChar` boundary check), forward-from-latest with a
+  buffer-end wrap and head-of-latest-row tail.
+- `editor.Pane.AddCursorBelow()` / `AddCursorAbove()` — `ctrl+↓` /
+  `ctrl+↑`. Stacks the new cursor at the primary's column, clamped to
+  the target row's length.
+- `editor.Pane.ClearExtraCursors()`, `ExtraCursorCount()`,
+  `AllCursorPositions()` — host inspection helpers.
+- Editor key cases: `KeyCtrlD` adds next-match, `KeyCtrlUp` /
+  `KeyCtrlDown` stack vertically, `KeyEsc` clears extras when present.
+- `Multi-cursor` section in the `?` help overlay.
+
+### Changed
+
+- Edit primitives (backspace, delete, enter, tab, space, runes) now
+  branch on `len(p.extras) > 0` and dispatch to
+  `backspaceAllCursors`, `delForwardAllCursors`, `newlineAllCursors`,
+  or `insertRunesAllCursors`. Single-cursor paths are unchanged.
+- Movement keys (arrows, home, end, ctrl+a, ctrl+e, pgup, pgdn) clear
+  extras before applying — explicit collapse on any cursor motion.
+- `renderHighlightedRow` now takes `cursorCols []int` and a separate
+  `primaryCol int`. Every extra cursor on a visible row paints a
+  cursor cell; ghost-text rendering stays anchored to the primary.
+
 ## [0.11.0] — 2026-05-24
 
 Per-line git gutter inside `nook`. Each row in the editor now carries a

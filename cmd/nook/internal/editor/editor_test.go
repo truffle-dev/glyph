@@ -535,3 +535,292 @@ func TestMatchesForRowFiltersByRow(t *testing.T) {
 		t.Errorf("expected active -1, got %d", active)
 	}
 }
+
+// paneWithBuffer constructs a pane whose buffer is the given lines and whose
+// primary cursor is at (row, col). Used to seed multi-cursor tests.
+func paneWithBuffer(lines []string, row, col int) Pane {
+	p := NewPane(theme.Default).WithSize(80, 20).Focus()
+	p.buf.Lines = append([]string{}, lines...)
+	p.row = row
+	p.col = col
+	return p
+}
+
+func TestAddCursorBelowAndAbove(t *testing.T) {
+	p := paneWithBuffer([]string{"foo", "bar", "baz"}, 0, 2)
+	p = p.AddCursorBelow()
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("expected 1 extra cursor after AddCursorBelow, got %d", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	if all[1].Row != 1 || all[1].Col != 2 {
+		t.Errorf("expected extra at (1,2), got (%d,%d)", all[1].Row, all[1].Col)
+	}
+	p = p.AddCursorBelow()
+	if p.ExtraCursorCount() != 2 {
+		t.Fatalf("expected 2 extras after second AddCursorBelow, got %d", p.ExtraCursorCount())
+	}
+	// At bottom — no-op.
+	p = p.AddCursorBelow()
+	if p.ExtraCursorCount() != 2 {
+		t.Errorf("AddCursorBelow at bottom should be no-op, got %d extras", p.ExtraCursorCount())
+	}
+
+	// AddCursorAbove from row 2 cursor.
+	p2 := paneWithBuffer([]string{"foo", "bar", "baz"}, 2, 1)
+	p2 = p2.AddCursorAbove()
+	if p2.ExtraCursorCount() != 1 {
+		t.Fatalf("expected 1 extra after AddCursorAbove, got %d", p2.ExtraCursorCount())
+	}
+	all2 := p2.AllCursorPositions()
+	if all2[1].Row != 1 || all2[1].Col != 1 {
+		t.Errorf("expected extra at (1,1), got (%d,%d)", all2[1].Row, all2[1].Col)
+	}
+	// At top — no-op.
+	p3 := paneWithBuffer([]string{"foo"}, 0, 0)
+	p3 = p3.AddCursorAbove()
+	if p3.ExtraCursorCount() != 0 {
+		t.Errorf("AddCursorAbove at top should be no-op, got %d extras", p3.ExtraCursorCount())
+	}
+}
+
+func TestAddCursorBelowClampsCol(t *testing.T) {
+	p := paneWithBuffer([]string{"longer line", "ab"}, 0, 7)
+	p = p.AddCursorBelow()
+	all := p.AllCursorPositions()
+	if all[1].Row != 1 || all[1].Col != 2 {
+		t.Errorf("expected extra clamped to (1,2), got (%d,%d)", all[1].Row, all[1].Col)
+	}
+}
+
+func TestAddNextMatchCursorFindsAndWraps(t *testing.T) {
+	p := paneWithBuffer([]string{"foo bar foo", "baz foo", "qux"}, 0, 1) // primary inside "foo"
+	p = p.AddNextMatchCursor()
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("expected 1 extra after first AddNext, got %d", p.ExtraCursorCount())
+	}
+	// Next forward match: "foo" on row 0 starts at col 8, ends at 11.
+	all := p.AllCursorPositions()
+	if all[1].Row != 0 || all[1].Col != 11 {
+		t.Errorf("expected extra at (0,11), got (%d,%d)", all[1].Row, all[1].Col)
+	}
+	p = p.AddNextMatchCursor()
+	if p.ExtraCursorCount() != 2 {
+		t.Fatalf("expected 2 extras after second AddNext, got %d", p.ExtraCursorCount())
+	}
+	// Next forward from (0,11): "foo" on row 1 starts at col 4, ends at 7.
+	all = p.AllCursorPositions()
+	if all[2].Row != 1 || all[2].Col != 7 {
+		t.Errorf("expected extra at (1,7), got (%d,%d)", all[2].Row, all[2].Col)
+	}
+}
+
+func TestAddNextMatchCursorWholeWordOnly(t *testing.T) {
+	p := paneWithBuffer([]string{"foo foobar foo"}, 0, 1)
+	p = p.AddNextMatchCursor()
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("expected 1 extra, got %d", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	// Should skip "foobar" and find "foo" at col 11 (end at 14).
+	if all[1].Row != 0 || all[1].Col != 14 {
+		t.Errorf("expected extra at (0,14), got (%d,%d)", all[1].Row, all[1].Col)
+	}
+}
+
+func TestAddNextMatchCursorEmptyWordNoOp(t *testing.T) {
+	p := paneWithBuffer([]string{"  foo"}, 0, 0)
+	p = p.AddNextMatchCursor()
+	if p.ExtraCursorCount() != 0 {
+		t.Errorf("AddNextMatchCursor with no word under cursor should be no-op, got %d extras", p.ExtraCursorCount())
+	}
+}
+
+func TestMultiCursorInsertRunes(t *testing.T) {
+	p := paneWithBuffer([]string{"foo", "bar", "baz"}, 0, 0)
+	p = p.AddCursorBelow().AddCursorBelow()
+	p, _ = p.Update(runeMsg("X"))
+	if p.Line(0) != "Xfoo" || p.Line(1) != "Xbar" || p.Line(2) != "Xbaz" {
+		t.Fatalf("expected X-prefix on all rows, got %v", p.Lines())
+	}
+	// Primary advanced to col 1; extras also at col 1 of their rows.
+	if p.CursorCol() != 1 {
+		t.Errorf("expected primary col 1, got %d", p.CursorCol())
+	}
+	for _, e := range p.AllCursorPositions()[1:] {
+		if e.Col != 1 {
+			t.Errorf("expected extra col 1, got %d", e.Col)
+		}
+	}
+}
+
+func TestMultiCursorInsertSameRowAdvancesBoth(t *testing.T) {
+	p := paneWithBuffer([]string{"abcdef"}, 0, 2) // primary between b and c
+	// Add extra at (0,5).
+	p.extras = append(p.extras, extraCursor{Row: 0, Col: 5})
+	p, _ = p.Update(runeMsg("Z"))
+	// First (sorted): edit at (0,2) → "abZcdef". Shift extra (0,5) → (0,6).
+	// Second: edit at (0,6) → "abZcdeZf". Final positions: primary (0,3), extra (0,7).
+	if p.Line(0) != "abZcdeZf" {
+		t.Fatalf("expected 'abZcdeZf', got %q", p.Line(0))
+	}
+	all := p.AllCursorPositions()
+	// All positions sorted to verify both cursors landed correctly.
+	wantPrimary := CursorPos{Row: 0, Col: 3}
+	wantExtra := CursorPos{Row: 0, Col: 7}
+	if all[0] != wantPrimary {
+		t.Errorf("primary: want %+v, got %+v", wantPrimary, all[0])
+	}
+	if all[1] != wantExtra {
+		t.Errorf("extra: want %+v, got %+v", wantExtra, all[1])
+	}
+}
+
+func TestMultiCursorBackspaceSameRowDeletesTwoChars(t *testing.T) {
+	p := paneWithBuffer([]string{"abcdef"}, 0, 3)            // between c and d
+	p.extras = append(p.extras, extraCursor{Row: 0, Col: 6}) // at EOL
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	// Delete char at col 2 ('c') and col 5 ('f'). Line becomes "abdef" -> "abde".
+	if p.Line(0) != "abde" {
+		t.Fatalf("expected 'abde', got %q", p.Line(0))
+	}
+}
+
+func TestMultiCursorNewlineSplitsAllRows(t *testing.T) {
+	p := paneWithBuffer([]string{"foo", "bar"}, 0, 2)
+	p = p.AddCursorBelow()
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Each cursor splits its row at col 2. row0 → "fo"+"o", row1 → "ba"+"r".
+	want := []string{"fo", "o", "ba", "r"}
+	if len(p.Lines()) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %v", len(p.Lines()), p.Lines())
+	}
+	for i, w := range want {
+		if p.Line(i) != w {
+			t.Errorf("line %d: want %q, got %q", i, w, p.Line(i))
+		}
+	}
+}
+
+func TestMultiCursorBackspaceMergeIsConsistent(t *testing.T) {
+	// Both extras at col 0 of non-zero rows. Each backspace should merge with prev row.
+	p := paneWithBuffer([]string{"foo", "bar", "baz"}, 1, 0)
+	p.extras = append(p.extras, extraCursor{Row: 2, Col: 0})
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	// After both merges: one line "foobarbaz".
+	if len(p.Lines()) != 1 {
+		t.Fatalf("expected 1 line after two merges, got %d: %v", len(p.Lines()), p.Lines())
+	}
+	if p.Line(0) != "foobarbaz" {
+		t.Errorf("expected 'foobarbaz', got %q", p.Line(0))
+	}
+}
+
+func TestEscClearsExtras(t *testing.T) {
+	p := paneWithBuffer([]string{"foo", "bar"}, 0, 0)
+	p = p.AddCursorBelow()
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("setup: expected 1 extra")
+	}
+	p, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if p.ExtraCursorCount() != 0 {
+		t.Errorf("Esc should clear extras, got %d", p.ExtraCursorCount())
+	}
+	if cmd != nil {
+		t.Errorf("Esc with extras should not emit CancelMsg")
+	}
+
+	// Second Esc: no extras → emits CancelMsg.
+	p, cmd = p.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatalf("Esc with no extras should emit CancelMsg")
+	}
+	if _, ok := cmd().(CancelMsg); !ok {
+		t.Errorf("expected CancelMsg, got %T", cmd())
+	}
+}
+
+func TestMovementClearsExtras(t *testing.T) {
+	p := paneWithBuffer([]string{"foo", "bar", "baz"}, 0, 1)
+	p = p.AddCursorBelow().AddCursorBelow()
+	if p.ExtraCursorCount() != 2 {
+		t.Fatalf("setup: expected 2 extras")
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if p.ExtraCursorCount() != 0 {
+		t.Errorf("KeyRight should clear extras, got %d", p.ExtraCursorCount())
+	}
+
+	p = paneWithBuffer([]string{"foo", "bar"}, 0, 0).AddCursorBelow()
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if p.ExtraCursorCount() != 0 {
+		t.Errorf("KeyDown should clear extras")
+	}
+}
+
+func TestCtrlDAddsNextMatch(t *testing.T) {
+	p := paneWithBuffer([]string{"foo bar foo"}, 0, 1) // primary inside "foo"
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("Ctrl+D should add a cursor, got %d extras", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	if all[1].Col != 11 {
+		t.Errorf("expected extra at col 11, got %d", all[1].Col)
+	}
+}
+
+func TestCtrlUpDownStacks(t *testing.T) {
+	p := paneWithBuffer([]string{"foo", "bar", "baz"}, 1, 1)
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("Ctrl+Down should add an extra, got %d", p.ExtraCursorCount())
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
+	if p.ExtraCursorCount() != 2 {
+		t.Fatalf("Ctrl+Up should add another extra, got %d", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	rows := map[int]bool{}
+	for _, c := range all {
+		rows[c.Row] = true
+	}
+	if !rows[0] || !rows[1] || !rows[2] {
+		t.Errorf("expected cursors on all 3 rows, got rows %v", rows)
+	}
+}
+
+func TestViewRendersMultipleCursors(t *testing.T) {
+	p := paneWithBuffer([]string{"foo", "bar", "baz"}, 0, 1) // primary at (0,1)
+	p = p.AddCursorBelow().AddCursorBelow()                  // extras at (1,1), (2,1)
+	out := p.View()
+	// Confirm every cursor row's content is present in plain text.
+	plainOut := plain(out)
+	for _, want := range []string{"foo", "bar", "baz"} {
+		if !strings.Contains(plainOut, want) {
+			t.Errorf("expected View output to contain %q, got plain:\n%s", want, plainOut)
+		}
+	}
+	// Confirm cursor styling escape is present in the output (3 cursor cells).
+	// Count occurrences of the cursor-bg color region; with 3 cursors there
+	// should be at least 3 inverse-background renders.
+	if !strings.Contains(out, "\x1b[") {
+		t.Errorf("expected ANSI styling in output")
+	}
+}
+
+func TestExtrasStayConsistentAfterDedup(t *testing.T) {
+	p := paneWithBuffer([]string{"foo"}, 0, 0)
+	// Manually add two extras at the same position; dedup should collapse.
+	p.extras = []extraCursor{{Row: 0, Col: 2}, {Row: 0, Col: 2}}
+	(&p).dedupCursors()
+	if len(p.extras) != 1 {
+		t.Fatalf("expected 1 extra after dedup, got %d", len(p.extras))
+	}
+	// Adding extra at primary's position should also collapse.
+	p.extras = append(p.extras, extraCursor{Row: 0, Col: 0})
+	(&p).dedupCursors()
+	if len(p.extras) != 1 {
+		t.Fatalf("expected 1 extra (primary overlap dropped), got %d", len(p.extras))
+	}
+}

@@ -1,18 +1,20 @@
 // Package editor is nook's minimal file viewer/editor pane.
 //
-// MVP scope: a read-mostly buffer with insert/delete editing, cursor
-// movement, scroll, save. Syntax highlighting is intentionally deferred
-// (chroma is heavy and we'd rather earn it). Selections, search, undo,
-// and multi-cursor are deferred to Phase 2.
-//
 // Buffer is line-oriented (a []string of lines). Coordinates are
 // 0-based internally; the gutter renders 1-based line numbers.
+//
+// Multi-cursor model: the primary cursor lives at (p.row, p.col) and
+// additional cursors in p.extras. Movement keys collapse to the primary;
+// edit primitives (insertRunes, insertNewline, delBack, delForward) apply
+// at every cursor in ascending position order, shifting later positions
+// after each edit. See applyAtAllCursors.
 package editor
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -131,6 +133,24 @@ type Pane struct {
 	// gets a stronger style than the rest.
 	searchMatches []Range
 	searchCurrent int
+
+	// extras are additional editing cursors beyond the primary (p.row, p.col).
+	// Editing operations apply at the primary AND at every extra; movement
+	// keys collapse extras to the primary. See applyAtAllCursors.
+	extras []extraCursor
+}
+
+// extraCursor is an additional editing cursor beyond the primary at
+// (Pane.row, Pane.col).
+type extraCursor struct {
+	Row int
+	Col int
+}
+
+// CursorPos is an exported (Row, Col) pair used by AllCursorPositions.
+type CursorPos struct {
+	Row int
+	Col int
 }
 
 // Range is a byte-range mark inside a single row (used for search matches).
@@ -452,16 +472,320 @@ func (p Pane) ApplySave() Pane {
 }
 
 func (p *Pane) ensureVisible() {
+	p.scrollToShow(p.row)
+}
+
+// scrollToShow adjusts p.offset so that the given row is within the visible
+// window, used by multi-cursor add operations to follow the newest cursor.
+func (p *Pane) scrollToShow(row int) {
 	visible := p.height - 1
 	if visible < 1 {
 		visible = 1
 	}
-	if p.row < p.offset {
-		p.offset = p.row
+	if row < p.offset {
+		p.offset = row
 	}
-	if p.row >= p.offset+visible {
-		p.offset = p.row - visible + 1
+	if row >= p.offset+visible {
+		p.offset = row - visible + 1
 	}
+}
+
+// ExtraCursorCount returns the number of editing cursors beyond the primary.
+func (p Pane) ExtraCursorCount() int { return len(p.extras) }
+
+// AllCursorPositions returns the primary cursor followed by extras in the
+// order they were added. Sorted by position is NOT guaranteed; use this for
+// tests and inspection, not for edit logic.
+func (p Pane) AllCursorPositions() []CursorPos {
+	out := make([]CursorPos, 0, len(p.extras)+1)
+	out = append(out, CursorPos{Row: p.row, Col: p.col})
+	for _, e := range p.extras {
+		out = append(out, CursorPos{Row: e.Row, Col: e.Col})
+	}
+	return out
+}
+
+// ClearExtraCursors removes every cursor beyond the primary.
+func (p Pane) ClearExtraCursors() Pane {
+	p.extras = nil
+	return p
+}
+
+// AddCursorBelow appends an extra cursor on the row below the bottommost
+// existing cursor at the primary cursor's column. No-op when the bottommost
+// cursor is already on the last line.
+func (p Pane) AddCursorBelow() Pane {
+	maxRow := p.row
+	for _, e := range p.extras {
+		if e.Row > maxRow {
+			maxRow = e.Row
+		}
+	}
+	if maxRow >= len(p.buf.Lines)-1 {
+		return p
+	}
+	target := maxRow + 1
+	col := p.col
+	if max := len(p.buf.Lines[target]); col > max {
+		col = max
+	}
+	p.extras = append(p.extras, extraCursor{Row: target, Col: col})
+	(&p).dedupCursors()
+	(&p).scrollToShow(target)
+	return p
+}
+
+// AddCursorAbove appends an extra cursor on the row above the topmost existing
+// cursor at the primary cursor's column. No-op at the top of the file.
+func (p Pane) AddCursorAbove() Pane {
+	minRow := p.row
+	for _, e := range p.extras {
+		if e.Row < minRow {
+			minRow = e.Row
+		}
+	}
+	if minRow <= 0 {
+		return p
+	}
+	target := minRow - 1
+	col := p.col
+	if max := len(p.buf.Lines[target]); col > max {
+		col = max
+	}
+	p.extras = append(p.extras, extraCursor{Row: target, Col: col})
+	(&p).dedupCursors()
+	(&p).scrollToShow(target)
+	return p
+}
+
+// AddNextMatchCursor finds the next whole-word occurrence of the word under
+// the primary cursor (searching forward from the latest existing cursor and
+// wrapping to the top of the buffer if needed) and adds an extra cursor at
+// the end of that match. No-op when there is no word at the primary cursor
+// or no other occurrence in the buffer.
+func (p Pane) AddNextMatchCursor() Pane {
+	if p.row < 0 || p.row >= len(p.buf.Lines) {
+		return p
+	}
+	word := wordAt(p.buf.Lines[p.row], p.col)
+	if word == "" {
+		return p
+	}
+	latestRow, latestCol := p.row, p.col
+	for _, e := range p.extras {
+		if e.Row > latestRow || (e.Row == latestRow && e.Col > latestCol) {
+			latestRow, latestCol = e.Row, e.Col
+		}
+	}
+	add := func(r, c int) Pane {
+		p.extras = append(p.extras, extraCursor{Row: r, Col: c})
+		(&p).dedupCursors()
+		(&p).scrollToShow(r)
+		return p
+	}
+	// Search forward from the latest cursor.
+	for r := latestRow; r < len(p.buf.Lines); r++ {
+		off := 0
+		if r == latestRow {
+			off = latestCol
+		}
+		if idx := indexWholeWord(p.buf.Lines[r], word, off); idx >= 0 {
+			return add(r, idx+len(word))
+		}
+	}
+	// Wrap.
+	for r := 0; r < latestRow; r++ {
+		if idx := indexWholeWord(p.buf.Lines[r], word, 0); idx >= 0 {
+			return add(r, idx+len(word))
+		}
+	}
+	// And the head of latestRow up to latestCol.
+	if latestCol > 0 {
+		if idx := indexWholeWord(p.buf.Lines[latestRow][:latestCol], word, 0); idx >= 0 {
+			return add(latestRow, idx+len(word))
+		}
+	}
+	return p
+}
+
+// allCursorsSorted returns every cursor position (primary + extras) sorted by
+// (row, col) ascending. The parallel idxMap maps back to -1 for the primary
+// or extras index for each extra.
+func (p *Pane) allCursorsSorted() (positions []CursorPos, idxMap []int) {
+	type entry struct {
+		pos CursorPos
+		idx int
+	}
+	entries := []entry{{CursorPos{Row: p.row, Col: p.col}, -1}}
+	for i, e := range p.extras {
+		entries = append(entries, entry{CursorPos{Row: e.Row, Col: e.Col}, i})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].pos.Row != entries[j].pos.Row {
+			return entries[i].pos.Row < entries[j].pos.Row
+		}
+		return entries[i].pos.Col < entries[j].pos.Col
+	})
+	positions = make([]CursorPos, len(entries))
+	idxMap = make([]int, len(entries))
+	for i, e := range entries {
+		positions[i] = e.pos
+		idxMap[i] = e.idx
+	}
+	return positions, idxMap
+}
+
+// setCursorByIdx writes pos back to either the primary cursor (idx==-1) or
+// the extra at p.extras[idx].
+func (p *Pane) setCursorByIdx(idx int, pos CursorPos) {
+	if idx == -1 {
+		p.row = pos.Row
+		p.col = pos.Col
+		return
+	}
+	p.extras[idx].Row = pos.Row
+	p.extras[idx].Col = pos.Col
+}
+
+// dedupCursors removes any extra cursor that coincides with the primary or
+// with a preceding extra. Preserves insertion order of the survivors.
+func (p *Pane) dedupCursors() {
+	if len(p.extras) == 0 {
+		return
+	}
+	type key struct{ Row, Col int }
+	seen := map[key]bool{{Row: p.row, Col: p.col}: true}
+	kept := p.extras[:0]
+	for _, e := range p.extras {
+		k := key{Row: e.Row, Col: e.Col}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		kept = append(kept, e)
+	}
+	p.extras = kept
+}
+
+// applyAtAllCursors processes every cursor in ascending (row, col) order. For
+// each, edit performs the edit at that cursor's CURRENT position and returns
+// the new position of that cursor plus a shift function for any later
+// position. After all edits, cursors are deduped and the buffer version is
+// bumped. The buffer's Dirty flag is set unconditionally — callers that want
+// a no-op (e.g. backspace at start of file) should still return their own
+// position and an identity shift.
+func (p *Pane) applyAtAllCursors(edit func(row, col int) (newPos CursorPos, shift func(CursorPos) CursorPos)) {
+	p.dedupCursors()
+	positions, idxMap := p.allCursorsSorted()
+	for i := 0; i < len(positions); i++ {
+		newPos, shift := edit(positions[i].Row, positions[i].Col)
+		positions[i] = newPos
+		for j := i + 1; j < len(positions); j++ {
+			positions[j] = shift(positions[j])
+		}
+	}
+	for i, pos := range positions {
+		p.setCursorByIdx(idxMap[i], pos)
+	}
+	p.dedupCursors()
+	p.buf.Dirty = true
+	p.bufVer++
+}
+
+func shiftAfterInsertRunes(c CursorPos, atRow, atCol, n int) CursorPos {
+	if c.Row != atRow || c.Col < atCol {
+		return c
+	}
+	return CursorPos{Row: c.Row, Col: c.Col + n}
+}
+
+func shiftAfterDeleteChar(c CursorPos, atRow, atCol int) CursorPos {
+	if c.Row != atRow || c.Col <= atCol {
+		return c
+	}
+	return CursorPos{Row: c.Row, Col: c.Col - 1}
+}
+
+func shiftAfterInsertNewline(c CursorPos, atRow, atCol int) CursorPos {
+	if c.Row < atRow {
+		return c
+	}
+	if c.Row > atRow {
+		return CursorPos{Row: c.Row + 1, Col: c.Col}
+	}
+	if c.Col < atCol {
+		return c
+	}
+	return CursorPos{Row: c.Row + 1, Col: c.Col - atCol}
+}
+
+func shiftAfterMergeWithAbove(c CursorPos, row, oldPrevLen int) CursorPos {
+	if c.Row < row {
+		return c
+	}
+	if c.Row == row {
+		return CursorPos{Row: row - 1, Col: oldPrevLen + c.Col}
+	}
+	return CursorPos{Row: c.Row - 1, Col: c.Col}
+}
+
+func shiftAfterMergeWithBelow(c CursorPos, row, oldRowLen int) CursorPos {
+	if c.Row <= row {
+		return c
+	}
+	if c.Row == row+1 {
+		return CursorPos{Row: row, Col: oldRowLen + c.Col}
+	}
+	return CursorPos{Row: c.Row - 1, Col: c.Col}
+}
+
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+// wordAt returns the identifier ([A-Za-z0-9_]+) surrounding col in line, or
+// "" if col is not on or adjacent to one.
+func wordAt(line string, col int) string {
+	if col < 0 {
+		col = 0
+	}
+	if col > len(line) {
+		col = len(line)
+	}
+	l := col
+	for l > 0 && isWordChar(line[l-1]) {
+		l--
+	}
+	r := col
+	for r < len(line) && isWordChar(line[r]) {
+		r++
+	}
+	if l == r {
+		return ""
+	}
+	return line[l:r]
+}
+
+// indexWholeWord searches s for word as a whole identifier (boundaries are
+// either string ends or non-word chars), starting at byte offset off.
+// Returns the byte index of the match, or -1.
+func indexWholeWord(s, word string, off int) int {
+	if word == "" || len(word) > len(s)-off {
+		// even if len(s)-off is negative; handled by loop bound below
+	}
+	for i := off; i+len(word) <= len(s); i++ {
+		if s[i:i+len(word)] != word {
+			continue
+		}
+		if i > 0 && isWordChar(s[i-1]) {
+			continue
+		}
+		if i+len(word) < len(s) && isWordChar(s[i+len(word)]) {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 // Update handles keys.
@@ -472,22 +796,39 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 	}
 	switch km.Type {
 	case tea.KeyEsc:
+		if len(p.extras) > 0 {
+			p.extras = nil
+			return p, nil
+		}
 		return p, func() tea.Msg { return CancelMsg{} }
 	case tea.KeyCtrlS:
 		return p, p.SaveCmd()
+	case tea.KeyCtrlD:
+		// Add a cursor at the end of the next whole-word match of the word
+		// under the primary cursor.
+		p = p.AddNextMatchCursor()
+	case tea.KeyCtrlUp:
+		// Stack a cursor on the row above the topmost cursor.
+		p = p.AddCursorAbove()
+	case tea.KeyCtrlDown:
+		// Stack a cursor on the row below the bottommost cursor.
+		p = p.AddCursorBelow()
 	case tea.KeyUp:
+		p.extras = nil
 		if p.row > 0 {
 			p.row--
 			p.clampCol()
 		}
 		p.ensureVisible()
 	case tea.KeyDown:
+		p.extras = nil
 		if p.row < len(p.buf.Lines)-1 {
 			p.row++
 			p.clampCol()
 		}
 		p.ensureVisible()
 	case tea.KeyLeft:
+		p.extras = nil
 		if p.col > 0 {
 			p.col--
 		} else if p.row > 0 {
@@ -496,6 +837,7 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p.ensureVisible()
 		}
 	case tea.KeyRight:
+		p.extras = nil
 		if p.col < len(p.buf.Lines[p.row]) {
 			p.col++
 		} else if p.row < len(p.buf.Lines)-1 {
@@ -504,10 +846,13 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p.ensureVisible()
 		}
 	case tea.KeyHome, tea.KeyCtrlA:
+		p.extras = nil
 		p.col = 0
 	case tea.KeyEnd, tea.KeyCtrlE:
+		p.extras = nil
 		p.col = len(p.buf.Lines[p.row])
 	case tea.KeyPgUp:
+		p.extras = nil
 		jump := p.height - 2
 		if jump < 1 {
 			jump = 1
@@ -519,6 +864,7 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 		p.clampCol()
 		p.ensureVisible()
 	case tea.KeyPgDown:
+		p.extras = nil
 		jump := p.height - 2
 		if jump < 1 {
 			jump = 1
@@ -530,17 +876,41 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 		p.clampCol()
 		p.ensureVisible()
 	case tea.KeyBackspace:
-		p.delBack()
+		if len(p.extras) > 0 {
+			(&p).backspaceAllCursors()
+		} else {
+			p.delBack()
+		}
 	case tea.KeyDelete:
-		p.delForward()
+		if len(p.extras) > 0 {
+			(&p).delForwardAllCursors()
+		} else {
+			p.delForward()
+		}
 	case tea.KeyEnter:
-		p.insertNewline()
+		if len(p.extras) > 0 {
+			(&p).newlineAllCursors()
+		} else {
+			p.insertNewline()
+		}
 	case tea.KeyTab:
-		p.insertRunes([]rune{'\t'})
+		if len(p.extras) > 0 {
+			(&p).insertRunesAllCursors([]rune{'\t'})
+		} else {
+			p.insertRunes([]rune{'\t'})
+		}
 	case tea.KeySpace:
-		p.insertRunes([]rune{' '})
+		if len(p.extras) > 0 {
+			(&p).insertRunesAllCursors([]rune{' '})
+		} else {
+			p.insertRunes([]rune{' '})
+		}
 	case tea.KeyRunes:
-		p.insertRunes(km.Runes)
+		if len(p.extras) > 0 {
+			(&p).insertRunesAllCursors(km.Runes)
+		} else {
+			p.insertRunes(km.Runes)
+		}
 	}
 	(&p).applyHighlight()
 	return p, nil
@@ -633,6 +1003,104 @@ func (p *Pane) delForward() {
 	p.bufVer++
 }
 
+// insertRunesAllCursors inserts r at every cursor in ascending order, advancing
+// each. Wraps insertRunes' core via applyAtAllCursors so later cursors stay
+// consistent with the in-place buffer mutation.
+func (p *Pane) insertRunesAllCursors(r []rune) {
+	if len(r) == 0 {
+		return
+	}
+	n := len(r)
+	s := string(r)
+	p.applyAtAllCursors(func(row, col int) (CursorPos, func(CursorPos) CursorPos) {
+		for row >= len(p.buf.Lines) {
+			p.buf.Lines = append(p.buf.Lines, "")
+		}
+		line := p.buf.Lines[row]
+		if col > len(line) {
+			col = len(line)
+		}
+		p.buf.Lines[row] = line[:col] + s + line[col:]
+		return CursorPos{Row: row, Col: col + n}, func(other CursorPos) CursorPos {
+			return shiftAfterInsertRunes(other, row, col, n)
+		}
+	})
+	p.ensureVisible()
+}
+
+// newlineAllCursors splits the line at every cursor in ascending order. Each
+// cursor moves to column 0 of the new line below.
+func (p *Pane) newlineAllCursors() {
+	p.applyAtAllCursors(func(row, col int) (CursorPos, func(CursorPos) CursorPos) {
+		line := p.buf.Lines[row]
+		if col > len(line) {
+			col = len(line)
+		}
+		left, right := line[:col], line[col:]
+		p.buf.Lines[row] = left
+		tail := append([]string{right}, p.buf.Lines[row+1:]...)
+		p.buf.Lines = append(p.buf.Lines[:row+1], tail...)
+		return CursorPos{Row: row + 1, Col: 0}, func(other CursorPos) CursorPos {
+			return shiftAfterInsertNewline(other, row, col)
+		}
+	})
+	p.ensureVisible()
+}
+
+// backspaceAllCursors deletes the char before every cursor (or merges with the
+// previous row when at col 0). Processes ascending so later positions stay
+// consistent after each delete or merge.
+func (p *Pane) backspaceAllCursors() {
+	p.applyAtAllCursors(func(row, col int) (CursorPos, func(CursorPos) CursorPos) {
+		if col > 0 {
+			line := p.buf.Lines[row]
+			if col > len(line) {
+				col = len(line)
+			}
+			p.buf.Lines[row] = line[:col-1] + line[col:]
+			return CursorPos{Row: row, Col: col - 1}, func(other CursorPos) CursorPos {
+				return shiftAfterDeleteChar(other, row, col-1)
+			}
+		}
+		if row == 0 {
+			return CursorPos{Row: 0, Col: 0}, func(other CursorPos) CursorPos { return other }
+		}
+		prev := p.buf.Lines[row-1]
+		curr := p.buf.Lines[row]
+		oldPrevLen := len(prev)
+		p.buf.Lines[row-1] = prev + curr
+		p.buf.Lines = append(p.buf.Lines[:row], p.buf.Lines[row+1:]...)
+		return CursorPos{Row: row - 1, Col: oldPrevLen}, func(other CursorPos) CursorPos {
+			return shiftAfterMergeWithAbove(other, row, oldPrevLen)
+		}
+	})
+	p.ensureVisible()
+}
+
+// delForwardAllCursors deletes the char at every cursor (or merges row+1 when
+// at EOL). Cursors stay in place; later positions shift as needed.
+func (p *Pane) delForwardAllCursors() {
+	p.applyAtAllCursors(func(row, col int) (CursorPos, func(CursorPos) CursorPos) {
+		line := p.buf.Lines[row]
+		if col < len(line) {
+			p.buf.Lines[row] = line[:col] + line[col+1:]
+			return CursorPos{Row: row, Col: col}, func(other CursorPos) CursorPos {
+				return shiftAfterDeleteChar(other, row, col)
+			}
+		}
+		if row >= len(p.buf.Lines)-1 {
+			return CursorPos{Row: row, Col: col}, func(other CursorPos) CursorPos { return other }
+		}
+		oldRowLen := len(line)
+		p.buf.Lines[row] = line + p.buf.Lines[row+1]
+		p.buf.Lines = append(p.buf.Lines[:row+1], p.buf.Lines[row+2:]...)
+		return CursorPos{Row: row, Col: col}, func(other CursorPos) CursorPos {
+			return shiftAfterMergeWithBelow(other, row, oldRowLen)
+		}
+	})
+	p.ensureVisible()
+}
+
 // View renders the pane.
 func (p Pane) View() string {
 	t := p.theme
@@ -661,6 +1129,18 @@ func (p Pane) View() string {
 	contentWidth := p.width - gw - 2
 	if contentWidth < 1 {
 		contentWidth = 1
+	}
+
+	// Group every cursor (primary + extras) by row so renderHighlightedRow can
+	// paint one cell per cursor. Cursor cols are kept sorted ascending; the
+	// primary cursor's col is tracked separately so the ghost-text preview is
+	// anchored to the primary.
+	cursorsByRow := map[int][]int{p.row: {p.col}}
+	for _, e := range p.extras {
+		cursorsByRow[e.Row] = append(cursorsByRow[e.Row], e.Col)
+	}
+	for r := range cursorsByRow {
+		sort.Ints(cursorsByRow[r])
 	}
 
 	var rows []string
@@ -699,17 +1179,19 @@ func (p Pane) View() string {
 		spans := p.spans.Spans(i)
 		marks, activeIdx := p.matchesForRow(i)
 		var line string
-		if i == p.row {
-			// Budget the visible characters first, then style. We allow the
-			// ghost preview to consume the remaining width after the prefix.
-			cursorCol := p.col
+		cols, hasCursors := cursorsByRow[i]
+		if hasCursors {
+			primaryCol := -1
 			ghost := ""
-			if p.ghostText != "" && p.focused {
-				ghost = p.ghostText
+			if i == p.row {
+				primaryCol = p.col
+				if p.ghostText != "" && p.focused {
+					ghost = p.ghostText
+				}
 			}
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, cursorCol, ghost, contentWidth, t, true)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, cols, primaryCol, ghost, contentWidth, t, true)
 		} else {
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, -1, "", contentWidth, t, false)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", contentWidth, t, false)
 		}
 		rows = append(rows, gut+marker+" "+line)
 	}
@@ -873,7 +1355,13 @@ func (p Pane) matchesForRow(row int) ([]Range, int) {
 	return out, active
 }
 
-func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCol int, ghost string, width int, t theme.Theme, drawCursor bool) string {
+// renderHighlightedRow renders a single buffer row with syntax spans, optional
+// cursor cells, optional ghost-text suffix, tab expansion (\t -> 4 spaces), and
+// width clipping. cursorCols is a sorted-ascending slice of RAW byte columns;
+// each gets a cursor cell. primaryCol is the byte col of the primary cursor on
+// this row (or -1 if not on this row) — used to anchor ghost-text rendering.
+// drawCursor disables all cursor cells when false (rows without any cursor).
+func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCols []int, primaryCol int, ghost string, width int, t theme.Theme, drawCursor bool) string {
 	cur := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary)
 	muted := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true)
 	// matchBG is the dim highlight applied to every match on the row;
@@ -940,22 +1428,39 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	}
 	rawToExpStart[len(raw)] = len(expanded)
 
-	// Convert raw cursor col to a display column (rune index in expanded).
-	dispCursor := -1
+	// Convert each raw cursor col to a display column (rune index in expanded).
+	// dispCursorSet allows fast lookup during the rune emit loop; dispPrimary is
+	// tracked separately so the ghost-text suffix is anchored to the primary
+	// cursor only.
+	dispCursorSet := make(map[int]bool)
+	dispPrimary := -1
+	cursorAtEnd := false
 	if drawCursor {
-		if cursorCol < 0 {
-			cursorCol = 0
+		for _, c := range cursorCols {
+			if c < 0 {
+				c = 0
+			}
+			var dc int
+			if c >= len(raw) {
+				dc = len(expanded)
+				cursorAtEnd = true
+			} else {
+				dc = rawToExpStart[c]
+			}
+			dispCursorSet[dc] = true
 		}
-		if cursorCol >= len(raw) {
-			dispCursor = len(expanded)
-		} else {
-			dispCursor = rawToExpStart[cursorCol]
+		if primaryCol >= 0 {
+			if primaryCol >= len(raw) {
+				dispPrimary = len(expanded)
+			} else {
+				dispPrimary = rawToExpStart[primaryCol]
+			}
 		}
 	}
 
 	ghostRunes := []rune(ghost)
-	// Width budget: visible content + (1 if endCursor) + (1 if ellipsis).
-	endCursor := drawCursor && dispCursor >= len(expanded) && len(ghostRunes) == 0
+	// Width budget: visible content + (1 if any cursor at EOL with no ghost) + (1 if ellipsis).
+	endCursor := drawCursor && cursorAtEnd && len(ghostRunes) == 0
 	totalCells := len(expanded) + len(ghostRunes)
 	if endCursor {
 		totalCells++
@@ -1025,7 +1530,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	var runKind highlight.Kind
 	var runMatch matchKind
 	for i, r := range expanded {
-		if drawCursor && i == dispCursor {
+		if drawCursor && dispCursorSet[i] {
 			flush(run, runKind, runMatch)
 			run = nil
 			b.WriteString(cur.Render(string(r)))
@@ -1045,10 +1550,11 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		run = append(run, r)
 	}
 	flush(run, runKind, runMatch)
-	// Ghost text rendered next; first rune cursor-styled if the cursor is at
-	// EOL (no rune under it), else all muted.
+	// Ghost text rendered next; first rune cursor-styled if the PRIMARY cursor
+	// is at EOL (no rune under it), else all muted. Extra cursors do not anchor
+	// ghost text.
 	if len(ghostRunes) > 0 {
-		if drawCursor && dispCursor >= len(expanded) {
+		if drawCursor && dispPrimary >= len(expanded) {
 			b.WriteString(cur.Render(string(ghostRunes[0])))
 			if len(ghostRunes) > 1 {
 				b.WriteString(muted.Render(string(ghostRunes[1:])))
@@ -1056,8 +1562,8 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		} else {
 			b.WriteString(muted.Render(string(ghostRunes)))
 		}
-	} else if drawCursor && dispCursor >= len(expanded) {
-		// Cursor at EOL with no ghost: paint a space cursor.
+	} else if drawCursor && cursorAtEnd {
+		// Any cursor at EOL with no ghost: paint a space cursor cell.
 		b.WriteString(cur.Render(" "))
 	}
 	if clipped {
