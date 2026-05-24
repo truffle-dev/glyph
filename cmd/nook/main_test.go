@@ -93,9 +93,9 @@ func TestResizeAdjustsPanes(t *testing.T) {
 	m.width = 120
 	m.height = 30
 	m = m.resize()
-	// without right pane, editor should take full width
-	if m.editor.View() == "" {
-		t.Fatal("expected non-empty editor view")
+	// Welcome card renders when no buffers are open.
+	if m.View() == "" {
+		t.Fatal("expected non-empty view")
 	}
 	m.right = rightGit
 	m = m.resize()
@@ -150,11 +150,11 @@ func TestPickerSelectOpensEditor(t *testing.T) {
 	m = m.resize()
 	updated, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: "a.go"}})
 	mm := updated.(model)
-	if mm.editor.Path() == "" {
-		t.Fatal("expected editor.Path to be set after SelectMsg")
+	if mm.activePath() == "" {
+		t.Fatal("expected active buffer path to be set after SelectMsg")
 	}
-	if !strings.HasSuffix(mm.editor.Path(), "a.go") {
-		t.Fatalf("expected a.go suffix, got %q", mm.editor.Path())
+	if !strings.HasSuffix(mm.activePath(), "a.go") {
+		t.Fatalf("expected a.go suffix, got %q", mm.activePath())
 	}
 	if mm.overlay != overlayNone {
 		t.Fatal("expected overlay cleared")
@@ -170,11 +170,11 @@ func TestSearchOpenMsgJumps(t *testing.T) {
 	path := filepath.Join(root, "sub", "b.go")
 	updated, _ := m.Update(search.OpenMsg{Path: path, Line: 3, Col: 6})
 	mm := updated.(model)
-	if mm.editor.Path() != path {
-		t.Fatalf("expected editor opened on %q, got %q", path, mm.editor.Path())
+	if mm.activePath() != path {
+		t.Fatalf("expected editor opened on %q, got %q", path, mm.activePath())
 	}
-	if mm.editor.CursorRow() != 2 {
-		t.Fatalf("expected row 2 (line 3), got %d", mm.editor.CursorRow())
+	if mm.bufs.Active().CursorRow() != 2 {
+		t.Fatalf("expected row 2 (line 3), got %d", mm.bufs.Active().CursorRow())
 	}
 }
 
@@ -281,7 +281,7 @@ func TestCtrlKOpensInlineEditWhenFileOpen(t *testing.T) {
 	m.width = 120
 	m.height = 32
 	m = m.resize()
-	m.editor = m.editor.Open(filepath.Join(root, "a.go")).Focus()
+	m.bufs.OpenOrSwitch(filepath.Join(root, "a.go"))
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	mm := updated.(model)
 	if mm.overlay != overlayInlineEdit {
@@ -295,13 +295,13 @@ func TestEditAcceptApplies(t *testing.T) {
 	m.width = 120
 	m.height = 32
 	m = m.resize()
-	m.editor = m.editor.Open(filepath.Join(root, "a.go")).Focus()
+	m.bufs.OpenOrSwitch(filepath.Join(root, "a.go"))
 	updated, _ := m.Update(edit.AcceptMsg{Path: filepath.Join(root, "a.go"), Line: 0, NewText: "package replaced"})
 	mm := updated.(model)
-	if got := mm.editor.Line(0); got != "package replaced" {
+	if got := mm.bufs.Active().Line(0); got != "package replaced" {
 		t.Fatalf("expected line replaced, got %q", got)
 	}
-	if !mm.editor.Dirty() {
+	if !mm.bufs.Active().Dirty() {
 		t.Fatal("expected dirty after edit accept")
 	}
 }
@@ -375,13 +375,13 @@ func TestGhostSuggestMsgSetsEditorGhostText(t *testing.T) {
 		Col:    7,
 		Prefix: "fmt.Pri",
 	}
-	m.editor = m.editor.Open(site.Path).Focus()
+	m.bufs.OpenOrSwitch(site.Path)
 	// Seed manager state so the message lands at the right site.
 	m.ghost.Tick(site, false, false)
 
 	updated, _ := m.Update(ghost.SuggestMsg{Site: site, Text: "ntln(\"hi\")"})
 	mm := updated.(model)
-	if got := mm.editor.GhostText(); got != "ntln(\"hi\")" {
+	if got := mm.bufs.Active().GhostText(); got != "ntln(\"hi\")" {
 		t.Fatalf("expected editor ghost text set, got %q", got)
 	}
 }
@@ -395,30 +395,32 @@ func TestGhostTabAcceptInsertsAndClears(t *testing.T) {
 	m.ghost = forceEnabledManager(t)
 
 	path := filepath.Join(root, "a.go")
-	m.editor = m.editor.Open(path).Focus()
+	m.bufs.OpenOrSwitch(path)
 	// Type "fmt.Pri" so we have a real cursor position to merge from.
 	for _, r := range "fmt.Pri" {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = updated.(model)
 	}
 	// Plant ghost-text directly (skip the AI call) by routing a SuggestMsg.
-	site := ghost.Site{Path: path, Row: m.editor.CursorRow(), Col: m.editor.CursorCol(), Prefix: m.editor.LinePrefix()}
+	pa := m.bufs.Active()
+	site := ghost.Site{Path: path, Row: pa.CursorRow(), Col: pa.CursorCol(), Prefix: pa.LinePrefix()}
 	m.ghost.Tick(site, false, false)
 	updated, _ := m.Update(ghost.SuggestMsg{Site: site, Text: "ntln(\"hi\")"})
 	m = updated.(model)
-	if m.editor.GhostText() == "" {
+	if m.bufs.Active().GhostText() == "" {
 		t.Fatal("expected ghost text planted")
 	}
 	// Press Tab.
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	mm := updated.(model)
 	// The editor row should now contain the merged line at cursor.
-	got := mm.editor.Line(mm.editor.CursorRow())
+	pp := mm.bufs.Active()
+	got := pp.Line(pp.CursorRow())
 	if !strings.HasPrefix(got, "fmt.Println(\"hi\")") {
 		t.Fatalf("expected merged line starting with fmt.Println, got %q", got)
 	}
-	if mm.editor.GhostText() != "" {
-		t.Fatalf("expected ghost text cleared after accept, got %q", mm.editor.GhostText())
+	if pp.GhostText() != "" {
+		t.Fatalf("expected ghost text cleared after accept, got %q", pp.GhostText())
 	}
 }
 
@@ -431,23 +433,24 @@ func TestGhostEscDismissesProposal(t *testing.T) {
 	m.ghost = forceEnabledManager(t)
 
 	path := filepath.Join(root, "a.go")
-	m.editor = m.editor.Open(path).Focus()
+	m.bufs.OpenOrSwitch(path)
 	for _, r := range "fmt.Pri" {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = updated.(model)
 	}
-	site := ghost.Site{Path: path, Row: m.editor.CursorRow(), Col: m.editor.CursorCol(), Prefix: m.editor.LinePrefix()}
+	pa := m.bufs.Active()
+	site := ghost.Site{Path: path, Row: pa.CursorRow(), Col: pa.CursorCol(), Prefix: pa.LinePrefix()}
 	m.ghost.Tick(site, false, false)
 	updated, _ := m.Update(ghost.SuggestMsg{Site: site, Text: "ntln(\"hi\")"})
 	m = updated.(model)
-	if m.editor.GhostText() == "" {
+	if m.bufs.Active().GhostText() == "" {
 		t.Fatal("expected ghost text planted")
 	}
 	// Esc should dismiss.
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	mm := updated.(model)
-	if mm.editor.GhostText() != "" {
-		t.Fatalf("expected ghost dismissed, got %q", mm.editor.GhostText())
+	if mm.bufs.Active().GhostText() != "" {
+		t.Fatalf("expected ghost dismissed, got %q", mm.bufs.Active().GhostText())
 	}
 }
 
@@ -551,31 +554,32 @@ func TestIsMutatingKey(t *testing.T) {
 	}
 }
 
-// TestApplyDiagnosticsToEditor confirms that a publishDiagnostics for the open
+// TestApplyDiagnosticsToActive confirms that a publishDiagnostics for the open
 // file results in a row→severity map flowing into the editor pane, with
 // error winning over warning on the same row.
-func TestApplyDiagnosticsToEditor(t *testing.T) {
+func TestApplyDiagnosticsToActive(t *testing.T) {
 	root := t.TempDir()
 	m := newModel(root)
 	path := filepath.Join(root, "x.go")
 	if err := os.WriteFile(path, []byte("package x\n\nfunc Foo() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m.editor = m.editor.Open(path).Focus()
+	m.bufs.OpenOrSwitch(path)
 
 	m.diagnostics[path] = []protocol.Diagnostic{
 		{Range: protocol.Range{Start: protocol.Position{Line: 2}}, Severity: protocol.DiagnosticSeverityWarning, Message: "warn"},
 		{Range: protocol.Range{Start: protocol.Position{Line: 2}}, Severity: protocol.DiagnosticSeverityError, Message: "err"},
 		{Range: protocol.Range{Start: protocol.Position{Line: 0}}, Severity: protocol.DiagnosticSeverityWarning, Message: "header"},
 	}
-	m = m.applyDiagnosticsToEditor()
-	if got := m.editor.DiagnosticAt(2); got != editor.SeverityError {
+	m = m.applyDiagnosticsToActive()
+	pa := m.bufs.Active()
+	if got := pa.DiagnosticAt(2); got != editor.SeverityError {
 		t.Errorf("row 2 should be Error (worst-severity wins); got %v", got)
 	}
-	if got := m.editor.DiagnosticAt(0); got != editor.SeverityWarning {
+	if got := pa.DiagnosticAt(0); got != editor.SeverityWarning {
 		t.Errorf("row 0 should be Warning; got %v", got)
 	}
-	if got := m.editor.DiagnosticAt(1); got != editor.SeverityNone {
+	if got := pa.DiagnosticAt(1); got != editor.SeverityNone {
 		t.Errorf("row 1 should be None; got %v", got)
 	}
 }
@@ -587,7 +591,7 @@ func TestDiagCounts(t *testing.T) {
 	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m.editor = m.editor.Open(path).Focus()
+	m.bufs.OpenOrSwitch(path)
 	m.diagnostics[path] = []protocol.Diagnostic{
 		{Severity: protocol.DiagnosticSeverityError, Message: "e1"},
 		{Severity: protocol.DiagnosticSeverityError, Message: "e2"},
@@ -597,5 +601,121 @@ func TestDiagCounts(t *testing.T) {
 	errs, warns := m.diagCounts()
 	if errs != 2 || warns != 1 {
 		t.Errorf("diagCounts=(%d,%d) want (2,1)", errs, warns)
+	}
+}
+
+// TestTabFlowMultipleBuffers exercises the full v0.4.0 tab story end-to-end:
+// open three buffers, walk forward/back with Alt+]/Alt+[, close with Ctrl+W,
+// and verify the welcome card returns when the last buffer closes.
+func TestTabFlowMultipleBuffers(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+
+	a := filepath.Join(root, "a.go")
+	b := filepath.Join(root, "sub", "b.go")
+	c := filepath.Join(root, "c.go")
+	if err := os.WriteFile(c, []byte("package c\n\nfunc Baz() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Open three buffers via SelectMsg (the picker path).
+	open := func(mm model, path string) model {
+		updated, _ := mm.Update(picker.SelectMsg{Item: picker.Item{Title: filepath.Base(path), Value: path}})
+		return updated.(model)
+	}
+	m = open(m, a)
+	m = open(m, b)
+	m = open(m, c)
+
+	if got := m.bufs.Count(); got != 3 {
+		t.Fatalf("Count after 3 opens = %d, want 3", got)
+	}
+	if m.bufs.ActiveIndex() != 2 {
+		t.Fatalf("active after 3 opens = %d, want 2", m.bufs.ActiveIndex())
+	}
+	if !strings.HasSuffix(m.activePath(), "c.go") {
+		t.Fatalf("active path = %q, want c.go suffix", m.activePath())
+	}
+
+	// Tab bar shows up in the rendered view.
+	if !strings.Contains(m.View(), "a.go") || !strings.Contains(m.View(), "c.go") {
+		t.Fatalf("tab bar missing basenames in view")
+	}
+
+	// Alt+] wraps from index 2 to 0.
+	upd, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}, Alt: true})
+	m = upd.(model)
+	if m.bufs.ActiveIndex() != 0 {
+		t.Fatalf("after alt+] from end, active = %d, want 0", m.bufs.ActiveIndex())
+	}
+	if !strings.HasSuffix(m.activePath(), "a.go") {
+		t.Fatalf("after alt+], path = %q, want a.go", m.activePath())
+	}
+
+	// Alt+[ wraps from 0 back to 2.
+	upd, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}, Alt: true})
+	m = upd.(model)
+	if m.bufs.ActiveIndex() != 2 {
+		t.Fatalf("after alt+[ from start, active = %d, want 2", m.bufs.ActiveIndex())
+	}
+
+	// Ctrl+W closes c.go. Falls back to b.go (the prior tab).
+	upd, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	m = upd.(model)
+	if got := m.bufs.Count(); got != 2 {
+		t.Fatalf("Count after Ctrl+W = %d, want 2", got)
+	}
+	if !strings.HasSuffix(m.activePath(), "b.go") {
+		t.Fatalf("after closing c.go, active = %q, want b.go", m.activePath())
+	}
+
+	// Close remaining two buffers; welcome card should return.
+	upd, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	m = upd.(model)
+	upd, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	m = upd.(model)
+	if m.bufs.Count() != 0 {
+		t.Fatalf("Count after closing all = %d, want 0", m.bufs.Count())
+	}
+	if m.activePath() != "" {
+		t.Fatalf("activePath after all closed = %q, want \"\"", m.activePath())
+	}
+	// Welcome card returns after the last buffer closes. The card renders
+	// the name as "n  o  o  k" with double spaces, so check the spaced form.
+	if !strings.Contains(m.View(), "n  o  o  k") {
+		t.Fatalf("welcome card missing after closing all buffers")
+	}
+}
+
+// TestTabFlowDirtyBlocksClose verifies Ctrl+W refuses to close a dirty buffer.
+func TestTabFlowDirtyBlocksClose(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+
+	a := filepath.Join(root, "a.go")
+	updated, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: a}})
+	m = updated.(model)
+
+	// Make the buffer dirty by inserting text in-place.
+	if p := m.bufs.Active(); p != nil {
+		*p = p.InsertText("x")
+	}
+	if !m.bufs.Active().Dirty() {
+		t.Fatal("expected buffer to be dirty after InsertText")
+	}
+
+	upd, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	m = upd.(model)
+	if m.bufs.Count() != 1 {
+		t.Fatalf("dirty buffer should not close, Count = %d", m.bufs.Count())
+	}
+	if !strings.Contains(m.status, "dirty") {
+		t.Fatalf("status should warn about dirty, got %q", m.status)
 	}
 }

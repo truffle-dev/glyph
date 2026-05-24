@@ -43,6 +43,11 @@ func Default() []Section {
 			{"ctrl+p", "Fuzzy file picker"},
 			{"ctrl+f", "Project-wide search"},
 			{"ctrl+s", "Save the current buffer"},
+			{"ctrl+w", "Close the current buffer"},
+		}},
+		{Name: "Buffers", Bindings: []Binding{
+			{"alt+]", "Next open buffer"},
+			{"alt+[", "Previous open buffer"},
 		}},
 		{Name: "Editing", Bindings: []Binding{
 			{"↑ ↓ ← →", "Move cursor"},

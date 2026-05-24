@@ -43,6 +43,7 @@ import (
 	"github.com/truffle-dev/glyph/components/theme"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/bufman"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
@@ -52,6 +53,7 @@ import (
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/tabbar"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/term"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/welcome"
 )
@@ -86,7 +88,7 @@ type model struct {
 	files   []string // walked once at startup; used as picker corpus
 	overlay overlay
 
-	editor   editor.Pane
+	bufs     *bufman.Manager
 	gitPane  git.Pane
 	termPane term.Pane
 	picker   picker.Picker
@@ -154,7 +156,7 @@ func newModel(root string) model {
 		root:        root,
 		width:       80,
 		height:      24,
-		editor:      editor.NewPane(t),
+		bufs:        bufman.New(t),
 		gitPane:     git.NewPane(t, root),
 		termPane:    term.NewPane(t, root),
 		picker:      picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
@@ -238,7 +240,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only overwrite the prompt status while the welcome card is
 		// showing — once a file is open, "loaded N files" would clobber
 		// useful per-action feedback.
-		if m.editor.Path() == "" {
+		if m.activePath() == "" {
 			m.status = "press ? for keymap"
 		}
 		return m, nil
@@ -246,10 +248,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case picker.SelectMsg:
 		path, _ := msg.Item.Value.(string)
 		full := filepath.Join(m.root, path)
-		m.editor = m.editor.Open(full).Focus()
+		_, action := m.bufs.OpenOrSwitch(full)
 		m.overlay = overlayNone
-		m.status = "opened " + path
-		m = m.applyDiagnosticsToEditor()
+		m = m.resize()
+		switch action {
+		case bufman.Switched:
+			m.status = "switched to " + path
+		default:
+			m.status = "opened " + path
+		}
+		m = m.applyDiagnosticsToActive()
 		return m, m.ensureLSPForFile(full)
 
 	case picker.CancelMsg:
@@ -260,13 +268,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.status = "save failed: " + msg.Err.Error()
 		} else {
-			m.editor = m.editor.ApplySave()
+			if p := m.bufs.Active(); p != nil {
+				*p = p.ApplySave()
+			}
 			m.status = "saved " + msg.Path
 		}
 		return m, m.refreshGitCmd()
 
 	case editor.CancelMsg:
-		m.editor = m.editor.Blur()
+		if p := m.bufs.Active(); p != nil {
+			*p = p.Blur()
+		}
 		return m, nil
 
 	case search.MatchMsg:
@@ -279,11 +291,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case search.OpenMsg:
-		m.editor = m.editor.Open(msg.Path).JumpTo(msg.Line, msg.Col).Focus()
+		m.bufs.OpenOrSwitch(msg.Path)
+		if p := m.bufs.Active(); p != nil {
+			*p = p.JumpTo(msg.Line, msg.Col).Focus()
+		}
 		m.search = m.search.Blur()
 		m.overlay = overlayNone
+		m = m.resize()
 		m.status = fmt.Sprintf("opened %s:%d:%d", msg.Path, msg.Line, msg.Col)
-		m = m.applyDiagnosticsToEditor()
+		m = m.applyDiagnosticsToActive()
 		return m, m.ensureLSPForFile(msg.Path)
 
 	case search.CancelMsg:
@@ -368,14 +384,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.termPumpCmd(msg.ch)
 
 	case edit.AcceptMsg:
-		m.editor = m.editor.SetLine(msg.Line, msg.NewText).Focus()
+		if p := m.bufs.Active(); p != nil {
+			*p = p.SetLine(msg.Line, msg.NewText).Focus()
+		}
 		m.overlay = overlayNone
 		m.status = fmt.Sprintf("ai edit applied at line %d", msg.Line+1)
 		return m, nil
 
 	case edit.CancelMsg:
 		m.overlay = overlayNone
-		m.editor = m.editor.Focus()
+		if p := m.bufs.Active(); p != nil {
+			*p = p.Focus()
+		}
 		return m, nil
 
 	case composer.ApplyMsg:
@@ -395,13 +415,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case composer.CancelMsg:
 		m.composer = m.composer.Blur()
 		m.right = rightNone
-		m.editor = m.editor.Focus()
+		if p := m.bufs.Active(); p != nil {
+			*p = p.Focus()
+		}
 		m = m.resize()
 		return m, nil
 
 	case ghost.SuggestMsg:
 		cmd := m.ghost.Update(msg)
-		m.editor = m.editor.SetGhostText(m.ghost.Proposal())
+		if p := m.bufs.Active(); p != nil {
+			*p = p.SetGhostText(m.ghost.Proposal())
+		}
 		return m, cmd
 
 	case lspStartedMsg:
@@ -416,9 +440,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmds []tea.Cmd
 		cmds = append(cmds, m.lspPumpCmd(m.lsp.Diagnostics()))
-		if isGoFile(m.editor.Path()) {
-			m.lspVersions[m.editor.Path()] = 1
-			cmds = append(cmds, m.lspOpenCmd(m.editor.Path(), m.editor.Contents()))
+		if p := m.bufs.Active(); p != nil && isGoFile(p.Path()) {
+			m.lspVersions[p.Path()] = 1
+			cmds = append(cmds, m.lspOpenCmd(p.Path(), p.Contents()))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -427,8 +451,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if path != "" {
 			m.diagnostics[path] = msg.Items
 		}
-		if m.editor.Path() == path {
-			m = m.applyDiagnosticsToEditor()
+		if m.activePath() == path {
+			m = m.applyDiagnosticsToActive()
 		}
 		var cmd tea.Cmd
 		if m.lsp != nil {
@@ -471,9 +495,7 @@ func (m model) applyComposerEdit(e composer.Edit) (tea.Model, tea.Cmd) {
 		m.status = "write failed: " + err.Error()
 		return m, nil
 	}
-	if m.editor.Path() == abs {
-		m.editor = m.editor.Open(abs)
-	}
+	m.bufs.RefreshIfOpen(abs)
 	m.status = "wrote " + e.Path
 	return m, nil
 }
@@ -521,6 +543,31 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openInlineEdit()
 	case tea.KeyCtrlL:
 		return m.toggleComposer()
+	case tea.KeyCtrlW:
+		return m.closeActiveTab()
+	}
+	// Alt+] / Alt+[ cycle through open buffers. bubbletea surfaces Alt as
+	// km.Alt with the modified key in km.Runes when KeyRunes; for "]" with
+	// alt the type is KeyRunes and km.Alt is true.
+	if km.Alt && km.Type == tea.KeyRunes && len(km.Runes) == 1 {
+		switch km.Runes[0] {
+		case ']':
+			m.bufs.Next()
+			m = m.resize()
+			m = m.applyDiagnosticsToActive()
+			if p := m.bufs.Active(); p != nil {
+				m.status = "switched to " + filepath.Base(p.Path())
+			}
+			return m, nil
+		case '[':
+			m.bufs.Prev()
+			m = m.resize()
+			m = m.applyDiagnosticsToActive()
+			if p := m.bufs.Active(); p != nil {
+				m.status = "switched to " + filepath.Base(p.Path())
+			}
+			return m, nil
+		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
 	if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '`' {
@@ -529,7 +576,7 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ? opens the help overlay. We only honor it when no file is open or
 	// the editor isn't actively absorbing keystrokes — otherwise the user's
 	// typing a question mark into their source file and that wins.
-	if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '?' && m.editor.Path() == "" {
+	if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '?' && m.activePath() == "" {
 		m.overlay = overlayHelp
 		return m, nil
 	}
@@ -566,35 +613,39 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.termPane, cmd = m.termPane.Update(km)
 		return m, cmd
 	}
-	// Default to editor
-	if !m.editor.Focused() {
-		m.editor = m.editor.Focus()
+	// Default to editor — only routes if there's an active buffer.
+	p := m.bufs.Active()
+	if p == nil {
+		return m, nil
+	}
+	if !p.Focused() {
+		*p = p.Focus()
 	}
 
 	// Ghost-text key handling: Tab accepts a pending proposal; Esc dismisses
 	// it (and doesn't propagate). Any other key invalidates the current
 	// proposal but otherwise falls through.
-	if m.editor.Path() != "" && m.ghost.Enabled() {
-		if km.Type == tea.KeyTab && m.editor.GhostText() != "" {
+	if p.Path() != "" && m.ghost.Enabled() {
+		if km.Type == tea.KeyTab && p.GhostText() != "" {
 			text := m.ghost.Accept()
-			m.editor = m.editor.InsertText(text).SetGhostText("")
+			*p = p.InsertText(text).SetGhostText("")
 			m.status = "ghost accepted"
 			return m, nil
 		}
-		if km.Type == tea.KeyEsc && m.editor.GhostText() != "" {
+		if km.Type == tea.KeyEsc && p.GhostText() != "" {
 			m.ghost.Dismiss()
-			m.editor = m.editor.SetGhostText("")
+			*p = p.SetGhostText("")
 			return m, nil
 		}
 		// Any other key clears the pending proposal — it's stale now.
-		if m.editor.GhostText() != "" {
+		if p.GhostText() != "" {
 			m.ghost.Dismiss()
-			m.editor = m.editor.SetGhostText("")
+			*p = p.SetGhostText("")
 		}
 	}
 
 	var cmd tea.Cmd
-	m.editor, cmd = m.editor.Update(km)
+	*p, cmd = p.Update(km)
 
 	cmds := []tea.Cmd{}
 	if cmd != nil {
@@ -602,10 +653,10 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	// If the keypress mutated the buffer and gopls is running for a Go file,
 	// publish a didChange so diagnostics stay live as the user types.
-	if m.lsp != nil && isGoFile(m.editor.Path()) && isMutatingKey(km.Type) {
-		v := m.lspVersions[m.editor.Path()] + 1
-		m.lspVersions[m.editor.Path()] = v
-		cmds = append(cmds, m.lspChangeCmd(m.editor.Path(), v, m.editor.Contents()))
+	if m.lsp != nil && isGoFile(p.Path()) && isMutatingKey(km.Type) {
+		v := m.lspVersions[p.Path()] + 1
+		m.lspVersions[p.Path()] = v
+		cmds = append(cmds, m.lspChangeCmd(p.Path(), v, p.Contents()))
 	}
 	// After the editor state changes, ask ghost whether to schedule a request.
 	if tcmd := m.scheduleGhost(); tcmd != nil {
@@ -639,14 +690,15 @@ func (m model) scheduleGhost() tea.Cmd {
 	if m.ghost == nil || !m.ghost.Enabled() {
 		return nil
 	}
-	if m.editor.Path() == "" {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
 		return nil
 	}
 	site := ghost.Site{
-		Path:   m.editor.Path(),
-		Row:    m.editor.CursorRow(),
-		Col:    m.editor.CursorCol(),
-		Prefix: m.editor.LinePrefix(),
+		Path:   p.Path(),
+		Row:    p.CursorRow(),
+		Col:    p.CursorCol(),
+		Prefix: p.LinePrefix(),
 	}
 	// Suppress while an overlay is up.
 	suppress := m.overlay != overlayNone || (m.right == rightComposer && m.composer.Focused())
@@ -654,16 +706,17 @@ func (m model) scheduleGhost() tea.Cmd {
 }
 
 func (m model) openInlineEdit() (tea.Model, tea.Cmd) {
-	if m.editor.Path() == "" {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
 		m.status = "open a file first (ctrl+p)"
 		return m, nil
 	}
-	row := m.editor.CursorRow()
-	original := m.editor.Line(row)
-	m.editPane = m.editPane.Open(m.editor.Path(), row, original)
+	row := p.CursorRow()
+	original := p.Line(row)
+	m.editPane = m.editPane.Open(p.Path(), row, original)
 	m.editPane = m.editPane.WithSize(min(70, m.width-4), 10)
 	m.overlay = overlayInlineEdit
-	m.editor = m.editor.Blur()
+	*p = p.Blur()
 	return m, nil
 }
 
@@ -671,23 +724,52 @@ func (m model) toggleComposer() (tea.Model, tea.Cmd) {
 	if m.right == rightComposer {
 		m.right = rightNone
 		m.composer = m.composer.Blur()
-		m.editor = m.editor.Focus()
+		if p := m.bufs.Active(); p != nil {
+			*p = p.Focus()
+		}
 		m = m.resize()
 		return m, nil
 	}
 	// Snap context onto the composer.
 	ctx := composer.Context{
-		Root:     m.root,
-		Files:    m.files,
-		OpenPath: m.editor.Path(),
+		Root:  m.root,
+		Files: m.files,
 	}
-	if m.editor.Path() != "" {
-		ctx.OpenContents = m.editor.Contents()
+	if p := m.bufs.Active(); p != nil && p.Path() != "" {
+		ctx.OpenPath = p.Path()
+		ctx.OpenContents = p.Contents()
 	}
 	m.composer = m.composer.WithContext(ctx).Focus()
 	m.right = rightComposer
 	m = m.resize()
 	return m, nil
+}
+
+// closeActiveTab closes the active buffer (Ctrl+W). Dirty buffers stay
+// open with a warning; the user must save first or hit Ctrl+S then Ctrl+W.
+// We also send lsp.Close so gopls drops the document.
+func (m model) closeActiveTab() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil {
+		return m, nil
+	}
+	if p.Dirty() {
+		m.status = "buffer dirty — save first (ctrl+s)"
+		return m, nil
+	}
+	path := m.bufs.CloseActive()
+	delete(m.lspVersions, path)
+	delete(m.diagnostics, path)
+	var cmd tea.Cmd
+	if m.lsp != nil && isGoFile(path) {
+		cmd = m.lspCloseCmd(path)
+	}
+	if path != "" {
+		m.status = "closed " + filepath.Base(path)
+	}
+	m = m.resize()
+	m = m.applyDiagnosticsToActive()
+	return m, cmd
 }
 
 func min(a, b int) int {
@@ -843,6 +925,7 @@ func (m model) resize() model {
 		return m
 	}
 	// Layout:
+	// - tab bar (1 row) when at least one buffer is open
 	// - top: workspace (editor) + right (git/term/diff if active)
 	// - bottom: status bar
 	leftW := m.width
@@ -858,7 +941,10 @@ func (m model) resize() model {
 		leftW = m.width - rightW - 1
 	}
 	bodyH := m.height - 2
-	m.editor = m.editor.WithSize(leftW, bodyH)
+	if m.bufs.Count() > 0 {
+		bodyH-- // reserve a row for the tab bar
+	}
+	m.bufs.WithSize(leftW, bodyH)
 	m.gitPane = m.gitPane.WithSize(rightW, bodyH)
 	m.termPane = m.termPane.WithSize(rightW, bodyH)
 	m.composer = m.composer.WithSize(rightW, bodyH)
@@ -891,7 +977,13 @@ func (m model) View() string {
 	}
 
 	left := m.renderMainColumn()
+
+	tabBar := m.renderTabBar()
+
 	if m.right == rightNone {
+		if tabBar != "" {
+			return lipgloss.JoinVertical(lipgloss.Left, tabBar, left, statusBar)
+		}
 		return lipgloss.JoinVertical(lipgloss.Left, left, statusBar)
 	}
 
@@ -907,13 +999,24 @@ func (m model) View() string {
 		right = m.composer.View()
 	}
 
-	sep := strings.Repeat(string('│'), m.height-2)
-	sep = lipgloss.NewStyle().Foreground(t.Border).Render(strings.ReplaceAll(sep, "", ""))
-	// build a vertical bar
-	bar := lipgloss.NewStyle().Foreground(t.Border).Render(strings.Repeat("│\n", m.height-2))
-	_ = sep
+	bodyH := m.height - 2
+	if tabBar != "" {
+		bodyH--
+	}
+	bar := lipgloss.NewStyle().Foreground(t.Border).Render(strings.Repeat("│\n", bodyH))
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, bar, right)
+	if tabBar != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, tabBar, body, statusBar)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
+}
+
+// renderTabBar returns the styled tab strip or "" when no buffers are open.
+func (m model) renderTabBar() string {
+	if m.bufs.Count() == 0 {
+		return ""
+	}
+	return tabbar.View(m.theme, m.bufs.Tabs(), m.bufs.ActiveIndex(), m.width)
 }
 
 // renderMainColumn returns the editor pane, OR the welcome card when no
@@ -925,14 +1028,14 @@ func (m model) renderMainColumn() string {
 		w, h := m.editorSize()
 		return welcome.View(m.theme, m.welcomeInfo(), w, h)
 	}
-	return m.editor.View()
+	return m.bufs.Active().View()
 }
 
-// shouldShowWelcome is true when no file is open and the editor buffer
-// is still pristine. Once the user opens any file, even if they close it
-// later, we drop back to the regular editor view (the path stays set).
+// shouldShowWelcome is true when there are no open buffers. Closing the last
+// buffer is symmetric with first-run: the welcome card returns. This drives
+// the user back to ctrl+P naturally.
 func (m model) shouldShowWelcome() bool {
-	return m.editor.Path() == ""
+	return m.bufs.Count() == 0
 }
 
 // editorSize returns the dimensions allocated to the editor pane. The
@@ -950,6 +1053,9 @@ func (m model) editorSize() (int, int) {
 		leftW = m.width - rightW - 1
 	}
 	bodyH := m.height - 2
+	if m.bufs.Count() > 0 {
+		bodyH--
+	}
 	return leftW, bodyH
 }
 
@@ -968,9 +1074,10 @@ func (m model) welcomeInfo() welcome.Info {
 
 // renderStatusBar builds the bottom-of-screen status line. Layout:
 //
-//	<status hint> · <project name> · <pos | dirty> · <diag>
+//	<status hint> · <project name> · <tab count> · <pos | dirty> · <diag>
 //
-// The project segment grounds the user in where they are; the pos+dirty
+// The project segment grounds the user in where they are; the tab counter
+// (only shown when count > 1) signals other open buffers; the pos+dirty
 // segment tells them which line they're on and whether they've saved;
 // the diag segment surfaces LSP error/warning counts when present.
 func (m model) renderStatusBar() string {
@@ -985,10 +1092,14 @@ func (m model) renderStatusBar() string {
 		parts = append(parts, muted.Render(name))
 	}
 
-	if m.editor.Path() != "" {
-		pos := fmt.Sprintf("L%d:%d", m.editor.CursorRow()+1, m.editor.CursorCol()+1)
+	if n := m.bufs.Count(); n > 1 {
+		parts = append(parts, muted.Render(fmt.Sprintf("%d/%d", m.bufs.ActiveIndex()+1, n)))
+	}
+
+	if p := m.bufs.Active(); p != nil && p.Path() != "" {
+		pos := fmt.Sprintf("L%d:%d", p.CursorRow()+1, p.CursorCol()+1)
 		seg := muted.Render(pos)
-		if m.editor.Dirty() {
+		if p.Dirty() {
 			seg += " " + dirty.Render("●")
 		}
 		parts = append(parts, seg)
@@ -1007,6 +1118,15 @@ func (m model) renderStatusBar() string {
 		Width(m.width).
 		Padding(0, 1).
 		Render(statusText)
+}
+
+// activePath returns the path of the active buffer, or "" if no buffer is
+// open. Convenience for the many sites that gate on path-presence.
+func (m model) activePath() string {
+	if p := m.bufs.Active(); p != nil {
+		return p.Path()
+	}
+	return ""
 }
 
 func centerOverlay(w, h int, body string) string {
@@ -1071,8 +1191,12 @@ func (m *model) ensureLSPForFile(path string) tea.Cmd {
 		return nil
 	}
 	if m.lsp != nil {
+		contents := ""
+		if p := m.bufs.Active(); p != nil && p.Path() == path {
+			contents = p.Contents()
+		}
 		m.lspVersions[path] = 1
-		return m.lspOpenCmd(path, m.editor.Contents())
+		return m.lspOpenCmd(path, contents)
 	}
 	if m.lspStarting {
 		return nil
@@ -1080,6 +1204,17 @@ func (m *model) ensureLSPForFile(path string) tea.Cmd {
 	m.lspStarting = true
 	m.status = "starting gopls…"
 	return m.startLSPCmd()
+}
+
+// lspCloseCmd sends a didClose so gopls drops the document.
+func (m model) lspCloseCmd(path string) tea.Cmd {
+	cli := m.lsp
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = cli.Close(ctx, path)
+		return nil
+	}
 }
 
 // startLSPCmd spawns gopls with the project root.
@@ -1125,16 +1260,16 @@ func (m model) lspPumpCmd(events <-chan nooklsp.DiagnosticsEvent) tea.Cmd {
 	}
 }
 
-// applyDiagnosticsToEditor pushes the row→severity map for the open file to
-// the editor pane so gutter rendering branches by severity.
-func (m model) applyDiagnosticsToEditor() model {
-	if m.editor.Path() == "" {
-		m.editor = m.editor.SetDiagnosticRows(nil)
+// applyDiagnosticsToActive pushes the row→severity map for the active buffer
+// to its editor pane so gutter rendering branches by severity.
+func (m model) applyDiagnosticsToActive() model {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
 		return m
 	}
-	items := m.diagnostics[m.editor.Path()]
+	items := m.diagnostics[p.Path()]
 	if len(items) == 0 {
-		m.editor = m.editor.SetDiagnosticRows(nil)
+		*p = p.SetDiagnosticRows(nil)
 		return m
 	}
 	rows := map[int]editor.Severity{}
@@ -1145,7 +1280,7 @@ func (m model) applyDiagnosticsToEditor() model {
 			rows[row] = sev
 		}
 	}
-	m.editor = m.editor.SetDiagnosticRows(rows)
+	*p = p.SetDiagnosticRows(rows)
 	return m
 }
 
@@ -1165,9 +1300,13 @@ func mapSeverity(s protocol.DiagnosticSeverity) editor.Severity {
 	return editor.SeverityError
 }
 
-// diagCounts summarizes the open file's diagnostics for the status bar.
+// diagCounts summarizes the active buffer's diagnostics for the status bar.
 func (m model) diagCounts() (errs, warns int) {
-	for _, d := range m.diagnostics[m.editor.Path()] {
+	path := m.activePath()
+	if path == "" {
+		return 0, 0
+	}
+	for _, d := range m.diagnostics[path] {
 		switch d.Severity {
 		case protocol.DiagnosticSeverityError:
 			errs++
