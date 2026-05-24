@@ -133,7 +133,8 @@ func View(t theme.Theme, tabs []bufman.TabInfo, active, width int) string {
 // dedupLabels returns one display label per tab. The default is the
 // basename; when two tabs share the same basename, both labels get a parent
 // dir prefix so the user can tell them apart. Three-way collisions get two
-// parent dirs, etc.
+// parent dirs, etc. Labels always render with forward slashes regardless of
+// OS; the tab bar is a display surface, not a filesystem path.
 func dedupLabels(tabs []bufman.TabInfo) []string {
 	out := make([]string, len(tabs))
 	depth := 1
@@ -147,7 +148,7 @@ func dedupLabels(tabs []bufman.TabInfo) []string {
 			if start < 0 {
 				start = 0
 			}
-			return strings.Join(parts[start:], string(filepath.Separator))
+			return strings.Join(parts[start:], "/")
 		}
 		seen := map[string][]int{}
 		for i, tab := range tabs {
@@ -176,8 +177,8 @@ func splitPath(path string) []string {
 	if path == "" {
 		return nil
 	}
-	clean := filepath.Clean(path)
-	parts := strings.Split(clean, string(filepath.Separator))
+	clean := filepath.ToSlash(filepath.Clean(path))
+	parts := strings.Split(clean, "/")
 	out := parts[:0]
 	for _, p := range parts {
 		if p != "" {
