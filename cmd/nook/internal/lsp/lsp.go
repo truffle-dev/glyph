@@ -1,8 +1,9 @@
 // Package lsp drives a language-server subprocess (gopls by default) over
 // stdio and surfaces textDocument/publishDiagnostics notifications as events
-// the host can render. The wedge is intentionally narrow: open, change, close,
-// and a diagnostics channel. Completion, hover, and code-action live in
-// follow-up wedges.
+// the host can render. The wedge stays narrow: open/change/close + a
+// diagnostics channel, plus synchronous Completion/Hover/Definition lookups
+// that return friendly Go-native shapes instead of leaking LSP protocol
+// types into the editor.
 package lsp
 
 import (
@@ -121,6 +122,20 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 				PublishDiagnostics: &protocol.PublishDiagnosticsClientCapabilities{
 					RelatedInformation: true,
 				},
+				Completion: &protocol.CompletionTextDocumentClientCapabilities{
+					CompletionItem: &protocol.CompletionTextDocumentClientCapabilitiesItem{
+						SnippetSupport:          false,
+						CommitCharactersSupport: false,
+						DocumentationFormat:     []protocol.MarkupKind{protocol.PlainText, protocol.Markdown},
+					},
+					ContextSupport: true,
+				},
+				Hover: &protocol.HoverTextDocumentClientCapabilities{
+					ContentFormat: []protocol.MarkupKind{protocol.PlainText, protocol.Markdown},
+				},
+				Definition: &protocol.DefinitionTextDocumentClientCapabilities{
+					LinkSupport: false,
+				},
 			},
 		},
 		WorkspaceFolders: []protocol.WorkspaceFolder{
@@ -174,6 +189,207 @@ func (c *Client) Close(ctx context.Context, path string) error {
 // The channel never closes until Shutdown.
 func (c *Client) Diagnostics() <-chan DiagnosticsEvent {
 	return c.handler.events
+}
+
+// CompletionKind names what a completion item represents (function, variable,
+// type, etc.). The string form mirrors LSP's CompletionItemKind enum but stays
+// friendly so consumers don't import the protocol package just to switch on it.
+type CompletionKind string
+
+// Friendly aliases for the LSP CompletionItemKind enum. Anything unknown maps
+// to CompletionKindText so consumers never see an empty string.
+const (
+	CompletionKindText          CompletionKind = "text"
+	CompletionKindMethod        CompletionKind = "method"
+	CompletionKindFunction      CompletionKind = "function"
+	CompletionKindConstructor   CompletionKind = "constructor"
+	CompletionKindField         CompletionKind = "field"
+	CompletionKindVariable      CompletionKind = "variable"
+	CompletionKindClass         CompletionKind = "class"
+	CompletionKindInterface     CompletionKind = "interface"
+	CompletionKindModule        CompletionKind = "module"
+	CompletionKindProperty      CompletionKind = "property"
+	CompletionKindUnit          CompletionKind = "unit"
+	CompletionKindValue         CompletionKind = "value"
+	CompletionKindEnum          CompletionKind = "enum"
+	CompletionKindKeyword       CompletionKind = "keyword"
+	CompletionKindSnippet       CompletionKind = "snippet"
+	CompletionKindColor         CompletionKind = "color"
+	CompletionKindFile          CompletionKind = "file"
+	CompletionKindReference     CompletionKind = "reference"
+	CompletionKindFolder        CompletionKind = "folder"
+	CompletionKindEnumMember    CompletionKind = "enum-member"
+	CompletionKindConstant      CompletionKind = "constant"
+	CompletionKindStruct        CompletionKind = "struct"
+	CompletionKindEvent         CompletionKind = "event"
+	CompletionKindOperator      CompletionKind = "operator"
+	CompletionKindTypeParameter CompletionKind = "type-parameter"
+)
+
+// CompletionItem is the host-side view of one server completion entry. Label
+// is what the popup shows; InsertText is what to type into the buffer when
+// the user accepts (falls back to Label if the server didn't send one). Detail
+// is a short type-or-source string (e.g. "func(s string) int").
+type CompletionItem struct {
+	Label      string
+	InsertText string
+	Detail     string
+	Kind       CompletionKind
+}
+
+// HoverInfo carries the textual content of a hover response. Empty Contents
+// means the server returned nothing (e.g. cursor on a comment).
+type HoverInfo struct {
+	Contents string
+}
+
+// Location names a file path plus a 0-indexed line/column. Used as the result
+// of Definition.
+type Location struct {
+	Path string
+	Line int
+	Col  int
+}
+
+// Completion requests completion items at the given 0-indexed line and column.
+// Returns an empty slice (not nil) when the server has nothing to suggest, so
+// callers can `for _, item := range items` without nil-checking. Errors only
+// when the underlying RPC fails.
+func (c *Client) Completion(ctx context.Context, path string, line, col int) ([]CompletionItem, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	res, err := c.server.Completion(ctx, &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+			Position:     protocol.Position{Line: uint32(line), Character: uint32(col)},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: completion: %w", err)
+	}
+	if res == nil {
+		return []CompletionItem{}, nil
+	}
+	out := make([]CompletionItem, 0, len(res.Items))
+	for _, it := range res.Items {
+		ci := CompletionItem{
+			Label:      it.Label,
+			InsertText: it.InsertText,
+			Detail:     it.Detail,
+			Kind:       completionKindOf(it.Kind),
+		}
+		if ci.InsertText == "" {
+			ci.InsertText = it.Label
+		}
+		out = append(out, ci)
+	}
+	return out, nil
+}
+
+// Hover returns the textual hover content at the given 0-indexed line and
+// column. Empty HoverInfo (no error) when the server has nothing.
+func (c *Client) Hover(ctx context.Context, path string, line, col int) (HoverInfo, error) {
+	if c == nil || c.server == nil {
+		return HoverInfo{}, errors.New("lsp: client not initialized")
+	}
+	res, err := c.server.Hover(ctx, &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+			Position:     protocol.Position{Line: uint32(line), Character: uint32(col)},
+		},
+	})
+	if err != nil {
+		return HoverInfo{}, fmt.Errorf("lsp: hover: %w", err)
+	}
+	if res == nil {
+		return HoverInfo{}, nil
+	}
+	return HoverInfo{Contents: res.Contents.Value}, nil
+}
+
+// Definition returns target locations for the symbol at the given 0-indexed
+// line and column. Empty slice (not nil) when the server resolves nothing.
+func (c *Client) Definition(ctx context.Context, path string, line, col int) ([]Location, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	locs, err := c.server.Definition(ctx, &protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+			Position:     protocol.Position{Line: uint32(line), Character: uint32(col)},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: definition: %w", err)
+	}
+	out := make([]Location, 0, len(locs))
+	for _, l := range locs {
+		out = append(out, Location{
+			Path: uri.URI(l.URI).Filename(),
+			Line: int(l.Range.Start.Line),
+			Col:  int(l.Range.Start.Character),
+		})
+	}
+	return out, nil
+}
+
+// completionKindOf maps the LSP enum to the friendly string. Unknown values
+// (e.g. extensions) fall back to "text" so callers don't have to handle
+// empty strings.
+func completionKindOf(k protocol.CompletionItemKind) CompletionKind {
+	switch k {
+	case protocol.CompletionItemKindMethod:
+		return CompletionKindMethod
+	case protocol.CompletionItemKindFunction:
+		return CompletionKindFunction
+	case protocol.CompletionItemKindConstructor:
+		return CompletionKindConstructor
+	case protocol.CompletionItemKindField:
+		return CompletionKindField
+	case protocol.CompletionItemKindVariable:
+		return CompletionKindVariable
+	case protocol.CompletionItemKindClass:
+		return CompletionKindClass
+	case protocol.CompletionItemKindInterface:
+		return CompletionKindInterface
+	case protocol.CompletionItemKindModule:
+		return CompletionKindModule
+	case protocol.CompletionItemKindProperty:
+		return CompletionKindProperty
+	case protocol.CompletionItemKindUnit:
+		return CompletionKindUnit
+	case protocol.CompletionItemKindValue:
+		return CompletionKindValue
+	case protocol.CompletionItemKindEnum:
+		return CompletionKindEnum
+	case protocol.CompletionItemKindKeyword:
+		return CompletionKindKeyword
+	case protocol.CompletionItemKindSnippet:
+		return CompletionKindSnippet
+	case protocol.CompletionItemKindColor:
+		return CompletionKindColor
+	case protocol.CompletionItemKindFile:
+		return CompletionKindFile
+	case protocol.CompletionItemKindReference:
+		return CompletionKindReference
+	case protocol.CompletionItemKindFolder:
+		return CompletionKindFolder
+	case protocol.CompletionItemKindEnumMember:
+		return CompletionKindEnumMember
+	case protocol.CompletionItemKindConstant:
+		return CompletionKindConstant
+	case protocol.CompletionItemKindStruct:
+		return CompletionKindStruct
+	case protocol.CompletionItemKindEvent:
+		return CompletionKindEvent
+	case protocol.CompletionItemKindOperator:
+		return CompletionKindOperator
+	case protocol.CompletionItemKindTypeParameter:
+		return CompletionKindTypeParameter
+	default:
+		return CompletionKindText
+	}
 }
 
 // Shutdown sends shutdown+exit, waits briefly, then kills the process. Safe
