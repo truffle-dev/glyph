@@ -9,7 +9,9 @@
 // Keymap:
 //
 //	ctrl+p     file picker
-//	ctrl+f     project search
+//	ctrl+f     find in current buffer
+//	ctrl+h     find and replace in current buffer
+//	alt+f      project search
 //	ctrl+g     git pane
 //	ctrl+k     inline AI edit on current line (Haiku)
 //	ctrl+l     composer multi-file AI edit (Sonnet)
@@ -34,6 +36,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +54,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/finder"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/help"
@@ -76,6 +80,7 @@ const (
 	overlayHelp
 	overlayHover
 	overlayCompletion
+	overlayFinder
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -140,6 +145,10 @@ type model struct {
 	completeReqPath string
 	completeReqRow  int
 	completeReqCol  int
+
+	// In-file find/replace overlay (Ctrl+F / Ctrl+H). The host owns search
+	// execution; the finder owns input state and renders the bar.
+	finder finder.Finder
 }
 
 func main() {
@@ -194,6 +203,7 @@ func newModel(root string) model {
 		aiClient:    aiClient,
 		lspVersions: map[string]int32{},
 		diagnostics: map[string][]protocol.Diagnostic{},
+		finder:      finder.New(t),
 	}
 }
 
@@ -652,9 +662,20 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.picker = m.picker.WithFilter("")
 		return m, nil
 	case tea.KeyCtrlF:
+		// Local find inside the active buffer. If no file is open, fall back
+		// to project search so the key still does something useful.
+		if m.bufs.Active() != nil {
+			return m.openFinder(finder.ModeFind)
+		}
 		m.overlay = overlayProjectSearch
 		m.search = m.search.Reset("")
 		m.search = m.search.Focus()
+		return m, nil
+	case tea.KeyCtrlH:
+		// In-buffer find and replace. Same fallback as ctrl+f.
+		if m.bufs.Active() != nil {
+			return m.openFinder(finder.ModeReplace)
+		}
 		return m, nil
 	case tea.KeyCtrlG:
 		if m.right == rightGit {
@@ -714,6 +735,14 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, lookup.HoverCmd(m.lsp, p.Path(), p.CursorRow(), p.CursorCol())
 			}
 			return m, nil
+		case 'f':
+			// Alt+f opens project-wide search (ripgrep). Ctrl+F was reclaimed
+			// by the in-buffer finder; project search keeps the same model
+			// but moves to a less-conflicting modifier.
+			m.overlay = overlayProjectSearch
+			m.search = m.search.Reset("")
+			m.search = m.search.Focus()
+			return m, nil
 		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
@@ -740,6 +769,8 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.editPane, cmd = m.editPane.Update(km)
 		return m, cmd
+	case overlayFinder:
+		return m.routeFinder(km)
 	}
 
 	// No overlay: composer takes keys when focused
@@ -932,6 +963,187 @@ func (m *model) dismissCompletion() {
 	if m.overlay == overlayCompletion {
 		m.overlay = overlayNone
 	}
+}
+
+// openFinder opens the in-file finder over the active buffer in the requested
+// mode. The pattern is preserved across opens so users can flip find↔replace
+// without retyping.
+func (m model) openFinder(mode finder.Mode) (tea.Model, tea.Cmd) {
+	m.overlay = overlayFinder
+	m.finder = m.finder.WithSize(m.width).Open(mode)
+	m = m.resize()
+	m.refreshFinderMatches()
+	m.syncEditorToFinder()
+	return m, nil
+}
+
+// closeFinder hides the bar and clears editor match highlights.
+func (m *model) closeFinder() {
+	m.finder = m.finder.Close()
+	if p := m.bufs.Active(); p != nil {
+		*p = p.ClearSearchMatches()
+	}
+	if m.overlay == overlayFinder {
+		m.overlay = overlayNone
+	}
+	*m = m.resize()
+}
+
+// routeFinder dispatches a key event into the finder and reacts to the
+// emitted event: re-running search, jumping the editor cursor, applying
+// replacements.
+func (m model) routeFinder(km tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var ev finder.Event
+	m.finder, ev = m.finder.Update(km)
+	switch ev {
+	case finder.EventClose:
+		m.closeFinder()
+		return m, nil
+	case finder.EventPatternChanged:
+		m.refreshFinderMatches()
+		m.syncEditorToFinder()
+		return m, nil
+	case finder.EventJumpNext:
+		m.finder = m.finder.Next()
+		m.syncEditorToFinder()
+		return m, nil
+	case finder.EventJumpPrev:
+		m.finder = m.finder.Prev()
+		m.syncEditorToFinder()
+		return m, nil
+	case finder.EventReplaceCurrent:
+		return m.replaceCurrentMatch()
+	case finder.EventReplaceAll:
+		return m.replaceAllMatches()
+	}
+	m.syncEditorToFinder()
+	return m, nil
+}
+
+// refreshFinderMatches re-runs Search over the active buffer using the
+// finder's current pattern/flags and feeds the result back into the finder.
+// On pattern compile errors the error is stashed on the finder so View can
+// surface it.
+func (m *model) refreshFinderMatches() {
+	p := m.bufs.Active()
+	if p == nil {
+		m.finder = m.finder.WithMatches(nil, false)
+		return
+	}
+	lines := p.Lines()
+	ms, err := finder.Search(lines, m.finder.Pattern(), m.finder.UseRegex(), m.finder.CaseSensitive())
+	if err != nil {
+		m.finder = m.finder.WithMatches(nil, false).SetPatternErr(err)
+		return
+	}
+	m.finder = m.finder.SetPatternErr(nil).WithMatches(ms, false)
+}
+
+// syncEditorToFinder pushes the finder's match list to the active editor pane
+// for highlight rendering, and jumps the cursor to the current match.
+func (m *model) syncEditorToFinder() {
+	p := m.bufs.Active()
+	if p == nil {
+		return
+	}
+	ms := m.finder.Matches()
+	ranges := make([]editor.Range, len(ms))
+	for i, mt := range ms {
+		ranges[i] = editor.Range{Row: mt.Row, Start: mt.StartCol, End: mt.EndCol}
+	}
+	idx := m.finder.CurrentIndex()
+	updated := p.WithSearchMatches(ranges, idx)
+	if cur, ok := m.finder.CurrentMatch(); ok {
+		updated = updated.JumpTo(cur.Row+1, cur.StartCol+1)
+	}
+	*p = updated
+}
+
+// replaceCurrentMatch substitutes the currently selected match in the active
+// buffer with the finder's replacement text. After the edit, search is
+// re-run so the match list reflects the new buffer.
+func (m model) replaceCurrentMatch() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil {
+		return m, nil
+	}
+	cur, ok := m.finder.CurrentMatch()
+	if !ok {
+		return m, nil
+	}
+	var re *regexp.Regexp
+	if m.finder.UseRegex() {
+		compiled, err := finder.CompileRegex(m.finder.Pattern(), m.finder.CaseSensitive())
+		if err != nil {
+			m.finder = m.finder.SetPatternErr(err)
+			return m, nil
+		}
+		re = compiled
+	}
+	line := p.Line(cur.Row)
+	newLine := finder.ApplyReplacement(line, cur, m.finder.Replacement(), re)
+	*p = p.SetLine(cur.Row, newLine)
+
+	var cmd tea.Cmd
+	if m.lsp != nil && isGoFile(p.Path()) {
+		v := m.lspVersions[p.Path()] + 1
+		m.lspVersions[p.Path()] = v
+		cmd = m.lspChangeCmd(p.Path(), v, p.Contents())
+	}
+
+	m.refreshFinderMatches()
+	m.finder = m.finder.SelectMatchAt(cur.Row, cur.StartCol)
+	m.syncEditorToFinder()
+	m.status = "replaced 1 match"
+	return m, cmd
+}
+
+// replaceAllMatches walks every match in the buffer and substitutes them with
+// the replacement, in reverse byte order per row so column indices stay valid
+// during the rewrite.
+func (m model) replaceAllMatches() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil {
+		return m, nil
+	}
+	matches := m.finder.Matches()
+	if len(matches) == 0 {
+		return m, nil
+	}
+	var re *regexp.Regexp
+	if m.finder.UseRegex() {
+		compiled, err := finder.CompileRegex(m.finder.Pattern(), m.finder.CaseSensitive())
+		if err != nil {
+			m.finder = m.finder.SetPatternErr(err)
+			return m, nil
+		}
+		re = compiled
+	}
+	byRow := map[int][]finder.Match{}
+	for _, mt := range matches {
+		byRow[mt.Row] = append(byRow[mt.Row], mt)
+	}
+	count := 0
+	updated := *p
+	for row, rowMatches := range byRow {
+		line := updated.Line(row)
+		for i := len(rowMatches) - 1; i >= 0; i-- {
+			line = finder.ApplyReplacement(line, rowMatches[i], m.finder.Replacement(), re)
+			count++
+		}
+		updated = updated.SetLine(row, line)
+	}
+	*p = updated
+	var cmd tea.Cmd
+	if m.lsp != nil && isGoFile(p.Path()) {
+		v := m.lspVersions[p.Path()] + 1
+		m.lspVersions[p.Path()] = v
+		cmd = m.lspChangeCmd(p.Path(), v, p.Contents())
+	}
+	m.refreshFinderMatches()
+	m.syncEditorToFinder()
+	m.status = fmt.Sprintf("replaced %d matches", count)
+	return m, cmd
 }
 
 func (m model) toggleComposer() (tea.Model, tea.Cmd) {
@@ -1158,6 +1370,9 @@ func (m model) resize() model {
 	if m.bufs.Count() > 0 {
 		bodyH-- // reserve a row for the tab bar
 	}
+	if fh := m.finder.Height(); fh > 0 {
+		bodyH -= fh // reserve rows for the find/replace bar
+	}
 	m.bufs.WithSize(leftW, bodyH)
 	m.gitPane = m.gitPane.WithSize(rightW, bodyH)
 	m.termPane = m.termPane.WithSize(rightW, bodyH)
@@ -1165,6 +1380,7 @@ func (m model) resize() model {
 	m.editPane = m.editPane.WithSize(min(70, m.width-4), 10)
 	m.search = m.search.WithSize(m.width-4, m.height-6)
 	m.picker = m.picker.WithSize(m.width-8, m.height-6)
+	m.finder = m.finder.WithSize(m.width)
 	return m
 }
 
@@ -1227,11 +1443,22 @@ func (m model) View() string {
 
 	tabBar := m.renderTabBar()
 
+	var finderBar string
+	if m.finder.IsOpen() {
+		finderBar = m.finder.View()
+	}
+
 	if m.right == rightNone {
+		segments := make([]string, 0, 4)
 		if tabBar != "" {
-			return lipgloss.JoinVertical(lipgloss.Left, tabBar, left, statusBar)
+			segments = append(segments, tabBar)
 		}
-		return lipgloss.JoinVertical(lipgloss.Left, left, statusBar)
+		segments = append(segments, left)
+		if finderBar != "" {
+			segments = append(segments, finderBar)
+		}
+		segments = append(segments, statusBar)
+		return lipgloss.JoinVertical(lipgloss.Left, segments...)
 	}
 
 	var right string
@@ -1250,12 +1477,22 @@ func (m model) View() string {
 	if tabBar != "" {
 		bodyH--
 	}
+	if fh := m.finder.Height(); fh > 0 {
+		bodyH -= fh
+	}
 	bar := lipgloss.NewStyle().Foreground(t.Border).Render(strings.Repeat("│\n", bodyH))
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, bar, right)
+
+	segments := make([]string, 0, 4)
 	if tabBar != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, tabBar, body, statusBar)
+		segments = append(segments, tabBar)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
+	segments = append(segments, body)
+	if finderBar != "" {
+		segments = append(segments, finderBar)
+	}
+	segments = append(segments, statusBar)
+	return lipgloss.JoinVertical(lipgloss.Left, segments...)
 }
 
 // renderTabBar returns the styled tab strip or "" when no buffers are open.

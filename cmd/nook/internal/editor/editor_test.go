@@ -417,3 +417,59 @@ func TestDirtyIndicator(t *testing.T) {
 		t.Fatal("expected clean after ApplySave")
 	}
 }
+
+func TestWithSearchMatchesRendersBackgroundOnRow(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 8).Focus()
+	p, _ = p.Update(runeMsg("hello world hello"))
+	p = p.WithSearchMatches([]Range{
+		{Row: 0, Start: 0, End: 5},
+		{Row: 0, Start: 12, End: 17},
+	}, 0)
+	out := p.View()
+	plainOut := plain(out)
+	if !strings.Contains(plainOut, "hello world hello") {
+		t.Fatalf("plain content lost: %q", plainOut)
+	}
+	// Active match should emit some ANSI background sequence on row 0.
+	if plainOut == out {
+		t.Fatalf("expected ANSI styling, got plain text: %q", out)
+	}
+}
+
+func TestClearSearchMatches(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(40, 4)
+	p = p.WithSearchMatches([]Range{{Row: 0, Start: 0, End: 3}}, 0)
+	if len(p.SearchMatches()) != 1 {
+		t.Fatal("expected 1 match set")
+	}
+	p = p.ClearSearchMatches()
+	if len(p.SearchMatches()) != 0 {
+		t.Error("expected matches cleared")
+	}
+	if p.SearchCurrent() != -1 {
+		t.Errorf("expected current -1, got %d", p.SearchCurrent())
+	}
+}
+
+func TestMatchesForRowFiltersByRow(t *testing.T) {
+	p := NewPane(theme.Default)
+	p = p.WithSearchMatches([]Range{
+		{Row: 0, Start: 0, End: 2},
+		{Row: 2, Start: 5, End: 7},
+		{Row: 2, Start: 10, End: 12},
+	}, 2)
+	rowMatches, active := p.matchesForRow(2)
+	if len(rowMatches) != 2 {
+		t.Fatalf("expected 2 matches on row 2, got %d", len(rowMatches))
+	}
+	if active != 1 {
+		t.Errorf("expected active 1, got %d", active)
+	}
+	rowMatches, active = p.matchesForRow(1)
+	if rowMatches != nil {
+		t.Errorf("expected no matches on row 1, got %+v", rowMatches)
+	}
+	if active != -1 {
+		t.Errorf("expected active -1, got %d", active)
+	}
+}

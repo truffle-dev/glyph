@@ -41,13 +41,25 @@ func Default() []Section {
 	return []Section{
 		{Name: "Files", Bindings: []Binding{
 			{"ctrl+p", "Fuzzy file picker"},
-			{"ctrl+f", "Project-wide search"},
+			{"alt+f", "Project-wide search"},
 			{"ctrl+s", "Save the current buffer"},
 			{"ctrl+w", "Close the current buffer"},
 		}},
 		{Name: "Buffers", Bindings: []Binding{
 			{"alt+]", "Next open buffer"},
 			{"alt+[", "Previous open buffer"},
+		}},
+		{Name: "Find / Replace", Bindings: []Binding{
+			{"ctrl+f", "Find in current buffer"},
+			{"ctrl+h", "Find and replace in current buffer"},
+			{"enter / ↓", "Next match"},
+			{"↑", "Previous match"},
+			{"ctrl+r", "Replace current match"},
+			{"alt+r", "Replace all matches"},
+			{"alt+x", "Toggle regex"},
+			{"alt+c", "Toggle case-sensitive"},
+			{"tab", "Switch between find / replace field"},
+			{"esc", "Close find bar"},
 		}},
 		{Name: "Editing", Bindings: []Binding{
 			{"↑ ↓ ← →", "Move cursor"},

@@ -116,12 +116,48 @@ type Pane struct {
 	spans       highlight.Result
 	bufVer      int
 	hlVer       int
+
+	// searchMatches paints byte ranges with a background highlight; the host
+	// updates it from the finder overlay. searchCurrent is the index of the
+	// currently active match within searchMatches (or -1) so the active hit
+	// gets a stronger style than the rest.
+	searchMatches []Range
+	searchCurrent int
+}
+
+// Range is a byte-range mark inside a single row (used for search matches).
+type Range struct {
+	Row   int
+	Start int // 0-based byte column, inclusive
+	End   int // 0-based byte column, exclusive
 }
 
 // NewPane constructs an empty pane.
 func NewPane(t theme.Theme) Pane {
-	return Pane{theme: t, buf: NewBuffer(), width: 80, height: 24}
+	return Pane{theme: t, buf: NewBuffer(), width: 80, height: 24, searchCurrent: -1}
 }
+
+// WithSearchMatches stores the search matches to paint as background
+// highlights and the index of the currently active hit (or -1 for none).
+// The host calls this whenever the finder pattern or selection changes.
+func (p Pane) WithSearchMatches(matches []Range, current int) Pane {
+	p.searchMatches = matches
+	p.searchCurrent = current
+	return p
+}
+
+// ClearSearchMatches removes all highlights.
+func (p Pane) ClearSearchMatches() Pane {
+	p.searchMatches = nil
+	p.searchCurrent = -1
+	return p
+}
+
+// SearchMatches returns the current highlight set.
+func (p Pane) SearchMatches() []Range { return p.searchMatches }
+
+// SearchCurrent returns the active match index.
+func (p Pane) SearchCurrent() int { return p.searchCurrent }
 
 // WithHighlighter attaches a syntax Highlighter. Passing nil disables
 // highlighting (existing tests rely on the no-highlighter path emitting plain
@@ -167,6 +203,11 @@ func (p Pane) Line(row int) string {
 	}
 	return p.buf.Lines[row]
 }
+
+// Lines returns the full buffer as a slice of lines. Callers must treat the
+// result as read-only — mutations would corrupt the editor's syntax cache
+// and dirty flag.
+func (p Pane) Lines() []string { return p.buf.Lines }
 
 // Open replaces the buffer with the contents of path.
 func (p Pane) Open(path string) Pane {
@@ -618,6 +659,7 @@ func (p Pane) View() string {
 		}
 		raw := p.buf.Lines[i]
 		spans := p.spans.Spans(i)
+		marks, activeIdx := p.matchesForRow(i)
 		var line string
 		if i == p.row {
 			// Budget the visible characters first, then style. We allow the
@@ -627,9 +669,9 @@ func (p Pane) View() string {
 			if p.ghostText != "" && p.focused {
 				ghost = p.ghostText
 			}
-			line = renderHighlightedRow(raw, spans, cursorCol, ghost, contentWidth, t, true)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, cursorCol, ghost, contentWidth, t, true)
 		} else {
-			line = renderHighlightedRow(raw, spans, -1, "", contentWidth, t, false)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, -1, "", contentWidth, t, false)
 		}
 		rows = append(rows, gut+marker+" "+line)
 	}
@@ -762,16 +804,59 @@ func styledRow(prefix, ghost, tail []rune, col, origLen int, cur, muted lipgloss
 //     editor_test.go check for "hello", "tln", etc.).
 //   - Ghost text is rendered with the first rune cursor-styled, the rest faint.
 //   - Trailing "…" appears only when the row exceeded width.
-func renderHighlightedRow(raw string, spans []highlight.Span, cursorCol int, ghost string, width int, t theme.Theme, drawCursor bool) string {
+//
+// matchKind tags a rune as outside a match, inside a non-active match, or
+// inside the active match. Background styles vary per kind.
+type matchKind int
+
+const (
+	matchNone matchKind = iota
+	matchOther
+	matchActive
+)
+
+// matchesForRow returns the slice of Range covering row plus the index of the
+// active match within that slice (or -1 if no active match falls on row).
+func (p Pane) matchesForRow(row int) ([]Range, int) {
+	if len(p.searchMatches) == 0 {
+		return nil, -1
+	}
+	var out []Range
+	active := -1
+	for i, r := range p.searchMatches {
+		if r.Row != row {
+			continue
+		}
+		if i == p.searchCurrent {
+			active = len(out)
+		}
+		out = append(out, r)
+	}
+	return out, active
+}
+
+func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCol int, ghost string, width int, t theme.Theme, drawCursor bool) string {
 	cur := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary)
 	muted := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true)
+	// matchBG is the dim highlight applied to every match on the row;
+	// matchActiveBG is the stronger highlight on the currently-selected match.
+	matchBG := lipgloss.NewStyle().Background(t.SurfaceStrong)
+	if string(t.SurfaceStrong) == "" {
+		matchBG = lipgloss.NewStyle().Background(t.Surface)
+	}
+	matchActiveBG := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Warning).Bold(true)
+	if string(t.Warning) == "" {
+		matchActiveBG = lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary).Bold(true)
+	}
 	palette := syntaxPalette(t)
 
 	// Pre-expand tabs and build a raw-byte -> display-column index so spans
 	// and the cursor map cleanly into expanded coords. expandedRunes holds
-	// the runes we'll emit; runeKind[i] is the Kind backing expandedRunes[i].
+	// the runes we'll emit; runeKind[i] is the Kind backing expandedRunes[i];
+	// runeMatch[i] tags whether the rune is inside a finder match (and which).
 	var expanded []rune
 	var runeKind []highlight.Kind
+	var runeMatch []matchKind
 	rawToExpStart := make([]int, len(raw)+1) // raw byte offset -> first expanded rune idx
 	for i := 0; i < len(raw); i++ {
 		rawToExpStart[i] = len(expanded)
@@ -787,10 +872,24 @@ func renderHighlightedRow(raw string, spans []highlight.Span, cursorCol int, gho
 				break
 			}
 		}
+		// Compute match kind for this byte. Active match wins over Other when
+		// they overlap (matches don't normally overlap, but defensively the
+		// stronger style is the more useful default).
+		mk := matchNone
+		for j, m := range matches {
+			if i >= m.Start && i < m.End {
+				if j == activeMatch {
+					mk = matchActive
+					break
+				}
+				mk = matchOther
+			}
+		}
 		if c == '\t' {
 			for k := 0; k < 4; k++ {
 				expanded = append(expanded, ' ')
 				runeKind = append(runeKind, highlight.KindPlain)
+				runeMatch = append(runeMatch, mk)
 			}
 			continue
 		}
@@ -799,6 +898,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, cursorCol int, gho
 		// rune iteration to keep widths sane.
 		expanded = append(expanded, rune(c))
 		runeKind = append(runeKind, kind)
+		runeMatch = append(runeMatch, mk)
 	}
 	rawToExpStart[len(raw)] = len(expanded)
 
@@ -837,6 +937,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, cursorCol int, gho
 		if budget <= len(expanded) {
 			expanded = expanded[:budget]
 			runeKind = runeKind[:budget]
+			runeMatch = runeMatch[:budget]
 			ghostRunes = nil
 		} else {
 			remain := budget - len(expanded)
@@ -846,13 +947,29 @@ func renderHighlightedRow(raw string, spans []highlight.Span, cursorCol int, gho
 		}
 	}
 
-	// Emit. Batch contiguous runes of the same kind into one Style.Render call
-	// — per-rune emission inflates ANSI overhead and breaks substring asserts
-	// in tests because each rune gets surrounded by escape codes. The cursor
-	// cell breaks the run and is emitted separately.
+	// Emit. Batch contiguous runes of the same (kind, matchKind) pair into one
+	// Style.Render call — per-rune emission inflates ANSI overhead and breaks
+	// substring asserts in tests because each rune gets surrounded by escape
+	// codes. The cursor cell breaks the run and is emitted separately.
 	var b strings.Builder
-	flush := func(buf []rune, k highlight.Kind) {
+	flush := func(buf []rune, k highlight.Kind, m matchKind) {
 		if len(buf) == 0 {
+			return
+		}
+		switch m {
+		case matchActive:
+			b.WriteString(matchActiveBG.Render(string(buf)))
+			return
+		case matchOther:
+			// Layer syntax color over the match background. lipgloss styles
+			// merge cleanly when applied via Background + Foreground in one
+			// pass; pick the foreground from the syntax palette.
+			st, ok := palette[k]
+			if !ok || k == highlight.KindPlain {
+				b.WriteString(matchBG.Render(string(buf)))
+				return
+			}
+			b.WriteString(st.Background(matchBG.GetBackground()).Render(string(buf)))
 			return
 		}
 		if k == highlight.KindPlain {
@@ -868,22 +985,28 @@ func renderHighlightedRow(raw string, spans []highlight.Span, cursorCol int, gho
 	}
 	var run []rune
 	var runKind highlight.Kind
+	var runMatch matchKind
 	for i, r := range expanded {
 		if drawCursor && i == dispCursor {
-			flush(run, runKind)
+			flush(run, runKind, runMatch)
 			run = nil
 			b.WriteString(cur.Render(string(r)))
 			continue
 		}
 		k := runeKind[i]
-		if len(run) > 0 && k != runKind {
-			flush(run, runKind)
+		var m matchKind
+		if i < len(runeMatch) {
+			m = runeMatch[i]
+		}
+		if len(run) > 0 && (k != runKind || m != runMatch) {
+			flush(run, runKind, runMatch)
 			run = run[:0]
 		}
 		runKind = k
+		runMatch = m
 		run = append(run, r)
 	}
-	flush(run, runKind)
+	flush(run, runKind, runMatch)
 	// Ghost text rendered next; first rune cursor-styled if the cursor is at
 	// EOL (no rune under it), else all muted.
 	if len(ghostRunes) > 0 {

@@ -16,7 +16,7 @@ func TestDefault_CoversAllRoutedKeys(t *testing.T) {
 		}
 	}
 	mustHave := []string{
-		"ctrl+p", "ctrl+f", "ctrl+s", "ctrl+w",
+		"ctrl+p", "ctrl+f", "ctrl+h", "alt+f", "ctrl+s", "ctrl+w",
 		"alt+]", "alt+[",
 		"ctrl+k", "ctrl+l",
 		"alt+i", "ctrl+]", "ctrl+space",
