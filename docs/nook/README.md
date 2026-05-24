@@ -43,8 +43,13 @@ other languages.
 npm install -g @anthropic-ai/claude-code
 claude /login   # or set ANTHROPIC_API_KEY in your shell
 go install github.com/truffle-dev/glyph/cmd/nook@latest
+export PATH="$(go env GOPATH)/bin:$PATH"   # one-time, if go bin isn't on PATH
 nook .
 ```
+
+`go install` drops the binary into `$(go env GOPATH)/bin` (usually
+`~/go/bin`). If `nook` isn't found after install, that directory isn't on
+your PATH yet. Add it to `~/.zshrc` or `~/.bashrc` to make it permanent.
 
 nook drives its AI wedges by spawning the `claude` CLI in `--print
 --output-format stream-json` mode, so whatever auth `claude` is already
