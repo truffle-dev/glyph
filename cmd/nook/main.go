@@ -27,6 +27,7 @@
 //	f2         LSP rename symbol under cursor
 //	alt+,      reload ~/.config/nook/config.toml
 //	alt+p      workspace-wide diagnostics panel
+//	alt+t      task picker (.nook/tasks.toml or Go defaults)
 //	tab        accept ghost-text completion (when present)
 //	ctrl+q     quit
 //	esc        close overlay / blur / dismiss ghost-text
@@ -82,6 +83,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tabbar"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/tasks"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/term"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/welcome"
 )
@@ -102,6 +104,7 @@ const (
 	overlayRename
 	overlayMultibuffer
 	overlayDiagnostics
+	overlayTasks
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -239,6 +242,15 @@ type model struct {
 	// the user has placed their own. Alt+J looks up the prefix-before-cursor
 	// against the active buffer's language scope.
 	snipLib snippets.Library
+
+	// tasksPane is the alt+t overlay: a two-mode list/output picker over
+	// `.nook/tasks.toml` (with auto-defaults for Go projects). activeRunner
+	// is the currently-supervised child process; nil when no task is
+	// running. The host keeps the runner pointer so Ctrl+C / Esc in
+	// ModeOutput can kill the process and the pump goroutines can be
+	// stopped cleanly when the overlay closes.
+	tasksPane    tasks.Pane
+	activeRunner *tasks.Runner
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -354,6 +366,7 @@ func newModel(root string) model {
 		themeName:    cfg.Editor.Theme,
 		tabWidth:     cfg.Editor.TabWidth,
 		snipLib:      snipLib,
+		tasksPane:    tasks.NewPane(t, root),
 	}
 }
 
@@ -957,6 +970,64 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tasks.RunTaskMsg:
+		return m.spawnTask(msg.Task)
+
+	case tasks.StartedMsg:
+		var cmd tea.Cmd
+		m.tasksPane, cmd = m.tasksPane.Update(msg)
+		return m, cmd
+
+	case tasks.LineMsg:
+		var paneCmd tea.Cmd
+		m.tasksPane, paneCmd = m.tasksPane.Update(msg)
+		// Chain the next read so the stream keeps flowing until the
+		// channel is closed (signaled by NextLineCmd returning nil).
+		var nextCmd tea.Cmd
+		if m.activeRunner != nil && msg.RunID == m.activeRunner.ID() {
+			nextCmd = m.activeRunner.NextLineCmd()
+		}
+		return m, tea.Batch(paneCmd, nextCmd)
+
+	case tasks.ExitMsg:
+		var cmd tea.Cmd
+		m.tasksPane, cmd = m.tasksPane.Update(msg)
+		// Keep activeRunner non-nil so the pane can show the exit summary,
+		// but mark it as exited; Esc-out (CancelMsg or BackToListMsg) is
+		// what frees the slot.
+		return m, cmd
+
+	case tasks.KillMsg:
+		// Ctrl+C in ModeOutput: kill the running process but keep the
+		// overlay open so the exit summary is visible. The pane stays in
+		// ModeOutput; Esc-after-exit returns to ModeList.
+		if m.activeRunner != nil {
+			m.activeRunner.Kill()
+		}
+		return m, nil
+
+	case tasks.BackToListMsg:
+		// Esc on an exited output view: clear the runner slot and flip the
+		// pane back to its list state. The list keeps its cursor so the
+		// user can re-run the same task with Enter.
+		m.activeRunner = nil
+		m.tasksPane = m.tasksPane.BackToList()
+		return m, nil
+
+	case tasks.CancelMsg:
+		// Esc: close the overlay completely. If a task is running, kill it
+		// first so the child process doesn't outlive the UI.
+		if m.activeRunner != nil {
+			m.activeRunner.Kill()
+			m.activeRunner = nil
+		}
+		m.tasksPane = m.tasksPane.Blur()
+		m.overlay = overlayNone
+		if p := m.bufs.Active(); p != nil {
+			*p = p.Focus()
+		}
+		return m, nil
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
@@ -1255,6 +1326,12 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// terminals collapse to Enter), and Ctrl+Shift+V (terminal paste)
 			// are all unsuitable; alt+j is the portable surface. Mnemonic: "jot".
 			return m.expandSnippetAtCursor()
+		case 't':
+			// Alt+t opens the tasks overlay (analog of VSCode's tasks.json
+			// runner). Ctrl+Shift+B is the muscle-memory shortcut but every
+			// terminal collapses Ctrl+Shift+B to Ctrl+B (file tree), so alt+t
+			// is the portable surface. Mnemonic: "tasks".
+			return m.openTasksOverlay()
 		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
@@ -1290,6 +1367,10 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case overlayDiagnostics:
 		var cmd tea.Cmd
 		m.diagPane, cmd = m.diagPane.Update(km)
+		return m, cmd
+	case overlayTasks:
+		var cmd tea.Cmd
+		m.tasksPane, cmd = m.tasksPane.Update(km)
 		return m, cmd
 	}
 
@@ -2393,6 +2474,43 @@ func (m model) expandSnippetAtCursor() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openTasksOverlay loads .nook/tasks.toml (or Go defaults when missing)
+// and pops the picker. A parse error doesn't block the overlay: the pane
+// shows the error in its header and falls through to the default tasks
+// for the detected project type, so the user can still run something.
+func (m model) openTasksOverlay() (tea.Model, tea.Cmd) {
+	ts, loadErr := tasks.LoadOrDefaults(m.root)
+	pane := m.tasksPane.WithTasks(ts)
+	if loadErr != nil {
+		pane = pane.WithLoadError(loadErr)
+	}
+	m.tasksPane = pane.WithSize(m.width-4, m.height-4).Focus()
+	m.overlay = overlayTasks
+	if p := m.bufs.Active(); p != nil {
+		*p = p.Blur()
+	}
+	return m, nil
+}
+
+// spawnTask is the RunTaskMsg handler: it kills any prior runner (so the
+// pane never juggles two live processes), starts a fresh one, flips the
+// pane to ModeOutput, and batches the three streaming Cmds the pane
+// needs to learn about the run.
+func (m model) spawnTask(t tasks.Task) (tea.Model, tea.Cmd) {
+	if m.activeRunner != nil {
+		m.activeRunner.Kill()
+		m.activeRunner = nil
+	}
+	r, err := tasks.Start(context.Background(), m.root, t)
+	if err != nil {
+		m.status = "task: " + err.Error()
+		return m, nil
+	}
+	m.activeRunner = r
+	m.tasksPane = m.tasksPane.SwitchToOutput(t, r.ID())
+	return m, tea.Batch(r.StartedCmd(), r.NextLineCmd(), r.WaitCmd())
+}
+
 func (m model) toggleTerm() (tea.Model, tea.Cmd) {
 	if m.right == rightTerm {
 		m.right = rightNone
@@ -2527,6 +2645,7 @@ func (m model) resize() model {
 	m.search = m.search.WithSize(m.width-4, m.height-6)
 	m.picker = m.picker.WithSize(m.width-8, m.height-6)
 	m.multibufPane = m.multibufPane.WithSize(m.width-4, m.height-4)
+	m.tasksPane = m.tasksPane.WithSize(m.width-4, m.height-4)
 	m.finder = m.finder.WithSize(m.width)
 	if treeW > 0 {
 		m.treePane.SetSize(treeW, bodyH)
@@ -2636,6 +2755,18 @@ func (m model) View() string {
 			boxH = 6
 		}
 		pane := m.diagPane.WithSize(boxW, boxH)
+		float := centerOverlay(m.width, m.height-1, pane.View())
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlayTasks {
+		// Tasks overlay: same large-surface shape so a long output buffer
+		// from `go test ./...` doesn't fight a small float.
+		boxW := m.width - 4
+		boxH := m.height - 4
+		if boxH < 6 {
+			boxH = 6
+		}
+		pane := m.tasksPane.WithSize(boxW, boxH)
 		float := centerOverlay(m.width, m.height-1, pane.View())
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}

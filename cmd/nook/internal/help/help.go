@@ -108,6 +108,13 @@ func Default() []Section {
 			{"shift+tab", "Previous tabstop (while in snippet mode)"},
 			{"esc", "Exit snippet mode"},
 		}},
+		{Name: "Tasks", Bindings: []Binding{
+			{"alt+t", "Open task picker (.nook/tasks.toml or Go defaults)"},
+			{"↑ ↓", "Navigate tasks"},
+			{"enter", "Run the selected task"},
+			{"ctrl+c", "Kill the running task"},
+			{"esc", "Close (kills if still running)"},
+		}},
 		{Name: "Language server", Bindings: []Binding{
 			{"alt+i", "Hover info for symbol under cursor"},
 			{"ctrl+]", "Go to definition"},

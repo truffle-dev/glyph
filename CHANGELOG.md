@@ -6,6 +6,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-05-24
+
+Tasks for `nook`. Alt+T pops a picker over `.nook/tasks.toml` (a VSCode
+`tasks.json` analog rendered in TOML); Enter runs the selected task and
+flips the pane into a streaming output viewport tagged with stdout /
+stderr per-line. Ctrl+C kills the running process; Esc closes the
+overlay (and kills if a task is still live). When `.nook/tasks.toml` is
+missing, Go projects get four sensible defaults out of the box —
+`go test ./...`, `go build ./...`, `go vet ./...`, `go mod tidy` — so
+the first run on a fresh repo just works.
+
+The TOML accepts either an `[[task]]` array of tables (preferred for
+real config files) or a `tasks = [...]` inline-table array (handy for
+one-liners), and every task supports a `name`, `command`, `args`,
+optional `cwd` (resolved relative to the project root), `description`,
+and a `[task.env]` table for per-task environment overrides. Malformed
+config surfaces in the pane header but doesn't block the overlay —
+the user still sees the default tasks and can run one while they fix
+their TOML.
+
+Why Alt+T and not Ctrl+Shift+B: every terminal collapses Ctrl+Shift+B
+to Ctrl+B, which is nook's file-tree toggle. Alt+T (mnemonic: "tasks")
+is the portable surface — same shape as the alt+m / alt+p / alt+v /
+alt+y bindings already in the keymap.
+
+### Added
+
+- `cmd/nook/internal/tasks`: TOML loader with `[[task]]` and `tasks=[]`
+  forms, `Defaults` for Go projects, `LoadOrDefaults` with graceful
+  fallback when config is missing or malformed.
+- `tasks.Runner`: `exec.CommandContext`-backed supervisor with stdout /
+  stderr streaming via 1 MB-buffered `bufio.Scanner`, monotonic run-ID
+  for stale-message discarding, env overrides, and project-root-relative
+  `Cwd` resolution.
+- `tasks.Pane`: two-mode overlay (`ModeList` picker + `ModeOutput`
+  streaming viewport) with output buffer ring-capped at 4 000 lines,
+  per-stream colors, scrollback (PgUp / PgDn / Home / End), and a
+  status-colored exit summary.
+- `Alt+T` host keybinding that loads tasks at open time so on-disk
+  edits are picked up between invocations without a restart.
+- Help overlay entry under "Tasks" listing the five bindings.
+
 ## [0.18.0] — 2026-05-24
 
 VSCode-format snippets for `nook`. Type a prefix in any buffer, hit
