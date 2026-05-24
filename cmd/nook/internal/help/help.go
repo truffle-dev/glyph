@@ -83,6 +83,8 @@ func Default() []Section {
 			{"alt+i", "Hover info for symbol under cursor"},
 			{"ctrl+]", "Go to definition"},
 			{"ctrl+space", "Completion popup (↑/↓ to navigate, enter to accept)"},
+			{"alt+enter", "Code actions (quickfix / refactor) at the cursor"},
+			{"f2", "Rename symbol under cursor (workspace-wide)"},
 		}},
 		{Name: "Panes", Bindings: []Binding{
 			{"ctrl+b", "Toggle file tree (left)"},

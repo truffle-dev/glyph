@@ -141,6 +141,28 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 				Formatting: &protocol.DocumentFormattingClientCapabilities{
 					DynamicRegistration: false,
 				},
+				CodeAction: &protocol.CodeActionClientCapabilities{
+					DynamicRegistration: false,
+					CodeActionLiteralSupport: &protocol.CodeActionClientCapabilitiesLiteralSupport{
+						CodeActionKind: &protocol.CodeActionClientCapabilitiesKind{
+							ValueSet: []protocol.CodeActionKind{
+								protocol.QuickFix,
+								protocol.Refactor,
+								protocol.RefactorExtract,
+								protocol.RefactorInline,
+								protocol.RefactorRewrite,
+								protocol.Source,
+								protocol.SourceOrganizeImports,
+							},
+						},
+					},
+					IsPreferredSupport: true,
+					DisabledSupport:    true,
+				},
+				Rename: &protocol.RenameClientCapabilities{
+					DynamicRegistration: false,
+					PrepareSupport:      true,
+				},
 			},
 		},
 		WorkspaceFolders: []protocol.WorkspaceFolder{
@@ -473,6 +495,216 @@ func (c *Client) Formatting(ctx context.Context, path string, tabSize int, inser
 		})
 	}
 	return out, nil
+}
+
+// WorkspaceEditChange is the host-side view of an LSP WorkspaceEdit. Files
+// maps each affected absolute path to the ordered list of TextEdits that
+// describe the change. The host applies the edits via lsp.Apply on the
+// matching file's contents. An empty map is a no-op.
+type WorkspaceEditChange struct {
+	Files map[string][]TextEdit
+}
+
+// Empty reports whether the change touches no files.
+func (w WorkspaceEditChange) Empty() bool {
+	for _, edits := range w.Files {
+		if len(edits) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Paths returns the sorted list of paths the change affects.
+func (w WorkspaceEditChange) Paths() []string {
+	out := make([]string, 0, len(w.Files))
+	for p, edits := range w.Files {
+		if len(edits) == 0 {
+			continue
+		}
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CodeActionItem is the host-side view of one server code action. Title is
+// what the picker shows; Kind is a coarse classification ("quickfix" /
+// "refactor" / "source" / ...); Edit is the workspace edit to apply on
+// accept. IsPreferred marks an action like "auto-fix this diagnostic" that
+// the editor may bind to a key directly. Disabled non-empty means the
+// server returned a reason the action cannot be applied; the picker renders
+// these as faded out.
+type CodeActionItem struct {
+	Title       string
+	Kind        string
+	Edit        WorkspaceEditChange
+	IsPreferred bool
+	Disabled    string
+}
+
+// PrepareRenameResult is the host-side view of a textDocument/prepareRename
+// response. Available is false when the cursor is over an unrenamable token
+// (a keyword, a literal, whitespace). When Available is true, the
+// (StartLine,StartCol)-(EndLine,EndCol) range names the identifier the
+// server will rewrite; the host reads Placeholder from the source over
+// that range to pre-fill the rename prompt.
+type PrepareRenameResult struct {
+	Available bool
+	StartLine int
+	StartCol  int
+	EndLine   int
+	EndCol    int
+}
+
+// CodeAction requests code actions at the given zero-indexed cursor or
+// selection range. When the cursor is a single position, pass
+// startLine==endLine and startCol==endCol. Returns an empty slice (not nil)
+// when the server returns nothing — callers can iterate without nil-checking.
+func (c *Client) CodeAction(ctx context.Context, path string, startLine, startCol, endLine, endCol int) ([]CodeActionItem, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	res, err := c.server.CodeAction(ctx, &protocol.CodeActionParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: uint32(startLine), Character: uint32(startCol)},
+			End:   protocol.Position{Line: uint32(endLine), Character: uint32(endCol)},
+		},
+		Context: protocol.CodeActionContext{Diagnostics: []protocol.Diagnostic{}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: codeAction: %w", err)
+	}
+	out := make([]CodeActionItem, 0, len(res))
+	for _, a := range res {
+		ci := CodeActionItem{
+			Title:       a.Title,
+			Kind:        string(a.Kind),
+			IsPreferred: a.IsPreferred,
+		}
+		if a.Disabled != nil {
+			ci.Disabled = a.Disabled.Reason
+		}
+		if a.Edit != nil {
+			ci.Edit = workspaceEditFromProtocol(a.Edit)
+		}
+		out = append(out, ci)
+	}
+	return out, nil
+}
+
+// PrepareRename asks the server whether a rename is valid at the cursor
+// position and what range it will rewrite. A nil response means the
+// position is not renamable (e.g. cursor on a keyword or whitespace); the
+// host surfaces a status hint and skips opening the prompt.
+func (c *Client) PrepareRename(ctx context.Context, path string, line, col int) (PrepareRenameResult, error) {
+	if c == nil || c.server == nil {
+		return PrepareRenameResult{}, errors.New("lsp: client not initialized")
+	}
+	r, err := c.server.PrepareRename(ctx, &protocol.PrepareRenameParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+			Position:     protocol.Position{Line: uint32(line), Character: uint32(col)},
+		},
+	})
+	if err != nil {
+		return PrepareRenameResult{}, fmt.Errorf("lsp: prepareRename: %w", err)
+	}
+	if r == nil {
+		return PrepareRenameResult{Available: false}, nil
+	}
+	return PrepareRenameResult{
+		Available: true,
+		StartLine: int(r.Start.Line),
+		StartCol:  int(r.Start.Character),
+		EndLine:   int(r.End.Line),
+		EndCol:    int(r.End.Character),
+	}, nil
+}
+
+// Rename asks the server for the workspace edit that renames the symbol at
+// the cursor position to newName. Returns an empty WorkspaceEditChange
+// (Empty() == true) when the server resolves no changes. Errors when the
+// RPC fails or when newName is rejected as invalid.
+func (c *Client) Rename(ctx context.Context, path string, line, col int, newName string) (WorkspaceEditChange, error) {
+	if c == nil || c.server == nil {
+		return WorkspaceEditChange{}, errors.New("lsp: client not initialized")
+	}
+	r, err := c.server.Rename(ctx, &protocol.RenameParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+			Position:     protocol.Position{Line: uint32(line), Character: uint32(col)},
+		},
+		NewName: newName,
+	})
+	if err != nil {
+		return WorkspaceEditChange{}, fmt.Errorf("lsp: rename: %w", err)
+	}
+	if r == nil {
+		return WorkspaceEditChange{}, nil
+	}
+	return workspaceEditFromProtocol(r), nil
+}
+
+// workspaceEditFromProtocol collapses an LSP WorkspaceEdit into the friendly
+// per-file map. DocumentChanges is preferred when present (it carries
+// version pins gopls uses), with a fall-back to plain Changes. Resource
+// operations (create/rename/delete file) are not supported in v1; gopls
+// emits them very rarely for refactors we don't yet model.
+func workspaceEditFromProtocol(we *protocol.WorkspaceEdit) WorkspaceEditChange {
+	out := WorkspaceEditChange{Files: map[string][]TextEdit{}}
+	if we == nil {
+		return out
+	}
+	if len(we.DocumentChanges) > 0 {
+		for _, dc := range we.DocumentChanges {
+			path := uri.URI(dc.TextDocument.URI).Filename()
+			out.Files[path] = append(out.Files[path], protocolEditsToHost(dc.Edits)...)
+		}
+		return out
+	}
+	for u, edits := range we.Changes {
+		path := uri.URI(u).Filename()
+		out.Files[path] = append(out.Files[path], protocolEditsToHost(edits)...)
+	}
+	return out
+}
+
+// protocolEditsToHost translates protocol.TextEdit slices into the existing
+// host TextEdit shape. Reused by code-action and rename paths.
+func protocolEditsToHost(in []protocol.TextEdit) []TextEdit {
+	out := make([]TextEdit, 0, len(in))
+	for _, e := range in {
+		out = append(out, TextEdit{
+			StartLine: int(e.Range.Start.Line),
+			StartCol:  int(e.Range.Start.Character),
+			EndLine:   int(e.Range.End.Line),
+			EndCol:    int(e.Range.End.Character),
+			NewText:   e.NewText,
+		})
+	}
+	return out
+}
+
+// ApplyWorkspaceEdit applies edit to the provided per-file sources and
+// returns a new map of path→updated-contents. Only paths present in both
+// sources and edit.Files are touched; paths in edit.Files that the caller
+// did not supply contents for are skipped (the caller is responsible for
+// reading them from disk first). Edits within each file use lsp.Apply so
+// descending-offset ordering and clamping behave exactly as they do during
+// format-on-save.
+func ApplyWorkspaceEdit(sources map[string]string, edit WorkspaceEditChange) map[string]string {
+	out := make(map[string]string, len(sources))
+	for path, src := range sources {
+		edits, ok := edit.Files[path]
+		if !ok || len(edits) == 0 {
+			out[path] = src
+			continue
+		}
+		out[path] = Apply(src, edits)
+	}
+	return out
 }
 
 // completionKindOf maps the LSP enum to the friendly string. Unknown values

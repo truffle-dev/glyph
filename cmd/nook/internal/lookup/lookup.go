@@ -142,3 +142,87 @@ func FormattingCmd(client *nooklsp.Client, path string, version int32, tabSize i
 		return FormattingMsg{Path: path, Version: version, Edits: edits, Err: err}
 	}
 }
+
+// CodeActionMsg carries the result of a textDocument/codeAction request
+// back to the host model. Path/Row/Col echo the cursor at request time so
+// a stale response (the user moved the cursor) can be discarded by
+// comparing them. Items is empty when the server returned nothing.
+type CodeActionMsg struct {
+	Path  string
+	Row   int
+	Col   int
+	Items []nooklsp.CodeActionItem
+	Err   error
+}
+
+// PrepareRenameMsg carries the result of a textDocument/prepareRename
+// request. Path/Row/Col echo the cursor at request time so a stale
+// response can be discarded.
+type PrepareRenameMsg struct {
+	Path   string
+	Row    int
+	Col    int
+	Result nooklsp.PrepareRenameResult
+	Err    error
+}
+
+// RenameMsg carries the result of a textDocument/rename request. Path is
+// the file the rename was initiated from (useful for sourcing the cursor
+// when applying); NewName is the name the user typed (echoed so the host
+// can surface "renamed X to Y" status); Edit is the workspace edit to
+// apply.
+type RenameMsg struct {
+	Path    string
+	NewName string
+	Edit    nooklsp.WorkspaceEditChange
+	Err     error
+}
+
+// renameTimeout gives gopls a longer leash than hover/def: a rename can
+// span the workspace and gopls reads every Go file before answering. The
+// 10s cap is generous for a small repo and still bounds a wedged server.
+const renameTimeout = 10 * time.Second
+
+// CodeActionCmd returns a tea.Cmd that calls client.CodeAction and wraps
+// the result in CodeActionMsg. nil-client behavior mirrors HoverCmd: the
+// message carries errNoClient so the host can bind Alt+Enter unconditionally.
+func CodeActionCmd(client *nooklsp.Client, path string, row, col int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return CodeActionMsg{Path: path, Row: row, Col: col, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		items, err := client.CodeAction(ctx, path, row, col, row, col)
+		return CodeActionMsg{Path: path, Row: row, Col: col, Items: items, Err: err}
+	}
+}
+
+// PrepareRenameCmd returns a tea.Cmd that calls client.PrepareRename and
+// wraps the result in PrepareRenameMsg. nil-client returns errNoClient so
+// the host can bind F2 unconditionally and surface a status hint.
+func PrepareRenameCmd(client *nooklsp.Client, path string, row, col int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return PrepareRenameMsg{Path: path, Row: row, Col: col, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		res, err := client.PrepareRename(ctx, path, row, col)
+		return PrepareRenameMsg{Path: path, Row: row, Col: col, Result: res, Err: err}
+	}
+}
+
+// RenameCmd returns a tea.Cmd that calls client.Rename and wraps the
+// result in RenameMsg. nil-client behavior matches the other lookups.
+func RenameCmd(client *nooklsp.Client, path string, row, col int, newName string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return RenameMsg{Path: path, NewName: newName, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), renameTimeout)
+		defer cancel()
+		edit, err := client.Rename(ctx, path, row, col, newName)
+		return RenameMsg{Path: path, NewName: newName, Edit: edit, Err: err}
+	}
+}

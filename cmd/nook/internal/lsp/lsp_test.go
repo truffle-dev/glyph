@@ -262,6 +262,15 @@ func TestLookupMethodsRejectUninitialized(t *testing.T) {
 	if _, err := c.Definition(context.Background(), "x.go", 0, 0); err == nil {
 		t.Error("definition on uninitialized client should error")
 	}
+	if _, err := c.CodeAction(context.Background(), "x.go", 0, 0, 0, 0); err == nil {
+		t.Error("codeAction on uninitialized client should error")
+	}
+	if _, err := c.PrepareRename(context.Background(), "x.go", 0, 0); err == nil {
+		t.Error("prepareRename on uninitialized client should error")
+	}
+	if _, err := c.Rename(context.Background(), "x.go", 0, 0, "Foo"); err == nil {
+		t.Error("rename on uninitialized client should error")
+	}
 }
 
 // TestApplyEmptyEdits returns the source unchanged when there are no edits.
@@ -451,5 +460,372 @@ func TestDiagnosticsChannelDoesNotBlockOnFull(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("handler blocked on full channel")
+	}
+}
+
+// TestWorkspaceEditFromProtocolDocumentChanges asserts the DocumentChanges
+// branch maps each file URI to its edits in declaration order. gopls
+// returns rename results this way.
+func TestWorkspaceEditFromProtocolDocumentChanges(t *testing.T) {
+	t.Parallel()
+	we := &protocol.WorkspaceEdit{
+		DocumentChanges: []protocol.TextDocumentEdit{
+			{
+				TextDocument: protocol.OptionalVersionedTextDocumentIdentifier{
+					TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: "file:///tmp/a.go"},
+				},
+				Edits: []protocol.TextEdit{{
+					Range:   protocol.Range{Start: protocol.Position{Line: 2, Character: 4}, End: protocol.Position{Line: 2, Character: 9}},
+					NewText: "Beta",
+				}},
+			},
+			{
+				TextDocument: protocol.OptionalVersionedTextDocumentIdentifier{
+					TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: "file:///tmp/b.go"},
+				},
+				Edits: []protocol.TextEdit{{
+					Range:   protocol.Range{Start: protocol.Position{Line: 0, Character: 0}, End: protocol.Position{Line: 0, Character: 5}},
+					NewText: "Beta",
+				}},
+			},
+		},
+	}
+	got := workspaceEditFromProtocol(we)
+	if got.Empty() {
+		t.Fatal("expected non-empty change")
+	}
+	paths := got.Paths()
+	if len(paths) != 2 {
+		t.Fatalf("paths = %v, want 2 entries", paths)
+	}
+	for _, p := range paths {
+		if len(got.Files[p]) != 1 {
+			t.Errorf("file %q has %d edits, want 1", p, len(got.Files[p]))
+		}
+	}
+}
+
+// TestWorkspaceEditFromProtocolChangesFallback covers the `changes` field
+// path (older servers, or refactors that don't bother with versioned doc
+// identifiers). Each file URI maps to its TextEdit slice.
+func TestWorkspaceEditFromProtocolChangesFallback(t *testing.T) {
+	t.Parallel()
+	we := &protocol.WorkspaceEdit{
+		Changes: map[protocol.DocumentURI][]protocol.TextEdit{
+			"file:///tmp/only.go": {{
+				Range:   protocol.Range{Start: protocol.Position{Line: 0, Character: 0}, End: protocol.Position{Line: 0, Character: 3}},
+				NewText: "new",
+			}},
+		},
+	}
+	got := workspaceEditFromProtocol(we)
+	if got.Empty() {
+		t.Fatal("expected non-empty change from Changes map")
+	}
+	if n := len(got.Files); n != 1 {
+		t.Fatalf("files = %d, want 1", n)
+	}
+}
+
+// TestWorkspaceEditFromProtocolNil returns an empty (non-nil) change so the
+// caller can range over Files without nil-checking.
+func TestWorkspaceEditFromProtocolNil(t *testing.T) {
+	t.Parallel()
+	got := workspaceEditFromProtocol(nil)
+	if !got.Empty() {
+		t.Fatal("nil WorkspaceEdit should produce an empty change")
+	}
+	if got.Files == nil {
+		t.Error("Files map should be non-nil after conversion")
+	}
+}
+
+// TestApplyWorkspaceEditMultiFile asserts the per-file map is updated and
+// untouched files pass through. The fixture mimics a real rename: two files
+// reference the same symbol; the change replaces the identifier in both,
+// and a third file (not in the edit) is passed through unchanged.
+func TestApplyWorkspaceEditMultiFile(t *testing.T) {
+	t.Parallel()
+	sources := map[string]string{
+		"/tmp/a.go": "package x\n\nfunc Alpha() int { return 1 }\n",
+		"/tmp/b.go": "package x\n\nfunc Caller() int { return Alpha() }\n",
+		"/tmp/c.go": "package x\n\nfunc Unrelated() {}\n",
+	}
+	edit := WorkspaceEditChange{Files: map[string][]TextEdit{
+		"/tmp/a.go": {{StartLine: 2, StartCol: 5, EndLine: 2, EndCol: 10, NewText: "Beta"}},
+		"/tmp/b.go": {{StartLine: 2, StartCol: 27, EndLine: 2, EndCol: 32, NewText: "Beta"}},
+	}}
+	got := ApplyWorkspaceEdit(sources, edit)
+	if got["/tmp/a.go"] != "package x\n\nfunc Beta() int { return 1 }\n" {
+		t.Errorf("a.go = %q", got["/tmp/a.go"])
+	}
+	if got["/tmp/b.go"] != "package x\n\nfunc Caller() int { return Beta() }\n" {
+		t.Errorf("b.go = %q", got["/tmp/b.go"])
+	}
+	if got["/tmp/c.go"] != sources["/tmp/c.go"] {
+		t.Errorf("c.go was modified despite not appearing in the edit: %q", got["/tmp/c.go"])
+	}
+}
+
+// TestApplyWorkspaceEditSkipsPathsNotInSources documents the contract: the
+// caller is responsible for reading files from disk before applying. Paths
+// in edit.Files that aren't in sources are silently skipped so a partial
+// apply can complete what the caller did wire up.
+func TestApplyWorkspaceEditSkipsPathsNotInSources(t *testing.T) {
+	t.Parallel()
+	sources := map[string]string{"/tmp/a.go": "hello"}
+	edit := WorkspaceEditChange{Files: map[string][]TextEdit{
+		"/tmp/missing.go": {{StartLine: 0, StartCol: 0, EndLine: 0, EndCol: 1, NewText: "x"}},
+	}}
+	got := ApplyWorkspaceEdit(sources, edit)
+	if got["/tmp/a.go"] != "hello" {
+		t.Errorf("a.go should pass through unchanged, got %q", got["/tmp/a.go"])
+	}
+	if _, ok := got["/tmp/missing.go"]; ok {
+		t.Error("missing.go should not appear in output map")
+	}
+}
+
+// TestWorkspaceEditPathsAndEmpty covers the small accessor helpers used by
+// the host's status/dialog rendering paths.
+func TestWorkspaceEditPathsAndEmpty(t *testing.T) {
+	t.Parallel()
+	we := WorkspaceEditChange{}
+	if !we.Empty() {
+		t.Error("zero-value WorkspaceEditChange should be Empty()")
+	}
+	if len(we.Paths()) != 0 {
+		t.Error("zero-value Paths() should be empty")
+	}
+	we = WorkspaceEditChange{Files: map[string][]TextEdit{
+		"/z.go":    {{NewText: "x"}},
+		"/a.go":    {{NewText: "y"}},
+		"/empty":   {},
+		"/m.go":    {{NewText: "z"}},
+		"/nil.txt": nil,
+	}}
+	if we.Empty() {
+		t.Error("WorkspaceEditChange with edits should not be Empty()")
+	}
+	paths := we.Paths()
+	want := []string{"/a.go", "/m.go", "/z.go"}
+	if len(paths) != len(want) {
+		t.Fatalf("Paths() = %v, want %v", paths, want)
+	}
+	for i, p := range paths {
+		if p != want[i] {
+			t.Errorf("Paths()[%d] = %q, want %q (full slice %v)", i, p, want[i], paths)
+		}
+	}
+}
+
+// TestRenameEndToEnd drives gopls through a real prepareRename + rename
+// round-trip. Two files reference Alpha(); rename to Beta should rewrite
+// both. Skipped when gopls is not on PATH.
+func TestRenameEndToEnd(t *testing.T) {
+	if _, err := exec.LookPath("gopls"); err != nil {
+		t.Skip("gopls not on PATH; skipping rename round-trip test")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module renametest\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aPath := filepath.Join(dir, "a.go")
+	aSrc := "package renametest\n\nfunc Alpha() int { return 1 }\n"
+	if err := os.WriteFile(aPath, []byte(aSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bPath := filepath.Join(dir, "b.go")
+	bSrc := "package renametest\n\nfunc Caller() int { return Alpha() }\n"
+	if err := os.WriteFile(bPath, []byte(bSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cli, err := Start(ctx, Options{RootDir: dir})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = cli.Shutdown(shutCtx)
+	}()
+
+	if err := cli.Open(ctx, aPath, "go", aSrc); err != nil {
+		t.Fatalf("open a: %v", err)
+	}
+	if err := cli.Open(ctx, bPath, "go", bSrc); err != nil {
+		t.Fatalf("open b: %v", err)
+	}
+
+	// Drain any initial diagnostics so gopls has settled on the parse.
+	drainCtx, dCancel := context.WithTimeout(ctx, 6*time.Second)
+	defer dCancel()
+drain:
+	for {
+		select {
+		case <-cli.Diagnostics():
+		case <-drainCtx.Done():
+			break drain
+		}
+	}
+
+	// "func Alpha" — Alpha starts at column 5 of line 2 in a.go.
+	pre, err := cli.PrepareRename(ctx, aPath, 2, 5)
+	if err != nil {
+		t.Fatalf("prepareRename: %v", err)
+	}
+	if !pre.Available {
+		t.Fatalf("prepareRename on Alpha returned not-available; range = %+v", pre)
+	}
+	// Modern gopls answers with `{defaultBehavior: true}`, which the
+	// go.lsp.dev decoder collapses to a zero Range. The host falls back
+	// to walking the source for the identifier in that case, so an
+	// all-zero range is also a valid shape here.
+	zeroRange := pre.StartLine == 0 && pre.StartCol == 0 && pre.EndLine == 0 && pre.EndCol == 0
+	expectedRange := pre.StartLine == 2 && pre.StartCol == 5 && pre.EndLine == 2 && pre.EndCol == 10
+	if !zeroRange && !expectedRange {
+		t.Errorf("prepareRename range = (%d,%d)-(%d,%d), want (2,5)-(2,10) or zero-range",
+			pre.StartLine, pre.StartCol, pre.EndLine, pre.EndCol)
+	}
+
+	edit, err := cli.Rename(ctx, aPath, 2, 5, "Beta")
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if edit.Empty() {
+		t.Fatal("rename returned empty edit; expected both files to change")
+	}
+	if len(edit.Files) != 2 {
+		t.Errorf("edit touched %d files, want 2 (paths=%v)", len(edit.Files), edit.Paths())
+	}
+
+	sources := map[string]string{aPath: aSrc, bPath: bSrc}
+	updated := ApplyWorkspaceEdit(sources, edit)
+	if !strings.Contains(updated[aPath], "func Beta") {
+		t.Errorf("a.go did not get renamed:\n%s", updated[aPath])
+	}
+	if strings.Contains(updated[aPath], "Alpha") {
+		t.Errorf("a.go still mentions Alpha:\n%s", updated[aPath])
+	}
+	if !strings.Contains(updated[bPath], "Beta()") {
+		t.Errorf("b.go did not get renamed:\n%s", updated[bPath])
+	}
+}
+
+// TestPrepareRenameUnavailable confirms gopls rejects an unrenamable cursor
+// (a keyword position) with a not-available result rather than an error.
+func TestPrepareRenameUnavailable(t *testing.T) {
+	if _, err := exec.LookPath("gopls"); err != nil {
+		t.Skip("gopls not on PATH; skipping prepareRename unavailable test")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module pr\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cli, err := Start(ctx, Options{RootDir: dir})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = cli.Shutdown(shutCtx)
+	}()
+	if err := cli.Open(ctx, path, "go", src); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	// Cursor over the "package" keyword (line 0, col 0).
+	pre, err := cli.PrepareRename(ctx, path, 0, 0)
+	if err != nil {
+		// gopls in some versions returns an error rather than nil for
+		// unrenamable positions. Either shape is acceptable as long as it
+		// doesn't crash; we treat both as "unavailable" downstream.
+		return
+	}
+	if pre.Available {
+		t.Errorf("prepareRename on `package` keyword reported available; got %+v", pre)
+	}
+}
+
+// TestCodeActionEndToEnd asks gopls for code actions on a Go file with an
+// unused import — gopls should propose at least one quickfix action that
+// removes it. Skipped when gopls is not on PATH.
+func TestCodeActionEndToEnd(t *testing.T) {
+	if _, err := exec.LookPath("gopls"); err != nil {
+		t.Skip("gopls not on PATH; skipping codeAction round-trip test")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module catest\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "main.go")
+	// Unused "strings" import — gopls's organize-imports quickfix removes it.
+	src := "package main\n\nimport \"strings\"\n\nfunc main() {}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	cli, err := Start(ctx, Options{RootDir: dir})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = cli.Shutdown(shutCtx)
+	}()
+	if err := cli.Open(ctx, path, "go", src); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	// Wait briefly for gopls to settle.
+	drainCtx, dCancel := context.WithTimeout(ctx, 6*time.Second)
+	defer dCancel()
+drain:
+	for {
+		select {
+		case <-cli.Diagnostics():
+		case <-drainCtx.Done():
+			break drain
+		}
+	}
+
+	actions, err := cli.CodeAction(ctx, path, 2, 0, 2, 16)
+	if err != nil {
+		t.Fatalf("codeAction: %v", err)
+	}
+	if len(actions) == 0 {
+		t.Fatal("codeAction returned no actions on an unused-import file")
+	}
+	// At least one action should produce a non-empty workspace edit.
+	hasEdit := false
+	for _, a := range actions {
+		if !a.Edit.Empty() {
+			hasEdit = true
+			break
+		}
+	}
+	if !hasEdit {
+		t.Errorf("none of the %d returned actions carried an edit", len(actions))
 	}
 }

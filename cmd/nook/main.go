@@ -21,6 +21,8 @@
 //	alt+i      LSP hover info for symbol under cursor
 //	ctrl+]     LSP go to definition
 //	ctrl+space LSP completion popup (↑/↓ to navigate, enter to accept)
+//	alt+enter  LSP code actions at the cursor
+//	f2         LSP rename symbol under cursor
 //	tab        accept ghost-text completion (when present)
 //	ctrl+q     quit
 //	esc        close overlay / blur / dismiss ghost-text
@@ -51,6 +53,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/bufman"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/codeaction"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
@@ -65,6 +68,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tabbar"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/term"
@@ -83,6 +87,8 @@ const (
 	overlayHover
 	overlayCompletion
 	overlayFinder
+	overlayCodeAction
+	overlayRename
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -162,6 +168,30 @@ type model struct {
 	// the host can route keys to it when the user is browsing files.
 	treePane filetree.Pane
 	showTree bool
+
+	// LSP code-action popup: filled by lookup.CodeActionMsg, displayed
+	// under overlayCodeAction. caReqPath/Row/Col echo the request inputs
+	// so a late response after the cursor moved gets discarded.
+	caPopup   codeaction.Popup
+	caReqPath string
+	caReqRow  int
+	caReqCol  int
+
+	// LSP rename modal: armed by lookup.PrepareRenameMsg, displayed under
+	// overlayRename. pendingRename stashes the cursor that started the
+	// flow so the Enter handler can fire lookup.RenameCmd against the
+	// original position even if the user moved the cursor inside the
+	// prompt (which they can't, but the pin is defensive).
+	renamePrompt  rename.Prompt
+	pendingRename pendingRename
+}
+
+// pendingRename holds the cursor position the rename flow was launched from.
+// Filled by openRenamePrompt and consumed when the user accepts the prompt.
+type pendingRename struct {
+	path string
+	row  int
+	col  int
 }
 
 func main() {
@@ -220,6 +250,8 @@ func newModel(root string) model {
 		formatOnSave: true,
 		treePane:     filetree.New(t, root),
 		showTree:     false,
+		caPopup:      codeaction.New(),
+		renamePrompt: rename.New(),
 	}
 }
 
@@ -593,6 +625,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case lookup.FormattingMsg:
 		return m.handleFormattingMsg(msg)
 
+	case lookup.CodeActionMsg:
+		return m.handleCodeActionMsg(msg)
+
+	case lookup.PrepareRenameMsg:
+		return m.handlePrepareRenameMsg(msg)
+
+	case lookup.RenameMsg:
+		return m.handleRenameMsg(msg)
+
 	case filetree.OpenMsg:
 		_, action := m.bufs.OpenOrSwitch(msg.Path)
 		m.treePane.Blur()
@@ -695,6 +736,35 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dismissCompletion()
 	}
 
+	// Code-action popup swallows its own keys end-to-end: ↑/↓ navigate,
+	// Enter applies the highlighted action, Esc cancels. Unlike the
+	// completion popup, accidental typing should NOT fall through to the
+	// editor — applying a refactor is a deliberate gesture, not a
+	// keystroke-eat.
+	if m.overlay == overlayCodeAction {
+		switch km.Type {
+		case tea.KeyUp:
+			m.caPopup = m.caPopup.MoveUp()
+			return m, nil
+		case tea.KeyDown:
+			m.caPopup = m.caPopup.MoveDown()
+			return m, nil
+		case tea.KeyEnter:
+			return m.acceptCodeAction()
+		case tea.KeyEsc:
+			m.dismissCodeAction()
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// Rename prompt swallows its own keys: typing edits the input,
+	// arrows/home/end move the cursor, Backspace deletes, Enter fires
+	// the rename request, Esc cancels.
+	if m.overlay == overlayRename {
+		return m.routeRename(km)
+	}
+
 	// Global keys
 	switch km.Type {
 	case tea.KeyCtrlQ:
@@ -751,6 +821,20 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// terminals because ASCII space has no separate control code.
 		// Treat it as the completion trigger.
 		return m.triggerCompletion()
+	case tea.KeyF2:
+		// LSP rename. F2 because Ctrl+R is already taken by
+		// "replace current match" in the finder. We ask gopls to
+		// prepareRename first so the prompt opens with the actual
+		// identifier under the cursor, not whatever character the
+		// user happened to be over.
+		return m.triggerRename()
+	}
+	// Alt+Enter triggers code actions at the cursor. Ctrl+. is the VS
+	// Code default but has no portable ASCII control code (only
+	// kitty-protocol terminals send anything for it); alt+enter is the
+	// IntelliJ default and works in every terminal bubbletea understands.
+	if km.Alt && km.Type == tea.KeyEnter {
+		return m.triggerCodeActions()
 	}
 	// Alt+] / Alt+[ cycle through open buffers. bubbletea surfaces Alt as
 	// km.Alt with the modified key in km.Runes when KeyRunes; for "]" with
@@ -1129,6 +1213,381 @@ func (m *model) dismissCompletion() {
 	if m.overlay == overlayCompletion {
 		m.overlay = overlayNone
 	}
+}
+
+// triggerCodeActions fires a textDocument/codeAction request at the cursor
+// and stashes the request site so a late response that arrived after the
+// cursor moved gets discarded in the message handler. The popup arms on
+// the response — there's nothing to show until the server answers.
+func (m model) triggerCodeActions() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
+		m.status = "open a file first (ctrl+p)"
+		return m, nil
+	}
+	row := p.CursorRow()
+	col := p.CursorCol()
+	m.caReqPath = p.Path()
+	m.caReqRow = row
+	m.caReqCol = col
+	m.status = "asking gopls for code actions…"
+	return m, lookup.CodeActionCmd(m.lsp, p.Path(), row, col)
+}
+
+// handleCodeActionMsg either arms the popup with the server's response, or
+// surfaces an empty-result / error status when there's nothing to show.
+// Late responses (cursor already moved) are discarded so the popup always
+// reflects the current focus.
+func (m model) handleCodeActionMsg(msg lookup.CodeActionMsg) (tea.Model, tea.Cmd) {
+	if msg.Path != m.caReqPath || msg.Row != m.caReqRow || msg.Col != m.caReqCol {
+		return m, nil
+	}
+	if msg.Err != nil {
+		if msg.Err.Error() == "no language server" {
+			m.status = "code actions: no language server"
+		} else {
+			m.status = "code actions: " + msg.Err.Error()
+		}
+		return m, nil
+	}
+	if len(msg.Items) == 0 {
+		m.status = "no code actions here"
+		return m, nil
+	}
+	m.caPopup = m.caPopup.WithItems(msg.Items)
+	m.overlay = overlayCodeAction
+	m.status = fmt.Sprintf("%d code action(s)", len(msg.Items))
+	return m, nil
+}
+
+// acceptCodeAction applies the selected workspace edit and dismisses the
+// popup. Disabled rows refuse to apply (Popup.Selected returns ok=false);
+// the status bar surfaces the disabled reason so the user knows why.
+func (m model) acceptCodeAction() (tea.Model, tea.Cmd) {
+	item, ok := m.caPopup.Selected()
+	if !ok {
+		if item.Disabled != "" {
+			m.status = "action disabled: " + item.Disabled
+		} else {
+			m.status = "no action selected"
+		}
+		m.dismissCodeAction()
+		return m, nil
+	}
+	m.dismissCodeAction()
+	if item.Edit.Empty() {
+		// Some servers attach a Command instead of an Edit; v1 doesn't
+		// dispatch commands yet, so we report the no-op honestly rather
+		// than pretending it worked.
+		m.status = "action applied no edits"
+		return m, nil
+	}
+	model, cmd, n := m.applyWorkspaceEdit(item.Edit)
+	model.status = fmt.Sprintf("applied %q (%d file%s)", item.Title, n, pluralS(n))
+	return model, cmd
+}
+
+// dismissCodeAction clears popup state and closes the overlay. Safe to
+// call when no popup is up.
+func (m *model) dismissCodeAction() {
+	m.caPopup = codeaction.New()
+	m.caReqPath = ""
+	m.caReqRow = 0
+	m.caReqCol = 0
+	if m.overlay == overlayCodeAction {
+		m.overlay = overlayNone
+	}
+}
+
+// triggerRename starts the rename flow: ask prepareRename whether the
+// cursor sits on a renamable token. The prompt opens on the response so
+// it can pre-fill the identifier (read from source over the response's
+// range, since gopls may return a default-behavior shape).
+func (m model) triggerRename() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
+		m.status = "open a file first (ctrl+p)"
+		return m, nil
+	}
+	row := p.CursorRow()
+	col := p.CursorCol()
+	m.pendingRename = pendingRename{path: p.Path(), row: row, col: col}
+	m.status = "asking gopls if rename is available…"
+	return m, lookup.PrepareRenameCmd(m.lsp, p.Path(), row, col)
+}
+
+// handlePrepareRenameMsg arms the rename prompt when the server says the
+// position is renamable, or surfaces a status hint when it's not.
+func (m model) handlePrepareRenameMsg(msg lookup.PrepareRenameMsg) (tea.Model, tea.Cmd) {
+	if msg.Path != m.pendingRename.path || msg.Row != m.pendingRename.row || msg.Col != m.pendingRename.col {
+		return m, nil
+	}
+	if msg.Err != nil {
+		if msg.Err.Error() == "no language server" {
+			m.status = "rename: no language server"
+		} else {
+			m.status = "rename: " + msg.Err.Error()
+		}
+		return m, nil
+	}
+	if !msg.Result.Available {
+		m.status = "rename not available at cursor"
+		return m, nil
+	}
+	current := m.identifierAtCursor(msg.Path, msg.Row, msg.Col, msg.Result)
+	hint := filepath.Base(msg.Path)
+	if rel, err := filepath.Rel(m.root, msg.Path); err == nil {
+		hint = rel
+	}
+	m.renamePrompt = m.renamePrompt.WithCurrent(current, hint)
+	m.overlay = overlayRename
+	m.status = "rename: type new name, enter to apply"
+	return m, nil
+}
+
+// routeRename forwards a keypress into the rename.Prompt. Enter fires the
+// rename request; Esc cancels.
+func (m model) routeRename(km tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch km.Type {
+	case tea.KeyEsc:
+		m.dismissRename()
+		m.status = "rename cancelled"
+		return m, nil
+	case tea.KeyEnter:
+		newName := m.renamePrompt.Value()
+		current := m.renamePrompt.Current()
+		if newName == "" {
+			m.renamePrompt = m.renamePrompt.WithError("name is empty")
+			return m, nil
+		}
+		if newName == current {
+			m.dismissRename()
+			m.status = "rename: no change"
+			return m, nil
+		}
+		path := m.pendingRename.path
+		row := m.pendingRename.row
+		col := m.pendingRename.col
+		m.status = fmt.Sprintf("renaming %s → %s…", current, newName)
+		return m, lookup.RenameCmd(m.lsp, path, row, col, newName)
+	case tea.KeyBackspace:
+		m.renamePrompt = m.renamePrompt.Backspace()
+		return m, nil
+	case tea.KeyLeft:
+		m.renamePrompt = m.renamePrompt.MoveLeft()
+		return m, nil
+	case tea.KeyRight:
+		m.renamePrompt = m.renamePrompt.MoveRight()
+		return m, nil
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.renamePrompt = m.renamePrompt.MoveHome()
+		return m, nil
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.renamePrompt = m.renamePrompt.MoveEnd()
+		return m, nil
+	case tea.KeyRunes:
+		for _, r := range km.Runes {
+			m.renamePrompt = m.renamePrompt.Type(r)
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleRenameMsg applies the workspace edit returned by gopls. Empty
+// edits and errors are surfaced as a status hint; the prompt itself was
+// already closed by the Enter handler in routeRename.
+func (m model) handleRenameMsg(msg lookup.RenameMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		// Surface the error in the prompt so the user can retype with a
+		// different name (gopls rejects conflicts here).
+		m.renamePrompt = m.renamePrompt.WithError(msg.Err.Error())
+		if !m.renamePrompt.Open() {
+			// Prompt was already dismissed; surface the failure on the
+			// status bar instead.
+			m.status = "rename failed: " + msg.Err.Error()
+		}
+		return m, nil
+	}
+	if msg.Edit.Empty() {
+		m.dismissRename()
+		m.status = "rename returned no edits"
+		return m, nil
+	}
+	model, cmd, n := m.applyWorkspaceEdit(msg.Edit)
+	model.dismissRename()
+	model.status = fmt.Sprintf("renamed to %s (%d file%s)", msg.NewName, n, pluralS(n))
+	return model, cmd
+}
+
+// dismissRename closes the rename prompt and clears its pending cursor.
+func (m *model) dismissRename() {
+	m.renamePrompt = rename.New()
+	m.pendingRename = pendingRename{}
+	if m.overlay == overlayRename {
+		m.overlay = overlayNone
+	}
+}
+
+// identifierAtCursor returns the identifier the rename will rewrite,
+// reading from the active buffer when its path matches, or from disk
+// otherwise. The PrepareRenameResult's range pins the span; gopls
+// sometimes returns a zero range ({defaultBehavior:true}), in which case
+// we walk the source from cursor to find the surrounding identifier.
+func (m model) identifierAtCursor(path string, row, col int, res nooklsp.PrepareRenameResult) string {
+	src := m.sourceFor(path)
+	if src == "" {
+		return ""
+	}
+	lines := strings.Split(src, "\n")
+	if res.StartLine != res.EndLine || res.StartCol != res.EndCol {
+		if res.StartLine >= 0 && res.StartLine < len(lines) {
+			line := lines[res.StartLine]
+			if res.StartCol >= 0 && res.EndCol <= len(line) && res.EndCol >= res.StartCol {
+				return line[res.StartCol:res.EndCol]
+			}
+		}
+	}
+	if row < 0 || row >= len(lines) {
+		return ""
+	}
+	line := lines[row]
+	if col < 0 || col > len(line) {
+		return ""
+	}
+	start := col
+	for start > 0 && isIdentByte(line[start-1]) {
+		start--
+	}
+	end := col
+	for end < len(line) && isIdentByte(line[end]) {
+		end++
+	}
+	if start >= end {
+		return ""
+	}
+	return line[start:end]
+}
+
+// sourceFor returns the current contents for path: the open buffer if
+// there is one, else the on-disk file. Returns "" on miss.
+func (m model) sourceFor(path string) string {
+	for i := 0; i < m.bufs.Count(); i++ {
+		p := m.bufs.At(i)
+		if p != nil && p.Path() == path {
+			return p.Contents()
+		}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// isIdentByte reports whether b is part of an ASCII identifier. The
+// prepareRename fallback only walks ASCII — gopls returns proper ranges
+// for Unicode identifiers, so the fallback is the rare case.
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// applyWorkspaceEdit applies edit across both open buffers and on-disk
+// files. For each affected path: if a buffer is open, the buffer's
+// contents are rewritten and a fresh didChange is published; otherwise
+// the file is read, edited, and written back to disk. Returns the
+// updated model, the batched LSP cmds, and the number of files touched
+// (so callers can build a status hint).
+func (m model) applyWorkspaceEdit(edit nooklsp.WorkspaceEditChange) (model, tea.Cmd, int) {
+	paths := edit.Paths()
+	if len(paths) == 0 {
+		return m, nil, 0
+	}
+	// Build the sources map and remember which paths are currently open
+	// so we know whether to write back to disk or to the buffer.
+	sources := make(map[string]string, len(paths))
+	openIdx := make(map[string]int, len(paths))
+	for _, path := range paths {
+		idx := -1
+		for i := 0; i < m.bufs.Count(); i++ {
+			p := m.bufs.At(i)
+			if p != nil && p.Path() == path {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			openIdx[path] = idx
+			sources[path] = m.bufs.At(idx).Contents()
+			continue
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			// Skip unreadable paths — we still apply the rest. The
+			// status hint reflects only the files we actually touched.
+			continue
+		}
+		sources[path] = string(b)
+	}
+	updated := nooklsp.ApplyWorkspaceEdit(sources, edit)
+
+	var cmds []tea.Cmd
+	written := 0
+	for _, path := range paths {
+		after, ok := updated[path]
+		if !ok {
+			continue
+		}
+		before := sources[path]
+		if after == before {
+			continue
+		}
+		if idx, isOpen := openIdx[path]; isOpen {
+			p := m.bufs.At(idx)
+			if p == nil {
+				continue
+			}
+			*p = p.ReplaceAllFromString(after)
+			if m.lsp != nil && isGoFile(path) {
+				v := m.lspVersions[path] + 1
+				m.lspVersions[path] = v
+				if c := m.lspChangeCmd(path, v, after); c != nil {
+					cmds = append(cmds, c)
+				}
+			}
+			written++
+			continue
+		}
+		if err := os.WriteFile(path, []byte(after), 0o644); err != nil {
+			// Surface but keep going.
+			m.status = "write failed for " + filepath.Base(path) + ": " + err.Error()
+			continue
+		}
+		// If the buffer manager is tracking this path under a different
+		// active state (it shouldn't be — we already checked above), be
+		// defensive and refresh anyway.
+		m.bufs.RefreshIfOpen(path)
+		written++
+	}
+	if cmd := m.refreshGitCmd(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	if len(cmds) == 0 {
+		return m, nil, written
+	}
+	if len(cmds) == 1 {
+		return m, cmds[0], written
+	}
+	return m, tea.Batch(cmds...), written
+}
+
+// pluralS returns "" for 1, "s" otherwise. Saves a fmt branch at every
+// "N file(s)" caller.
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // openFinder opens the in-file finder over the active buffer in the requested
@@ -1654,6 +2113,31 @@ func (m model) View() string {
 			maxRows = 4
 		}
 		box := m.completePopup.View(t, boxW, maxRows)
+		float := centerOverlay(m.width, m.height-1, box)
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlayCodeAction {
+		// Code-action menu uses the same float-centered shape as the
+		// completion popup. The picker auto-fits its width within the
+		// requested cap.
+		boxW := 52
+		if boxW > m.width-4 {
+			boxW = m.width - 4
+		}
+		maxRows := (m.height - 2) / 3
+		if maxRows < 4 {
+			maxRows = 4
+		}
+		box := m.caPopup.View(t, boxW, maxRows)
+		float := centerOverlay(m.width, m.height-1, box)
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlayRename {
+		boxW := 56
+		if boxW > m.width-4 {
+			boxW = m.width - 4
+		}
+		box := m.renamePrompt.View(t, boxW)
 		float := centerOverlay(m.width, m.height-1, box)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}

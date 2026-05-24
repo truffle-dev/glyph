@@ -1058,3 +1058,361 @@ func TestTreeRoutesKeysOnlyWhenFocused(t *testing.T) {
 			before, mm.treePane.Selected())
 	}
 }
+
+// openBufferForTest opens a fixture file in the host model and returns the
+// model in the "buffer is active" state. The picker.SelectMsg path is the
+// only public way to seed a buffer, so we use it.
+func openBufferForTest(t *testing.T, m model, relPath string) model {
+	t.Helper()
+	updated, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: relPath, Value: relPath}})
+	mm := updated.(model)
+	if mm.activePath() == "" {
+		t.Fatalf("openBufferForTest: no active buffer after SelectMsg")
+	}
+	return mm
+}
+
+func TestHandleCodeActionMsgArmsPopupOnMatchingRequest(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	// Pretend the user just pressed alt+enter.
+	m.caReqPath = m.activePath()
+	m.caReqRow = 0
+	m.caReqCol = 0
+	msg := lookup.CodeActionMsg{
+		Path: m.caReqPath, Row: 0, Col: 0,
+		Items: []nooklsp.CodeActionItem{
+			{Title: "Organize imports", Kind: "source.organizeImports", IsPreferred: true},
+			{Title: "Extract function", Kind: "refactor.extract"},
+		},
+	}
+	updated, _ := m.Update(msg)
+	mm := updated.(model)
+	if mm.overlay != overlayCodeAction {
+		t.Errorf("expected overlayCodeAction, got %v", mm.overlay)
+	}
+	if mm.caPopup.Len() != 2 {
+		t.Errorf("expected 2 items in popup, got %d", mm.caPopup.Len())
+	}
+}
+
+func TestHandleCodeActionMsgDiscardsStaleResponse(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	// Request was for line 0; pretend the cursor moved to line 5.
+	m.caReqPath = m.activePath()
+	m.caReqRow = 5
+	m.caReqCol = 0
+	msg := lookup.CodeActionMsg{
+		Path: m.caReqPath, Row: 0, Col: 0,
+		Items: []nooklsp.CodeActionItem{{Title: "stale"}},
+	}
+	updated, _ := m.Update(msg)
+	mm := updated.(model)
+	if mm.overlay == overlayCodeAction {
+		t.Errorf("stale response should be discarded; overlay was opened")
+	}
+}
+
+func TestHandleCodeActionMsgEmptySurfacesStatus(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	m.caReqPath = m.activePath()
+	msg := lookup.CodeActionMsg{Path: m.caReqPath, Items: nil}
+	updated, _ := m.Update(msg)
+	mm := updated.(model)
+	if mm.overlay == overlayCodeAction {
+		t.Errorf("empty result should NOT open the popup")
+	}
+	if !strings.Contains(mm.status, "no code actions") {
+		t.Errorf("status should explain the empty result, got %q", mm.status)
+	}
+}
+
+func TestAcceptCodeActionAppliesEditToOpenBuffer(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	// Build a code action that rewrites the first line ("package a\n") into
+	// "package alpha\n". Edit range covers (0,0)-(0,9).
+	abs := m.activePath()
+	edit := nooklsp.WorkspaceEditChange{Files: map[string][]nooklsp.TextEdit{
+		abs: {{StartLine: 0, StartCol: 0, EndLine: 0, EndCol: 9, NewText: "package alpha"}},
+	}}
+	m.caPopup = m.caPopup.WithItems([]nooklsp.CodeActionItem{
+		{Title: "Rename package", Edit: edit},
+	})
+	m.overlay = overlayCodeAction
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(model)
+	if mm.overlay == overlayCodeAction {
+		t.Errorf("Enter should dismiss the popup")
+	}
+	if p := mm.bufs.Active(); p == nil || !strings.HasPrefix(p.Contents(), "package alpha") {
+		t.Errorf("buffer not rewritten; contents=%q", p.Contents())
+	}
+}
+
+func TestAcceptCodeActionRefusesDisabled(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	m.caPopup = m.caPopup.WithItems([]nooklsp.CodeActionItem{
+		{Title: "blocked", Disabled: "needs gopls 1.x"},
+	})
+	m.overlay = overlayCodeAction
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(model)
+	if mm.overlay == overlayCodeAction {
+		t.Errorf("disabled-only popup should still close on Enter")
+	}
+	if !strings.Contains(mm.status, "disabled") {
+		t.Errorf("status should mention the disabled reason; got %q", mm.status)
+	}
+}
+
+func TestHandlePrepareRenameMsgArmsPromptWithIdentifier(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	// a.go: "package a\n\nfunc Foo() {}\n"
+	// Position the prepareRename over "Foo" at (2, 5)-(2, 8).
+	m.pendingRename = pendingRename{path: m.activePath(), row: 2, col: 5}
+	msg := lookup.PrepareRenameMsg{
+		Path: m.activePath(),
+		Row:  2,
+		Col:  5,
+		Result: nooklsp.PrepareRenameResult{
+			Available: true,
+			StartLine: 2, StartCol: 5,
+			EndLine: 2, EndCol: 8,
+		},
+	}
+	updated, _ := m.Update(msg)
+	mm := updated.(model)
+	if mm.overlay != overlayRename {
+		t.Errorf("expected overlayRename, got %v", mm.overlay)
+	}
+	if mm.renamePrompt.Current() != "Foo" {
+		t.Errorf("placeholder = %q, want Foo", mm.renamePrompt.Current())
+	}
+}
+
+func TestHandlePrepareRenameMsgWithZeroRangeFallsBackToCursor(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	// Modern gopls returns {defaultBehavior:true} which decodes to a zero
+	// Range. The host should walk the source for the identifier itself.
+	m.pendingRename = pendingRename{path: m.activePath(), row: 2, col: 6}
+	msg := lookup.PrepareRenameMsg{
+		Path: m.activePath(),
+		Row:  2,
+		Col:  6,
+		Result: nooklsp.PrepareRenameResult{
+			Available: true,
+		},
+	}
+	updated, _ := m.Update(msg)
+	mm := updated.(model)
+	if mm.renamePrompt.Current() != "Foo" {
+		t.Errorf("zero-range placeholder = %q, want Foo", mm.renamePrompt.Current())
+	}
+}
+
+func TestHandlePrepareRenameMsgUnavailableShowsStatus(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	m.pendingRename = pendingRename{path: m.activePath(), row: 0, col: 0}
+	msg := lookup.PrepareRenameMsg{
+		Path: m.activePath(),
+		Row:  0,
+		Col:  0,
+		Result: nooklsp.PrepareRenameResult{
+			Available: false,
+		},
+	}
+	updated, _ := m.Update(msg)
+	mm := updated.(model)
+	if mm.overlay == overlayRename {
+		t.Errorf("unavailable rename should NOT open the prompt")
+	}
+	if !strings.Contains(mm.status, "not available") {
+		t.Errorf("status should explain unavailable; got %q", mm.status)
+	}
+}
+
+func TestRenamePromptAcceptFiresRenameCmd(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	// Arm the rename prompt with placeholder Foo.
+	m.pendingRename = pendingRename{path: m.activePath(), row: 2, col: 5}
+	m.renamePrompt = m.renamePrompt.WithCurrent("Foo", "a.go")
+	m.overlay = overlayRename
+	// Backspace away the placeholder, then type "Bar".
+	for i := 0; i < 3; i++ {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m = updated.(model)
+	}
+	for _, r := range "Bar" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	if m.renamePrompt.Value() != "Bar" {
+		t.Errorf("expected prompt value Bar, got %q", m.renamePrompt.Value())
+	}
+	// Enter should fire a RenameCmd (we can't easily assert it runs without
+	// gopls; assert the cmd is non-nil so we know the flow plumbed through).
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(model)
+	if cmd == nil {
+		t.Errorf("Enter on filled prompt should fire a RenameCmd")
+	}
+	if !strings.Contains(mm.status, "renaming Foo → Bar") {
+		t.Errorf("status should announce the rename; got %q", mm.status)
+	}
+}
+
+func TestRenamePromptEscCancels(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 120
+	m.height = 30
+	m.renamePrompt = m.renamePrompt.WithCurrent("Foo", "a.go")
+	m.overlay = overlayRename
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mm := updated.(model)
+	if mm.overlay == overlayRename {
+		t.Errorf("Esc should close the rename prompt")
+	}
+	if !strings.Contains(mm.status, "cancelled") {
+		t.Errorf("status should mention cancellation; got %q", mm.status)
+	}
+}
+
+func TestHandleRenameMsgAppliesAcrossOpenBufferAndDisk(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	// Open a.go but leave sub/b.go closed; the rename touches both.
+	m = openBufferForTest(t, m, "a.go")
+	subAbs := filepath.Join(root, "sub", "b.go")
+	aAbs := m.activePath()
+	// Rewrite "Foo" in a.go (line 2) and "Bar" in sub/b.go (line 2).
+	edit := nooklsp.WorkspaceEditChange{Files: map[string][]nooklsp.TextEdit{
+		aAbs:   {{StartLine: 2, StartCol: 5, EndLine: 2, EndCol: 8, NewText: "Renamed"}},
+		subAbs: {{StartLine: 2, StartCol: 5, EndLine: 2, EndCol: 8, NewText: "Renamed"}},
+	}}
+	m.renamePrompt = m.renamePrompt.WithCurrent("Foo", "a.go")
+	m.overlay = overlayRename
+	updated, _ := m.Update(lookup.RenameMsg{NewName: "Renamed", Edit: edit})
+	mm := updated.(model)
+	if mm.overlay == overlayRename {
+		t.Errorf("rename apply should dismiss the prompt")
+	}
+	if p := mm.bufs.Active(); p == nil || !strings.Contains(p.Contents(), "func Renamed()") {
+		t.Errorf("buffer not rewritten; contents=%q", func() string {
+			if p := mm.bufs.Active(); p != nil {
+				return p.Contents()
+			}
+			return ""
+		}())
+	}
+	b, err := os.ReadFile(subAbs)
+	if err != nil {
+		t.Fatalf("read sub/b.go: %v", err)
+	}
+	if !strings.Contains(string(b), "func Renamed()") {
+		t.Errorf("disk file not rewritten; got %q", string(b))
+	}
+}
+
+func TestHandleRenameMsgErrorSurfacesInPrompt(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 120
+	m.height = 30
+	m.renamePrompt = m.renamePrompt.WithCurrent("Foo", "a.go")
+	m.overlay = overlayRename
+	updated, _ := m.Update(lookup.RenameMsg{NewName: "Bar", Err: errTest})
+	mm := updated.(model)
+	if mm.overlay != overlayRename {
+		t.Errorf("error should leave the prompt open so the user can retry")
+	}
+	// The prompt itself records the error string; we can't read it directly
+	// without a getter, so re-render and check the view contains it.
+	view := mm.renamePrompt.View(mm.theme, 60)
+	if !strings.Contains(view, errTest.Error()) {
+		t.Errorf("prompt view missing error; got %q", view)
+	}
+}
+
+func TestF2OnlyTriggersRenameWhenBufferOpen(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 120
+	m.height = 30
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyF2})
+	mm := updated.(model)
+	if cmd != nil {
+		t.Errorf("F2 with no buffer should NOT fire a cmd")
+	}
+	if !strings.Contains(mm.status, "open a file first") {
+		t.Errorf("F2 with no buffer should nudge the user to open a file; got %q", mm.status)
+	}
+}
+
+func TestAltEnterTriggersCodeActions(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	mm := updated.(model)
+	if cmd == nil {
+		t.Errorf("alt+enter should fire a CodeActionCmd")
+	}
+	if mm.caReqPath == "" {
+		t.Errorf("alt+enter should stash the request path")
+	}
+}
+
+// errTest is a sentinel for tests that just need a non-nil error value.
+var errTest = errSentinel("test error")
+
+type errSentinel string
+
+func (e errSentinel) Error() string { return string(e) }

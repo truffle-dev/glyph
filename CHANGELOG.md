@@ -6,6 +6,92 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-05-24
+
+Code actions and rename inside `nook`. `alt+enter` asks the language
+server for the code actions available at the cursor (quickfix,
+refactor, source-organize) and renders them in a centered popup;
+`enter` applies the selected `WorkspaceEdit` across every affected
+file, opening new buffers or rewriting on disk as needed. `f2` opens
+a rename prompt seeded with the identifier under the cursor, runs
+`textDocument/prepareRename` first to confirm the symbol is renameable
+(falling back to a source-walk when gopls returns the
+`defaultBehavior:true` placeholder), then sends `textDocument/rename`
+and applies the workspace-wide edit. Errors surface in the prompt so
+the user can retype without losing context.
+
+### Added
+
+- `cmd/nook/internal/codeaction` — `Popup` value type holding the
+  current LSP `CodeActionItem` slice with theme-aware rounded-border
+  view, cursor up/down navigation, accept/dismiss helpers, and a
+  `Selected()` accessor that refuses items marked `Disabled` (returning
+  the reason for the host to surface as a status message). Mirrors the
+  `complete.Popup` shape so the host's overlay routing stays uniform.
+- `cmd/nook/internal/rename` — `Prompt` value type with a small text
+  input limited to identifier characters (Unicode letter / digit /
+  underscore, leading-digit rejected), placeholder seeding from the
+  symbol under cursor, cursor home/end/left/right, `WithError` for
+  server-side failures (clears on next edit), and a `View` that shows
+  `<current> → <new>` with the source path so the user knows what
+  they're renaming.
+- `lsp.Client.CodeAction(path, row, col)` and
+  `lsp.Client.PrepareRename(path, row, col)` and
+  `lsp.Client.Rename(path, row, col, newName)` — three new typed
+  request helpers on the LSP client that convert protocol-level
+  `CodeActionItem` / `PrepareRenameResult` / `WorkspaceEdit` into
+  internal types so the editor never imports `go.lsp.dev/protocol`.
+- `lookup.CodeActionCmd` / `lookup.PrepareRenameCmd` / `lookup.RenameCmd`
+  — `tea.Cmd` factories with the established 2-second timeout +
+  nil-client guard pattern; each echoes the request coordinates back
+  in the response so the host can discard stale answers if the cursor
+  moved.
+- Host integration in `cmd/nook/main.go`: `caPopup`, `caReqPath/Row/Col`,
+  `renamePrompt`, and `pendingRename` fields on the model;
+  `overlayCodeAction` / `overlayRename` overlay states; key routing for
+  `alt+enter`, `f2`, and the prompt's own editing keys;
+  `applyWorkspaceEdit` helper that opens an existing buffer for each
+  affected path (firing `lspChangeCmd` to keep gopls in sync) or writes
+  to disk via `os.WriteFile` when no buffer is open. Status messages
+  report the file count: `applied (3 files)`.
+- 15 new host tests in `cmd/nook/main_test.go` covering popup
+  arming, stale-response discard, empty-result status, accept-applies-
+  to-open-buffer, refuse-disabled, prepareRename-with-range and
+  prepareRename-with-zero-range fallback, unavailable-shows-status,
+  prompt-accept-fires-rename, esc-cancels, workspace-edit-across-open-
+  buffer-and-disk, error-keeps-overlay-open, F2-only-when-buffer-open,
+  and alt+enter-triggers-code-actions.
+
+### New keys
+
+- `alt+enter` — request LSP code actions at the cursor. The popup
+  lists quickfix / refactor / source-action items; arrow keys
+  navigate, enter applies, esc dismisses. Items the server marked
+  disabled (e.g. "no enclosing function") surface the reason in the
+  status bar instead of applying a no-op edit.
+- `f2` — rename the symbol under the cursor. Opens a prompt seeded
+  with the current identifier; `enter` commits, `esc` cancels.
+  Workspace-wide: every file that touches the symbol gets the new
+  name, whether it's an open buffer or only on disk.
+
+### Changed
+
+- Help overlay (`?`) "Language server" section lists `alt+enter` and
+  `f2` so the new actions are discoverable.
+
+### Notes
+
+- `prepareRename` is best-effort. gopls returns `{defaultBehavior:true}`
+  for renameable identifiers, which decodes to a zero `Range`; the
+  host falls back to a source-byte walk from the cursor using
+  `isIdentByte` to find the identifier boundaries. Servers that
+  explicitly return `Available:false` close the prompt and surface
+  "rename not available here" instead.
+- Workspace edits are applied atomically per-file: each open buffer's
+  edits are computed in source order via `lsp.ApplyWorkspaceEdit`
+  before being written, so an edit list that touches three files
+  either all-applies or surfaces the first failure.
+
 ## [0.9.0] — 2026-05-24
 
 File tree pane inside `nook`. `ctrl+b` toggles a persistent left-side
