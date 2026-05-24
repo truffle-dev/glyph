@@ -22,6 +22,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/multibuffer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
 )
@@ -1416,3 +1417,105 @@ var errTest = errSentinel("test error")
 type errSentinel string
 
 func (e errSentinel) Error() string { return string(e) }
+
+func TestAltMOpensMultibuffer(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	mm := updated.(model)
+	if mm.overlay != overlayMultibuffer {
+		t.Fatalf("alt+m did not open multibuffer overlay; got overlay=%v", mm.overlay)
+	}
+	if !mm.multibufPane.Focused() {
+		t.Errorf("alt+m did not focus the multibuffer pane")
+	}
+	if cmd == nil {
+		t.Errorf("alt+m should fire LoadDiffCmd")
+	}
+	if mm.multibufPane.Title() != "uncommitted changes" {
+		t.Errorf("multibuffer title = %q, want %q", mm.multibufPane.Title(), "uncommitted changes")
+	}
+}
+
+func TestMultibufferFragmentsMsgLoadsPane(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayMultibuffer
+	m.multibufPane = m.multibufPane.Reset("uncommitted changes").Focus()
+
+	frags := []multibuffer.Fragment{{
+		Path: "/repo/x.go", StartLine: 5, EndLine: 5,
+		Lines: []multibuffer.Line{{Marker: multibuffer.Added, FileLine: 5, Text: "hi"}},
+	}}
+	updated, _ := m.Update(multibuffer.FragmentsMsg{Fragments: frags, Source: "diff"})
+	mm := updated.(model)
+	if got := mm.multibufPane.Fragments(); len(got) != 1 {
+		t.Errorf("expected 1 fragment loaded into pane, got %d", len(got))
+	}
+}
+
+func TestMultibufferOpenAtMsgJumpsAndCloses(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayMultibuffer
+
+	updated, _ := m.Update(multibuffer.OpenAtMsg{
+		Path: filepath.Join(root, "a.go"),
+		Line: 3,
+	})
+	mm := updated.(model)
+	if mm.overlay != overlayNone {
+		t.Errorf("OpenAtMsg should clear overlay; got %v", mm.overlay)
+	}
+	if mm.activePath() == "" || !strings.HasSuffix(mm.activePath(), "a.go") {
+		t.Errorf("OpenAtMsg should open the target file; activePath = %q", mm.activePath())
+	}
+	if p := mm.bufs.Active(); p != nil && p.CursorRow() != 2 {
+		t.Errorf("OpenAtMsg cursor row = %d, want 2 (1-based line 3 → 0-based row 2)", p.CursorRow())
+	}
+}
+
+func TestMultibufferCancelMsgClosesOverlay(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 100
+	m.height = 24
+	m = m.resize()
+	m.overlay = overlayMultibuffer
+	m.multibufPane = m.multibufPane.Focus()
+
+	updated, _ := m.Update(multibuffer.CancelMsg{})
+	mm := updated.(model)
+	if mm.overlay != overlayNone {
+		t.Errorf("CancelMsg should clear overlay; got %v", mm.overlay)
+	}
+	if mm.multibufPane.Focused() {
+		t.Errorf("CancelMsg should blur the multibuffer pane")
+	}
+}
+
+func TestMultibufferOverlayRoutesKeys(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 100
+	m.height = 24
+	m = m.resize()
+	m.overlay = overlayMultibuffer
+	m.multibufPane = m.multibufPane.Focus()
+
+	// Esc on the overlay should produce a CancelMsg cmd.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("Esc on multibuffer overlay returned nil cmd")
+	}
+	if _, ok := cmd().(multibuffer.CancelMsg); !ok {
+		t.Errorf("Esc on multibuffer overlay produced %T, want CancelMsg", cmd())
+	}
+}

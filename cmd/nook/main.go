@@ -68,6 +68,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/hover"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/multibuffer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
@@ -90,6 +91,7 @@ const (
 	overlayFinder
 	overlayCodeAction
 	overlayRename
+	overlayMultibuffer
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -185,6 +187,11 @@ type model struct {
 	// prompt (which they can't, but the pin is defensive).
 	renamePrompt  rename.Prompt
 	pendingRename pendingRename
+
+	// Multibuffer overlay (Zed's signature: stitch hunks from multiple
+	// files into one scrollable surface). Alt+m loads working-tree-vs-HEAD
+	// diff fragments; Enter on any row jumps to that file+line.
+	multibufPane multibuffer.Pane
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -253,6 +260,7 @@ func newModel(root string) model {
 		showTree:     false,
 		caPopup:      codeaction.New(),
 		renamePrompt: rename.New(),
+		multibufPane: multibuffer.NewPane(t, root),
 	}
 }
 
@@ -686,6 +694,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.applyDiagnosticsToActive()
 		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd())
 
+	case multibuffer.FragmentsMsg:
+		m.multibufPane = m.multibufPane.SetFragments(msg.Fragments, msg.Err)
+		return m, nil
+
+	case multibuffer.OpenAtMsg:
+		_, action := m.bufs.OpenOrSwitch(msg.Path)
+		if p := m.bufs.Active(); p != nil {
+			// editor.JumpTo takes 1-based line numbers; OpenAtMsg.Line is
+			// already 1-based (mirrors search.OpenMsg's contract).
+			*p = p.JumpTo(msg.Line, 1).Focus()
+		}
+		m.multibufPane = m.multibufPane.Blur()
+		m.overlay = overlayNone
+		m = m.resize()
+		m = m.applyDiagnosticsToActive()
+		rel, _ := filepath.Rel(m.root, msg.Path)
+		switch action {
+		case bufman.Switched:
+			m.status = fmt.Sprintf("switched to %s:%d", rel, msg.Line)
+		default:
+			m.status = fmt.Sprintf("opened %s:%d", rel, msg.Line)
+		}
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd())
+
+	case multibuffer.CancelMsg:
+		m.multibufPane = m.multibufPane.Blur()
+		m.overlay = overlayNone
+		if p := m.bufs.Active(); p != nil {
+			*p = p.Focus()
+		}
+		return m, nil
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
@@ -933,6 +973,14 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.status = "format-on-save: off"
 			}
 			return m, nil
+		case 'm':
+			// Alt+m opens the multibuffer overlay populated from
+			// `git diff HEAD` — every changed hunk in the working tree
+			// rendered as one scrollable surface. Enter on a row jumps
+			// to that file at that line.
+			m.overlay = overlayMultibuffer
+			m.multibufPane = m.multibufPane.WithSize(m.width-4, m.height-4).Reset("uncommitted changes").Focus()
+			return m, multibuffer.LoadDiffCmd(m.root, "HEAD")
 		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
@@ -961,6 +1009,10 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case overlayFinder:
 		return m.routeFinder(km)
+	case overlayMultibuffer:
+		var cmd tea.Cmd
+		m.multibufPane, cmd = m.multibufPane.Update(km)
+		return m, cmd
 	}
 
 	// No overlay: composer takes keys when focused
@@ -2093,6 +2145,7 @@ func (m model) resize() model {
 	m.editPane = m.editPane.WithSize(min(70, m.width-4), 10)
 	m.search = m.search.WithSize(m.width-4, m.height-6)
 	m.picker = m.picker.WithSize(m.width-8, m.height-6)
+	m.multibufPane = m.multibufPane.WithSize(m.width-4, m.height-4)
 	m.finder = m.finder.WithSize(m.width)
 	if treeW > 0 {
 		m.treePane.SetSize(treeW, bodyH)
@@ -2177,6 +2230,19 @@ func (m model) View() string {
 		}
 		box := m.renamePrompt.View(t, boxW)
 		float := centerOverlay(m.width, m.height-1, box)
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlayMultibuffer {
+		// Multibuffer takes the whole body area minus the status bar — it's a
+		// scrollable surface, not a popup, so floating it small would defeat
+		// the point. Width gets a small inset; height fills the rest.
+		boxW := m.width - 4
+		boxH := m.height - 4
+		if boxH < 6 {
+			boxH = 6
+		}
+		pane := m.multibufPane.WithSize(boxW, boxH)
+		float := centerOverlay(m.width, m.height-1, pane.View())
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}
 

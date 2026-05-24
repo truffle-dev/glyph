@@ -6,6 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-05-24
+
+Multibuffer view for `nook`. Zed's signature surface: every hunk in
+the working tree, stitched together into one scrollable list, opened
+with `alt+m`. Each fragment shows its file path, line range, the
+function suffix git stamps onto the hunk header, and the new-file
+lines marked `+` (added) or ` ` (context). Enter on any row jumps to
+that file at that line and focuses the editor; `esc` closes the
+overlay without opening anything.
+
+The first slice is read-only — a complete and useful surface on its
+own. Editable multibuffer (edits flowing back to source) is deferred
+to a later release.
+
+### Added
+
+- `cmd/nook/internal/multibuffer` — new package built around
+  `Fragment{Path, StartLine, EndLine, Lines, Suffix}` and `Pane`
+  with the standard nook component shape (`NewPane`, `WithSize`,
+  `Focus`/`Blur`, `Update`, `View`). 36 unit tests cover Parse over
+  empty input, single/multi-hunk, multi-file, pure-deletion-skipped,
+  no-newline-at-eof metadata, omitted-count default, absolute-path
+  preservation, plus row-build / cursor-skip / Selected / Update
+  routing / View rendering / live `git diff` end-to-end.
+- `multibuffer.LoadDiffCmd(root, base)` — runs
+  `git diff --no-color --unified=3 [base]` and returns
+  `FragmentsMsg` with the parsed hunks.
+- Host wiring in `cmd/nook/main.go`: `overlayMultibuffer` enum,
+  `multibufPane` field, `alt+m` key case, `FragmentsMsg` loader,
+  `OpenAtMsg` jump-and-close, `CancelMsg` close-without-opening.
+- `cmd/nook/internal/help` — new "Multibuffer" section with
+  `alt+m`, navigation, Enter, and Esc.
+
 ## [0.12.0] — 2026-05-24
 
 Multi-cursor editing inside `nook`. The primary cursor at `(p.row, p.col)`
