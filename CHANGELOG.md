@@ -6,6 +6,71 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-24
+
+In-buffer find and replace inside `nook`. `ctrl+f` opens a bottom-bar
+search scoped to the active buffer, `ctrl+h` flips it into replace mode,
+matches highlight in the editor with the active one boosted, and regex
+plus case-sensitive toggles cover the cases sed and grep cover.
+
+### Added
+
+- `cmd/nook/internal/finder` — bubbletea sub-component that owns the
+  find/replace state (pattern, replacement, focus, regex flag, case flag,
+  match list, current index). `Search` does literal substring or regex
+  matches across a buffer's lines; `ApplyReplacement` splices a single
+  match (capture-group aware via `regexp.ExpandString` so `$1`, `${name}`,
+  and friends work). The component exposes `Update`, `View`, `Height`,
+  navigation helpers (`Next`, `Prev`, `SelectMatchAt`), and a `Mode` enum
+  the host uses to render the right number of input fields.
+- `editor.Pane.WithSearchMatches` / `ClearSearchMatches` — per-buffer
+  match overlay that paints `surfaceStrong` on non-active matches and a
+  bold inverse band on the active one. The hook reuses the existing
+  per-rune emit loop so syntax colors keep their foreground while the
+  match background layers underneath.
+- `editor.Pane.Lines()` — convenience accessor the finder uses to drive
+  the regex/substring search without reaching through buffer internals.
+
+### New keys
+
+- `ctrl+f` — open the find bar scoped to the active buffer.
+- `ctrl+h` — open the find/replace bar scoped to the active buffer.
+- `alt+f` — project-wide search (previously bound to `ctrl+f`).
+- `enter` / `↓` — jump to the next match (wraps at end).
+- `↑` — jump to the previous match.
+- `ctrl+r` — replace the current match and advance.
+- `alt+r` — replace every match in the buffer.
+- `alt+x` — toggle regex mode.
+- `alt+c` — toggle case sensitivity.
+- `tab` — switch focus between the find and replace fields (replace
+  mode only).
+- `esc` — close the find bar and clear match highlights.
+
+### Changed
+
+- The previous `ctrl+f` binding for project-wide search moves to `alt+f`.
+  Local find is the high-frequency action; the project search needed a
+  modifier-bearing key so it didn't shadow the new in-buffer find.
+- Help overlay (`?`) gains a "Find / Replace" section listing every
+  binding the bar accepts so the keymap is discoverable.
+- Status bar threads the "replaced N occurrences" / "no matches" feedback
+  for the replace actions so the user sees the result without leaving
+  the bar.
+
+### Notes
+
+- Match highlighting uses the existing theme tokens (`SurfaceStrong`
+  for the band, `Primary` + `TextInverse` for the active match) so the
+  overlay tracks the active theme.
+- Regex mode prefixes the user pattern with `(?i)` when case-insensitive
+  is on; the case toggle is a no-op for literal search when the pattern
+  is all-lowercase.
+- Empty patterns clear matches and the cursor without surfacing an
+  error; an invalid regex shows the compile error inline in the bar.
+- The find bar reserves either one row (find-only) or two rows
+  (find + replace) below the editor; `resize()` subtracts those rows
+  from the editor's body height so nothing scrolls under the bar.
+
 ## [0.6.0] — 2026-05-24
 
 Language-server intelligence inside `nook`. Hover info, go-to-definition,
@@ -319,7 +384,9 @@ registry, and a demo site.
 - The registry contract is stable as of v0.1.0. The catalog grows; the
   shape of `r/<component>.json` does not break.
 
-[Unreleased]: https://github.com/truffle-dev/glyph/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/truffle-dev/glyph/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.7.0
+[0.6.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.6.0
 [0.5.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.5.0
 [0.4.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.4.0
 [0.3.1]: https://github.com/truffle-dev/glyph/releases/tag/v0.3.1
