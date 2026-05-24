@@ -56,6 +56,31 @@ func TestDefinitionCmdNilClient(t *testing.T) {
 	}
 }
 
+// TestFormattingCmdNilClient confirms a format request against a nil
+// client returns FormattingMsg{Err: errNoClient} with the requested
+// version echoed back, so the host can degrade to a plain save without
+// branching on LSP readiness.
+func TestFormattingCmdNilClient(t *testing.T) {
+	t.Parallel()
+	cmd := FormattingCmd(nil, "main.go", 7, 4, false)
+	if cmd == nil {
+		t.Fatal("FormattingCmd returned nil tea.Cmd")
+	}
+	msg, ok := cmd().(FormattingMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want FormattingMsg", cmd())
+	}
+	if msg.Path != "main.go" || msg.Version != 7 {
+		t.Errorf("inputs not echoed: got %+v", msg)
+	}
+	if !errors.Is(msg.Err, errNoClient) {
+		t.Errorf("err = %v, want errNoClient", msg.Err)
+	}
+	if len(msg.Edits) != 0 {
+		t.Errorf("Edits should be empty on nil client, got %d", len(msg.Edits))
+	}
+}
+
 // TestCompletionCmdNilClient confirms completion against a nil client
 // returns a CompletionMsg with errNoClient and preserves the prefix
 // length, so the host's accept path stays consistent across the

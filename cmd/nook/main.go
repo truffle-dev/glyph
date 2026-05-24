@@ -149,6 +149,11 @@ type model struct {
 	// In-file find/replace overlay (Ctrl+F / Ctrl+H). The host owns search
 	// execution; the finder owns input state and renders the bar.
 	finder finder.Finder
+
+	// formatOnSave runs textDocument/formatting before each save when the
+	// active buffer has a connected language server. Defaults to true;
+	// alt+s saves without formatting as the per-save escape hatch.
+	formatOnSave bool
 }
 
 func main() {
@@ -186,24 +191,25 @@ func newModel(root string) model {
 	// overwrite m.status with feedback for whatever they just did.
 	status := "press ? for keymap"
 	return model{
-		theme:       t,
-		root:        root,
-		width:       80,
-		height:      24,
-		bufs:        bufman.New(t).WithHighlighter(highlight.New()),
-		gitPane:     git.NewPane(t, root),
-		termPane:    term.NewPane(t, root),
-		picker:      picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
-		search:      search.NewPane(t, root),
-		editPane:    edit.NewPane(t, aiClient),
-		composer:    composer.NewPane(t, aiClient),
-		ghost:       ghost.NewManager(aiClient),
-		right:       rightNone,
-		status:      status,
-		aiClient:    aiClient,
-		lspVersions: map[string]int32{},
-		diagnostics: map[string][]protocol.Diagnostic{},
-		finder:      finder.New(t),
+		theme:        t,
+		root:         root,
+		width:        80,
+		height:       24,
+		bufs:         bufman.New(t).WithHighlighter(highlight.New()),
+		gitPane:      git.NewPane(t, root),
+		termPane:     term.NewPane(t, root),
+		picker:       picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
+		search:       search.NewPane(t, root),
+		editPane:     edit.NewPane(t, aiClient),
+		composer:     composer.NewPane(t, aiClient),
+		ghost:        ghost.NewManager(aiClient),
+		right:        rightNone,
+		status:       status,
+		aiClient:     aiClient,
+		lspVersions:  map[string]int32{},
+		diagnostics:  map[string][]protocol.Diagnostic{},
+		finder:       finder.New(t),
+		formatOnSave: true,
 	}
 }
 
@@ -565,6 +571,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.overlay = overlayCompletion
 		return m, nil
 
+	case lookup.FormattingMsg:
+		return m.handleFormattingMsg(msg)
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
@@ -693,6 +702,8 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleComposer()
 	case tea.KeyCtrlW:
 		return m.closeActiveTab()
+	case tea.KeyCtrlS:
+		return m.saveActive(true)
 	case tea.KeyCtrlCloseBracket:
 		// Go-to-definition. Asks gopls where the symbol under the
 		// cursor was declared and jumps to it (opening the target file
@@ -742,6 +753,22 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.overlay = overlayProjectSearch
 			m.search = m.search.Reset("")
 			m.search = m.search.Focus()
+			return m, nil
+		case 's':
+			// Alt+s saves without formatting — the per-save escape hatch for
+			// when gopls is grumpy or the user wants to commit a deliberately
+			// "ugly" intermediate state without losing it.
+			return m.saveActive(false)
+		case 'S':
+			// Alt+Shift+s toggles the global format-on-save preference.
+			// Useful when working with a half-broken file where format
+			// would just delete what you're writing.
+			m.formatOnSave = !m.formatOnSave
+			if m.formatOnSave {
+				m.status = "format-on-save: on"
+			} else {
+				m.status = "format-on-save: off"
+			}
 			return m, nil
 		}
 	}
@@ -896,6 +923,90 @@ func (m model) openInlineEdit() (tea.Model, tea.Cmd) {
 	m.overlay = overlayInlineEdit
 	*p = p.Blur()
 	return m, nil
+}
+
+// saveActive saves the active buffer. When formatFirst is true (Ctrl+S),
+// the buffer has a connected language server, and m.formatOnSave is on,
+// the save runs textDocument/formatting first and applies the resulting
+// edits before the disk write. When formatFirst is false (alt+s), the
+// formatter is bypassed entirely — the buffer hits disk as-is.
+func (m model) saveActive(formatFirst bool) (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
+		m.status = "no file to save"
+		return m, nil
+	}
+	if !formatFirst || !m.formatOnSave || m.lsp == nil || !isGoFile(p.Path()) {
+		// Plain save path: nothing to format against, or the user asked
+		// for the escape hatch. Fire SaveCmd directly so the buffer
+		// content hits disk exactly as displayed.
+		m.status = "saving " + filepath.Base(p.Path())
+		return m, p.SaveCmd()
+	}
+	// Format-then-save path. Pin the LSP version we're requesting against
+	// so a stale response (the user typed more before gopls answered)
+	// can be discarded in the message handler.
+	version := m.lspVersions[p.Path()]
+	m.status = "formatting " + filepath.Base(p.Path()) + "…"
+	return m, lookup.FormattingCmd(m.lsp, p.Path(), version, 4, false)
+}
+
+// handleFormattingMsg applies a textDocument/formatting response to the
+// active buffer (when versions still match), publishes a didChange so
+// gopls knows the new content, and fires SaveCmd. Errors and version
+// drift both fall back to a plain save so the user's intent to save is
+// always honored — formatting is an optimization, not a gate.
+func (m model) handleFormattingMsg(msg lookup.FormattingMsg) (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil || p.Path() != msg.Path {
+		// User switched buffers while gopls was thinking. Drop the
+		// response on the floor.
+		return m, nil
+	}
+	if msg.Err != nil {
+		// errNoClient is the "feature unavailable" case — degrade silently
+		// to a plain save. Any other error gets surfaced but still saves
+		// so the user doesn't lose their changes to a formatter hiccup.
+		if msg.Err.Error() != "no language server" {
+			m.status = "format failed: " + msg.Err.Error()
+		} else {
+			m.status = "saving " + filepath.Base(msg.Path)
+		}
+		return m, p.SaveCmd()
+	}
+	if m.lspVersions[msg.Path] != msg.Version {
+		// The buffer moved on while we were formatting. Don't apply the
+		// stale edits — they'd corrupt what the user just typed. Save
+		// the current buffer as-is instead.
+		m.status = "save (buffer changed during format)"
+		return m, p.SaveCmd()
+	}
+	if len(msg.Edits) == 0 {
+		// Server thinks the file is already well-formatted. Skip the
+		// rewrite and go straight to disk.
+		m.status = "saving " + filepath.Base(msg.Path)
+		return m, p.SaveCmd()
+	}
+	before := p.Contents()
+	after := nooklsp.Apply(before, msg.Edits)
+	if after == before {
+		// Edits collapsed to a no-op (e.g. all idempotent). Skip the
+		// rewrite path to avoid bumping bufVer for nothing.
+		m.status = "saving " + filepath.Base(msg.Path)
+		return m, p.SaveCmd()
+	}
+	*p = p.ReplaceAllFromString(after)
+	cmds := []tea.Cmd{p.SaveCmd()}
+	// Publish a fresh didChange so gopls's view of the document matches
+	// what we just wrote. Bump the version monotonically the same way
+	// every other mutating path does.
+	nv := m.lspVersions[msg.Path] + 1
+	m.lspVersions[msg.Path] = nv
+	if c := m.lspChangeCmd(msg.Path, nv, after); c != nil {
+		cmds = append(cmds, c)
+	}
+	m.status = "formatted " + filepath.Base(msg.Path)
+	return m, tea.Batch(cmds...)
 }
 
 // triggerCompletion fires an LSP completion request at the cursor. The

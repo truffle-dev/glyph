@@ -6,6 +6,61 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-24
+
+Format-on-save inside `nook`. `ctrl+s` now runs the LSP's
+`textDocument/formatting` request before writing the buffer when a
+language server is attached, so saving a `.go` file with gopls running
+produces the same output as `gofmt -w`. `alt+s` saves without
+formatting, and `alt+shift+s` toggles the behavior for the session.
+
+### Added
+
+- `lsp.Client.Formatting(ctx, path, tabSize, insertSpaces)` —
+  `textDocument/formatting` request returning `[]lsp.TextEdit`
+  (Go-native struct with start/end line/col + new text). Nil-guarded so
+  binding the save key when no LSP is attached degrades cleanly.
+- `lsp.Apply(source, edits)` — pure-function edit applicator. Sorts
+  edits descending by start offset and splices each into the source
+  byte slice, so overlap-free LSP responses round-trip into the
+  buffer without index drift. Clamps out-of-range positions to the
+  source end so a stale response can't panic.
+- `lookup.FormattingCmd` + `lookup.FormattingMsg` — async wrapper
+  matching the existing hover/definition/completion pattern. Echoes
+  the buffer version back in the message so the host can discard a
+  reply that arrived after the user typed.
+- Tests covering `Apply` (empty, whole-file, multi-edit descending,
+  insert-only, multiline, out-of-range clamp), the nil-client guard,
+  a real gopls round-trip on a deliberately mis-indented Go fixture,
+  and the host-side save paths (no-LSP plain save, stale-version
+  fallback, edits applied).
+
+### New keys
+
+- `ctrl+s` — save (formats first when an LSP is attached and the
+  format-on-save toggle is on; otherwise plain save).
+- `alt+s` — save without formatting (escape hatch when the formatter
+  would fight a partial edit).
+- `alt+shift+s` — toggle format-on-save for the session. Default on.
+
+### Changed
+
+- Help overlay (`?`) Files section lists the new save bindings so the
+  keymap is discoverable.
+
+### Notes
+
+- Format-on-save only fires for buffers whose path matches a language
+  server the host has connected (today: `.go` via gopls). Other
+  buffers fall through to a plain save with no status change.
+- A version drift between the request and the response (user typed
+  while the formatter was running) discards the edits and writes the
+  current buffer with a "save (buffer changed during format)" status,
+  so saving never silently overwrites in-flight edits.
+- A formatter error that isn't "no language server" surfaces in the
+  status bar but still writes the buffer; formatting is treated as an
+  optimization, not a save prerequisite.
+
 ## [0.7.0] — 2026-05-24
 
 In-buffer find and replace inside `nook`. `ctrl+f` opens a bottom-bar

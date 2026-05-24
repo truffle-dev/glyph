@@ -42,7 +42,9 @@ func Default() []Section {
 		{Name: "Files", Bindings: []Binding{
 			{"ctrl+p", "Fuzzy file picker"},
 			{"alt+f", "Project-wide search"},
-			{"ctrl+s", "Save the current buffer"},
+			{"ctrl+s", "Save (formats first when LSP is attached)"},
+			{"alt+s", "Save without formatting"},
+			{"alt+shift+s", "Toggle format-on-save"},
 			{"ctrl+w", "Close the current buffer"},
 		}},
 		{Name: "Buffers", Bindings: []Binding{

@@ -264,6 +264,174 @@ func TestLookupMethodsRejectUninitialized(t *testing.T) {
 	}
 }
 
+// TestApplyEmptyEdits returns the source unchanged when there are no edits.
+// gopls's "file is already well-formatted" reply takes this path.
+func TestApplyEmptyEdits(t *testing.T) {
+	t.Parallel()
+	src := "package main\n\nfunc main() {}\n"
+	got := Apply(src, nil)
+	if got != src {
+		t.Errorf("Apply(empty) = %q, want %q", got, src)
+	}
+	got = Apply(src, []TextEdit{})
+	if got != src {
+		t.Errorf("Apply([]) = %q, want %q", got, src)
+	}
+}
+
+// TestApplyWholeFileReplace mirrors gopls's common case: a single TextEdit
+// covering the whole file with the formatted contents.
+func TestApplyWholeFileReplace(t *testing.T) {
+	t.Parallel()
+	src := "package main\n\nfunc main(){}\n"
+	// gopls returns the full formatted file in one edit spanning [0,0)..
+	// (lastLineExclusive, 0).
+	edits := []TextEdit{{
+		StartLine: 0, StartCol: 0,
+		EndLine: 3, EndCol: 0,
+		NewText: "package main\n\nfunc main() {}\n",
+	}}
+	got := Apply(src, edits)
+	want := "package main\n\nfunc main() {}\n"
+	if got != want {
+		t.Errorf("Apply whole-file = %q, want %q", got, want)
+	}
+}
+
+// TestApplyMultipleEditsDescending verifies edits earlier in the file
+// don't drift later ones, which would happen if we applied ascending.
+func TestApplyMultipleEditsDescending(t *testing.T) {
+	t.Parallel()
+	src := "alpha beta gamma"
+	edits := []TextEdit{
+		// Ascending in source order. Apply must sort descending internally.
+		{StartLine: 0, StartCol: 0, EndLine: 0, EndCol: 5, NewText: "AAA"},      // alpha → AAA
+		{StartLine: 0, StartCol: 6, EndLine: 0, EndCol: 10, NewText: "BBBB"},    // beta → BBBB
+		{StartLine: 0, StartCol: 11, EndLine: 0, EndCol: 16, NewText: "GAMMA!"}, // gamma → GAMMA!
+	}
+	got := Apply(src, edits)
+	want := "AAA BBBB GAMMA!"
+	if got != want {
+		t.Errorf("Apply multi = %q, want %q", got, want)
+	}
+}
+
+// TestApplyInsertOnly covers an empty-range insert (StartCol == EndCol).
+// Inserting at col=6 puts the new text between F (col 5) and ( (col 6).
+func TestApplyInsertOnly(t *testing.T) {
+	t.Parallel()
+	src := "func F() {}\n"
+	edits := []TextEdit{{
+		StartLine: 0, StartCol: 6, EndLine: 0, EndCol: 6,
+		NewText: "ormatted",
+	}}
+	got := Apply(src, edits)
+	want := "func Formatted() {}\n"
+	if got != want {
+		t.Errorf("Apply insert = %q, want %q", got, want)
+	}
+}
+
+// TestApplyMultilineEdit covers a range that spans lines (e.g. fixing
+// indentation across a block).
+func TestApplyMultilineEdit(t *testing.T) {
+	t.Parallel()
+	src := "func F() {\n\t\tx := 1\n\t\ty := 2\n}\n"
+	edits := []TextEdit{{
+		StartLine: 1, StartCol: 0,
+		EndLine: 3, EndCol: 0,
+		NewText: "\tx := 1\n\ty := 2\n",
+	}}
+	got := Apply(src, edits)
+	want := "func F() {\n\tx := 1\n\ty := 2\n}\n"
+	if got != want {
+		t.Errorf("Apply multiline = %q, want %q", got, want)
+	}
+}
+
+// TestApplyClampsOutOfRange verifies a server that returns past-EOF
+// positions doesn't crash Apply or produce garbage. We clamp to EOF and
+// keep going.
+func TestApplyClampsOutOfRange(t *testing.T) {
+	t.Parallel()
+	src := "short\n"
+	edits := []TextEdit{{
+		StartLine: 999, StartCol: 999,
+		EndLine: 9999, EndCol: 9999,
+		NewText: "tail",
+	}}
+	got := Apply(src, edits)
+	want := "short\ntail"
+	if got != want {
+		t.Errorf("Apply clamp = %q, want %q", got, want)
+	}
+}
+
+// TestFormattingRejectsUninitialized confirms calling Formatting before
+// Start returns the friendly error instead of nil-dereferencing.
+func TestFormattingRejectsUninitialized(t *testing.T) {
+	t.Parallel()
+	c := &Client{}
+	if _, err := c.Formatting(context.Background(), "x.go", 4, false); err == nil {
+		t.Error("formatting on uninitialized client should error")
+	}
+}
+
+// TestFormattingEndToEnd drives gopls on a deliberately-mis-formatted Go
+// source and asserts the returned edits, when applied, produce gofmt
+// output. Skipped when gopls isn't on PATH.
+func TestFormattingEndToEnd(t *testing.T) {
+	if _, err := exec.LookPath("gopls"); err != nil {
+		t.Skip("gopls not on PATH; skipping format end-to-end test")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module lsp_test\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately mis-formatted: missing space before '{', wrong indent,
+	// trailing whitespace. gofmt fixes all three.
+	src := "package main\n\nfunc main(){\n\t\tx:=1\n\t_=x   \n}\n"
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cli, err := Start(ctx, Options{RootDir: dir})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 3*time.Second)
+		defer c()
+		_ = cli.Shutdown(shutCtx)
+	}()
+	if err := cli.Open(ctx, path, "go", src); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// Drain the first publishDiagnostics so gopls has finished initial
+	// type-check before we ask to format.
+	select {
+	case <-cli.Diagnostics():
+	case <-time.After(10 * time.Second):
+	}
+
+	edits, err := cli.Formatting(ctx, path, 4, false)
+	if err != nil {
+		t.Fatalf("formatting: %v", err)
+	}
+	if len(edits) == 0 {
+		t.Fatal("expected at least one edit from gofmt on misformatted source")
+	}
+	got := Apply(src, edits)
+	want := "package main\n\nfunc main() {\n\tx := 1\n\t_ = x\n}\n"
+	if got != want {
+		t.Errorf("formatted output mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
 // TestDiagnosticsChannelDoesNotBlockOnFull verifies a slow drainer does not
 // stall the handler; overflow events drop rather than block the server pump.
 func TestDiagnosticsChannelDoesNotBlockOnFull(t *testing.T) {

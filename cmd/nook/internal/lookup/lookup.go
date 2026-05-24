@@ -62,6 +62,18 @@ type CompletionMsg struct {
 	Err       error
 }
 
+// FormattingMsg carries the result of a textDocument/formatting request
+// back to the host model. Version echoes the LSP didChange version the
+// request was issued against so a stale response (the user typed more
+// after Ctrl+S) can be discarded by comparing it. Edits is empty when
+// the server thinks the file is already well-formatted.
+type FormattingMsg struct {
+	Path    string
+	Version int32
+	Edits   []nooklsp.TextEdit
+	Err     error
+}
+
 // HoverCmd returns a tea.Cmd that calls client.Hover and wraps the
 // result in HoverMsg. A nil client short-circuits to a HoverMsg with
 // errNoClient — the host can bind the key unconditionally.
@@ -105,5 +117,28 @@ func CompletionCmd(client *nooklsp.Client, path string, row, col, prefixLen int)
 		defer cancel()
 		items, err := client.Completion(ctx, path, row, col)
 		return CompletionMsg{Path: path, Row: row, Col: col, PrefixLen: prefixLen, Items: items, Err: err}
+	}
+}
+
+// formattingTimeout gives the language server a longer leash than the
+// other lookups. gofumpt-style formatters can take a second or two on a
+// big file the first time around; we cap at 5s so a wedged server
+// doesn't freeze the save UX forever.
+const formattingTimeout = 5 * time.Second
+
+// FormattingCmd returns a tea.Cmd that calls client.Formatting and wraps
+// the result in FormattingMsg. version echoes the LSP didChange version
+// the caller knew about at request time so a stale response can be
+// detected and ignored. nil-client returns a message carrying errNoClient
+// so the host can bind Ctrl+S unconditionally and degrade to a plain save.
+func FormattingCmd(client *nooklsp.Client, path string, version int32, tabSize int, insertSpaces bool) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return FormattingMsg{Path: path, Version: version, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), formattingTimeout)
+		defer cancel()
+		edits, err := client.Formatting(ctx, path, tabSize, insertSpaces)
+		return FormattingMsg{Path: path, Version: version, Edits: edits, Err: err}
 	}
 }

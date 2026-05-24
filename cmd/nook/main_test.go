@@ -19,6 +19,8 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
+	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
 )
@@ -717,5 +719,204 @@ func TestTabFlowDirtyBlocksClose(t *testing.T) {
 	}
 	if !strings.Contains(m.status, "dirty") {
 		t.Fatalf("status should warn about dirty, got %q", m.status)
+	}
+}
+
+// TestCtrlSWithoutLSPSavesPlain confirms Ctrl+S falls back to a plain
+// SaveCmd when no language server is running — formatting is an
+// optimization, not a precondition for saving.
+func TestCtrlSWithoutLSPSavesPlain(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+
+	a := filepath.Join(root, "a.go")
+	upd, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: a}})
+	m = upd.(model)
+
+	upd, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = upd.(model)
+	if cmd == nil {
+		t.Fatal("expected SaveCmd from Ctrl+S without LSP")
+	}
+	if msg, ok := cmd().(editor.SavedMsg); !ok {
+		t.Fatalf("expected editor.SavedMsg, got %T", cmd())
+	} else if msg.Err != nil {
+		t.Fatalf("save errored: %v", msg.Err)
+	}
+	if !strings.Contains(m.status, "saving") {
+		t.Errorf("status should mention saving, got %q", m.status)
+	}
+}
+
+// TestAltSAlwaysSkipsFormat verifies alt+s bypasses formatting even when
+// an LSP is connected and formatOnSave is on. This is the per-save
+// escape hatch.
+func TestAltSAlwaysSkipsFormat(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	// Sanity: default is on so the test is meaningful.
+	if !m.formatOnSave {
+		t.Fatal("formatOnSave should default to true")
+	}
+
+	a := filepath.Join(root, "a.go")
+	upd, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: a}})
+	m = upd.(model)
+
+	// alt+s arrives as KeyRunes 's' with Alt=true.
+	upd, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}, Alt: true})
+	m = upd.(model)
+	if cmd == nil {
+		t.Fatal("expected SaveCmd from alt+s")
+	}
+	// alt+s never goes through FormattingCmd — the cmd it returns is
+	// SaveCmd, which fires editor.SavedMsg on success.
+	if _, ok := cmd().(editor.SavedMsg); !ok {
+		t.Fatalf("expected editor.SavedMsg from alt+s, got %T", cmd())
+	}
+}
+
+// TestAltShiftSTogglesFormatOnSave covers the persistent toggle: alt+S
+// flips m.formatOnSave and updates status. Useful when the user wants
+// the global default flipped (e.g. working with a half-broken file).
+func TestAltShiftSTogglesFormatOnSave(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 100
+	m.height = 24
+	m = m.resize()
+	if !m.formatOnSave {
+		t.Fatal("formatOnSave should default to true")
+	}
+	upd, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}, Alt: true})
+	m = upd.(model)
+	if m.formatOnSave {
+		t.Error("formatOnSave should be off after first alt+S")
+	}
+	if !strings.Contains(m.status, "off") {
+		t.Errorf("status should reflect off, got %q", m.status)
+	}
+	upd, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}, Alt: true})
+	m = upd.(model)
+	if !m.formatOnSave {
+		t.Error("formatOnSave should be back on after second alt+S")
+	}
+	if !strings.Contains(m.status, "on") {
+		t.Errorf("status should reflect on, got %q", m.status)
+	}
+}
+
+// TestCtrlSWithoutFileSurfacesHint confirms Ctrl+S without an open
+// buffer prints a status hint instead of crashing on nil.
+func TestCtrlSWithoutFileSurfacesHint(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 100
+	m.height = 24
+	m = m.resize()
+	upd, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = upd.(model)
+	if cmd != nil {
+		t.Errorf("expected nil cmd, got %T", cmd())
+	}
+	if !strings.Contains(m.status, "no file") {
+		t.Errorf("status should mention no file, got %q", m.status)
+	}
+}
+
+// TestFormattingMsgAppliesEdits verifies the format-msg handler applies
+// edits to the active buffer, fires SaveCmd, and updates status. The
+// LSP version is in sync so no stale-discard path triggers.
+func TestFormattingMsgAppliesEdits(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+
+	upd, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: "a.go"}})
+	m = upd.(model)
+	a := m.activePath()
+
+	// Pretend a didChange at version 1 was published.
+	m.lspVersions[a] = 1
+
+	// Simulate gopls returning a single whole-file replace.
+	formatted := "package a\n\nfunc Foo() {\n\treturn\n}\n"
+	msg := lookup.FormattingMsg{
+		Path:    a,
+		Version: 1,
+		Edits: []nooklsp.TextEdit{{
+			StartLine: 0, StartCol: 0,
+			EndLine: 3, EndCol: 0,
+			NewText: formatted,
+		}},
+	}
+	upd, cmd := m.Update(msg)
+	m = upd.(model)
+
+	p := m.bufs.Active()
+	if p == nil {
+		t.Fatal("expected active buffer")
+	}
+	if got := p.Contents(); got != strings.TrimRight(formatted, "\n") {
+		// editor.ReplaceAllFromString splits on \n and drops the final
+		// empty line, so Contents() rejoins without the trailing newline.
+		t.Errorf("buffer contents = %q, want %q (modulo trailing newline)", got, strings.TrimRight(formatted, "\n"))
+	}
+	if cmd == nil {
+		t.Fatal("expected save+didChange batch cmd")
+	}
+	if !strings.Contains(m.status, "formatted") {
+		t.Errorf("status should mention formatted, got %q", m.status)
+	}
+	// Version was bumped for the post-format didChange.
+	if got := m.lspVersions[a]; got != 2 {
+		t.Errorf("lspVersions after format = %d, want 2", got)
+	}
+}
+
+// TestFormattingMsgStaleVersionFallsBackToSave verifies that a response
+// arriving after the buffer has moved on (version drift) doesn't apply
+// the stale edits — it just saves the current buffer.
+func TestFormattingMsgStaleVersionFallsBackToSave(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+
+	upd, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: "a.go"}})
+	m = upd.(model)
+	a := m.activePath()
+
+	originalContents := m.bufs.Active().Contents()
+	// Buffer moved to version 5 while a format was in flight for version 2.
+	m.lspVersions[a] = 5
+	msg := lookup.FormattingMsg{
+		Path:    a,
+		Version: 2,
+		Edits: []nooklsp.TextEdit{{
+			StartLine: 0, StartCol: 0,
+			EndLine: 99, EndCol: 0,
+			NewText: "// garbage from stale format\n",
+		}},
+	}
+	upd, cmd := m.Update(msg)
+	m = upd.(model)
+
+	p := m.bufs.Active()
+	if got := p.Contents(); got != originalContents {
+		t.Errorf("stale edits should not apply: got %q, want %q", got, originalContents)
+	}
+	if cmd == nil {
+		t.Fatal("expected plain SaveCmd as fallback")
+	}
+	if !strings.Contains(m.status, "changed during format") {
+		t.Errorf("status should explain the skip, got %q", m.status)
 	}
 }

@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
+	"strings"
 	"sync"
 
 	"go.lsp.dev/jsonrpc2"
@@ -136,6 +138,9 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 				Definition: &protocol.DefinitionTextDocumentClientCapabilities{
 					LinkSupport: false,
 				},
+				Formatting: &protocol.DocumentFormattingClientCapabilities{
+					DynamicRegistration: false,
+				},
 			},
 		},
 		WorkspaceFolders: []protocol.WorkspaceFolder{
@@ -251,6 +256,105 @@ type Location struct {
 	Col  int
 }
 
+// TextEdit is the host-side view of a single edit returned by Formatting.
+// Coordinates are 0-indexed (line/col) and refer to positions in the buffer
+// version the request was issued against. NewText replaces the half-open
+// [Start, End) range; an empty NewText is a pure delete, an empty range is
+// a pure insert.
+type TextEdit struct {
+	StartLine int
+	StartCol  int
+	EndLine   int
+	EndCol    int
+	NewText   string
+}
+
+// Apply applies a set of TextEdits to source and returns the new contents.
+// Edits are applied in descending start-position order so earlier indices
+// stay valid as later edits shrink or grow the buffer. Positions out of
+// range are clamped to the document end so a malformed server response
+// can't crash the editor. The contract matches the LSP spec: each edit's
+// Range is the document state BEFORE any sibling edit is applied, and no
+// two edits may overlap (the server is responsible for that).
+func Apply(source string, edits []TextEdit) string {
+	if len(edits) == 0 {
+		return source
+	}
+	// Pre-compute the byte offset of the start of each line so we can
+	// convert (line, col) to a single byte index in O(1) per edit.
+	lineStart := lineStartOffsets(source)
+	type offsetEdit struct {
+		start, end int
+		text       string
+	}
+	resolved := make([]offsetEdit, 0, len(edits))
+	for _, e := range edits {
+		s := positionToOffset(source, lineStart, e.StartLine, e.StartCol)
+		end := positionToOffset(source, lineStart, e.EndLine, e.EndCol)
+		if end < s {
+			end = s
+		}
+		resolved = append(resolved, offsetEdit{start: s, end: end, text: e.NewText})
+	}
+	// Apply highest-start first so prior offsets remain stable.
+	sort.SliceStable(resolved, func(i, j int) bool {
+		return resolved[i].start > resolved[j].start
+	})
+	var b strings.Builder
+	b.Grow(len(source))
+	out := source
+	for _, e := range resolved {
+		out = out[:e.start] + e.text + out[e.end:]
+	}
+	b.WriteString(out)
+	return b.String()
+}
+
+// lineStartOffsets returns a slice where index i is the byte offset of the
+// start of line i in source. Line 0 starts at 0. The final entry is the
+// byte length of source so positionToOffset on (lastLine+1, 0) clamps
+// gracefully rather than panicking.
+func lineStartOffsets(source string) []int {
+	out := []int{0}
+	for i := 0; i < len(source); i++ {
+		if source[i] == '\n' {
+			out = append(out, i+1)
+		}
+	}
+	out = append(out, len(source))
+	return out
+}
+
+// positionToOffset converts an LSP (line, character) position into a byte
+// offset in source. Out-of-range positions clamp to the source's length
+// so a server that returns slightly-past-EOF positions can't crash apply.
+func positionToOffset(source string, lineStart []int, line, col int) int {
+	if line < 0 {
+		return 0
+	}
+	if line >= len(lineStart)-1 {
+		return len(source)
+	}
+	start := lineStart[line]
+	// end is the byte after this line's content. Strip the trailing '\n'
+	// only when this line actually owns one — an empty trailing line
+	// (lineStart[i] == lineStart[i+1]) doesn't, and clamping its end
+	// past the prior line's '\n' would garble a whole-file replace
+	// targeting (lastLine+1, 0).
+	end := lineStart[line+1]
+	if end > start && end <= len(source) && source[end-1] == '\n' {
+		end--
+	}
+	off := start + col
+	if off > end {
+		off = end
+	}
+	if off > len(source) {
+		off = len(source)
+	}
+	return off
+}
+
 // Completion requests completion items at the given 0-indexed line and column.
 // Returns an empty slice (not nil) when the server has nothing to suggest, so
 // callers can `for _, item := range items` without nil-checking. Errors only
@@ -329,6 +433,43 @@ func (c *Client) Definition(ctx context.Context, path string, line, col int) ([]
 			Path: uri.URI(l.URI).Filename(),
 			Line: int(l.Range.Start.Line),
 			Col:  int(l.Range.Start.Character),
+		})
+	}
+	return out, nil
+}
+
+// Formatting asks the server to whole-file-format the open document and
+// returns the edits to apply. tabSize is the editor's tab width in spaces;
+// insertSpaces is true when the editor inserts spaces for tabs (false means
+// use tab characters). Returns an empty slice (not nil) when the server
+// thinks the file is already well-formatted, so callers can iterate without
+// nil-checking. Errors only when the underlying RPC fails — a no-op format
+// is not an error.
+func (c *Client) Formatting(ctx context.Context, path string, tabSize int, insertSpaces bool) ([]TextEdit, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	if tabSize <= 0 {
+		tabSize = 4
+	}
+	edits, err := c.server.Formatting(ctx, &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+		Options: protocol.FormattingOptions{
+			TabSize:      uint32(tabSize),
+			InsertSpaces: insertSpaces,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: formatting: %w", err)
+	}
+	out := make([]TextEdit, 0, len(edits))
+	for _, e := range edits {
+		out = append(out, TextEdit{
+			StartLine: int(e.Range.Start.Line),
+			StartCol:  int(e.Range.Start.Character),
+			EndLine:   int(e.Range.End.Line),
+			EndCol:    int(e.Range.End.Character),
+			NewText:   e.NewText,
 		})
 	}
 	return out, nil
