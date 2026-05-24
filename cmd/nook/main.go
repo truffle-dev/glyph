@@ -18,6 +18,7 @@
 //	ctrl+l     composer multi-file AI edit (Sonnet)
 //	ctrl+`     terminal pane
 //	ctrl+s     save current buffer
+//	ctrl+t     workspace symbol search (functions, types, vars across project)
 //	alt+i      LSP hover info for symbol under cursor
 //	alt+j      expand snippet at cursor (Tab cycles tabstops, Esc exits)
 //	alt+y      toggle gopls inlay hints (type annotations, parameter names)
@@ -86,6 +87,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/symbolsearch"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tabbar"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tasks"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/term"
@@ -109,6 +111,7 @@ const (
 	overlayMultibuffer
 	overlayDiagnostics
 	overlayTasks
+	overlaySymbolSearch
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -206,6 +209,14 @@ type model struct {
 	// prompt (which they can't, but the pin is defensive).
 	renamePrompt  rename.Prompt
 	pendingRename pendingRename
+
+	// Workspace symbol search modal (Ctrl+T). The prompt collects a query
+	// string; on Enter the host fires lsp.WorkspaceSymbol and routes the
+	// results through the multibuffer overlay as fragments. lastSymQuery
+	// is the previous query so Ctrl+T re-opens with the last value (Zed
+	// muscle memory).
+	symbolPrompt symbolsearch.Prompt
+	lastSymQuery string
 
 	// Multibuffer overlay (Zed's signature: stitch hunks from multiple
 	// files into one scrollable surface). Alt+m loads working-tree-vs-HEAD
@@ -372,6 +383,7 @@ func newModel(root string) model {
 		showTree:     false,
 		caPopup:      codeaction.New(),
 		renamePrompt: rename.New(),
+		symbolPrompt: symbolsearch.New(),
 		multibufPane: multibuffer.NewPane(t, root),
 		diagPane:     diagnostics.NewPane(t, root),
 		mdPane:       mdpreview.NewPane(t),
@@ -1221,6 +1233,13 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.routeRename(km)
 	}
 
+	// Symbol-search prompt swallows its own keys: typing edits the
+	// query, arrows/home/end move the cursor, Backspace deletes,
+	// Enter fires workspace/symbol, Esc cancels.
+	if m.overlay == overlaySymbolSearch {
+		return m.routeSymbolSearch(km)
+	}
+
 	// Global keys
 	switch km.Type {
 	case tea.KeyCtrlQ:
@@ -1265,6 +1284,15 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleTree()
 	case tea.KeyCtrlS:
 		return m.saveActive(true)
+	case tea.KeyCtrlT:
+		// Workspace symbol search. Opens a small modal prompt; the
+		// query is sent to the language server's workspace/symbol on
+		// Enter, and results land in the multibuffer overlay as
+		// fragments (one window per hit, declaration line highlighted
+		// Added, three context lines above/below). Matches Zed and VS
+		// Code's Ctrl+T muscle memory. Re-opening preserves the last
+		// query (cursor at end) so refining a search is one keystroke.
+		return m.openSymbolSearch()
 	case tea.KeyCtrlCloseBracket:
 		// Go-to-definition. Asks gopls where the symbol under the
 		// cursor was declared and jumps to it (opening the target file
@@ -1910,6 +1938,97 @@ func (m model) findReferencesAtCursor() (tea.Model, tea.Cmd) {
 		*ap = ap.Blur()
 	}
 	return m, findrefs.FindReferencesCmd(m.lsp, p.Path(), row, col, findrefs.DefaultContextLines, nil)
+}
+
+// openSymbolSearch arms the workspace-symbol prompt. It re-uses the last
+// query (Zed-style: refining a search is one keystroke) and surfaces a
+// status hint when no LSP is attached so the user gets an early read on
+// why the modal won't return results. The modal opens regardless so the
+// user can still type and see the prompt UX even before the server
+// finishes initializing.
+func (m model) openSymbolSearch() (tea.Model, tea.Cmd) {
+	label := filepath.Base(m.root)
+	if label == "." || label == "" {
+		label = "workspace"
+	}
+	if m.lastSymQuery != "" {
+		m.symbolPrompt = m.symbolPrompt.OpenWith(label, m.lastSymQuery)
+	} else {
+		m.symbolPrompt = m.symbolPrompt.Open(label)
+	}
+	m.overlay = overlaySymbolSearch
+	if m.lsp == nil {
+		m.symbolPrompt = m.symbolPrompt.WithError("no language server attached yet")
+	}
+	if ap := m.bufs.Active(); ap != nil {
+		*ap = ap.Blur()
+	}
+	m.status = "symbol search: type a query, enter to search, esc to cancel"
+	return m, nil
+}
+
+// routeSymbolSearch forwards a keypress into the symbolsearch.Prompt.
+// Enter fires the workspace/symbol request; Esc cancels. The result is
+// rendered through the multibuffer overlay so the user-facing surface
+// matches Alt+U (find references) and Alt+M (diff).
+func (m model) routeSymbolSearch(km tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch km.Type {
+	case tea.KeyEsc:
+		m.symbolPrompt = m.symbolPrompt.Close()
+		m.overlay = overlayNone
+		m.status = "symbol search cancelled"
+		return m, nil
+	case tea.KeyEnter:
+		query := m.symbolPrompt.Value()
+		if query == "" {
+			m.symbolPrompt = m.symbolPrompt.WithError("query is empty")
+			return m, nil
+		}
+		if m.lsp == nil {
+			m.symbolPrompt = m.symbolPrompt.WithError("no language server attached yet")
+			return m, nil
+		}
+		m.lastSymQuery = query
+		m.symbolPrompt = m.symbolPrompt.Close()
+		m.overlay = overlayMultibuffer
+		m.multibufPane = m.multibufPane.
+			WithSize(m.width-4, m.height-4).
+			Reset("symbols matching " + query).
+			Focus()
+		m.status = "asking gopls for workspace symbols…"
+		return m, symbolsearch.FindSymbolsCmd(m.lsp, query, symbolsearch.DefaultContextLines, nil)
+	case tea.KeyBackspace:
+		m.symbolPrompt = m.symbolPrompt.Backspace()
+		return m, nil
+	case tea.KeyDelete, tea.KeyCtrlD:
+		m.symbolPrompt = m.symbolPrompt.Delete()
+		return m, nil
+	case tea.KeyCtrlU:
+		m.symbolPrompt = m.symbolPrompt.Clear()
+		return m, nil
+	case tea.KeyLeft:
+		m.symbolPrompt = m.symbolPrompt.MoveLeft()
+		return m, nil
+	case tea.KeyRight:
+		m.symbolPrompt = m.symbolPrompt.MoveRight()
+		return m, nil
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.symbolPrompt = m.symbolPrompt.MoveHome()
+		return m, nil
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.symbolPrompt = m.symbolPrompt.MoveEnd()
+		return m, nil
+	case tea.KeyRunes, tea.KeySpace:
+		runes := km.Runes
+		if len(runes) == 0 && km.Type == tea.KeySpace {
+			runes = []rune{' '}
+		}
+		for _, r := range runes {
+			m.symbolPrompt = m.symbolPrompt.Type(r)
+		}
+		return m, nil
+	}
+	return m, nil
 }
 
 // handlePrepareRenameMsg arms the rename prompt when the server says the
@@ -2869,6 +2988,15 @@ func (m model) View() string {
 			boxW = m.width - 4
 		}
 		box := m.renamePrompt.View(t, boxW)
+		float := centerOverlay(m.width, m.height-1, box)
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlaySymbolSearch {
+		boxW := 64
+		if boxW > m.width-4 {
+			boxW = m.width - 4
+		}
+		box := m.symbolPrompt.View(t, boxW)
 		float := centerOverlay(m.width, m.height-1, box)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}

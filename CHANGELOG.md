@@ -6,6 +6,72 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-05-24
+
+Workspace symbol search in `nook`. Press Ctrl+T, type a query, hit
+Enter, and every matching symbol (functions, types, methods, fields,
+constants) across the entire workspace opens in the multibuffer
+overlay. The pane's body is the same Fragment shape v0.13.0 designed —
+one window per hit, the symbol's declaration line marked `Added`,
+three context lines above and below. The fragment header reads "func
+handleSearch" or "method User.Hello" so a results page works as a
+project outline even before you Enter on a row.
+
+Single-keystroke refinement is the muscle memory: Ctrl+T re-opens the
+modal with your previous query and the cursor at the end, so amending
+"Server" to "ServerStart" is two keystrokes. The prompt accepts any
+printable rune — gopls method-qualified queries like "T.M",
+rust-analyzer fuzzy queries like "fmt#print", path-style queries like
+"http/handler" — none of which would fit through the identifier-only
+filter the rename modal uses.
+
+LSP wiring goes through `protocol.WorkspaceSymbolParams` and
+`SymbolInformation`, with the response distilled into a host-friendly
+`WorkspaceSymbolKind` enum (Function, Method, Class, Struct, Variable,
+Constant, Field, Property, Interface, Enum, EnumMember, Namespace,
+Package, TypeParameter, File) so future overlays can branch on kind
+without depending on the protocol package. The kind is rendered as a
+compact label (`func`, `method`, `var`, `const`, `struct`, `iface`)
+woven into the fragment suffix.
+
+Mirrors Zed and VS Code's Ctrl+T project-symbol shortcut, but rendered
+through nook's multibuffer pane so the result reads as a real outline
+rather than a single-line picker dropdown. Picked over DAP debugging
+(item 18, multi-session swing) and per-language LSP fan-out (still
+roadmap) because the v0.13.0 Fragment shape was designed precisely
+for this expansion — the multibuffer pane absorbs the new loader
+with zero changes to the pane code.
+
+### Added
+
+- `cmd/nook/internal/symbolsearch` package: `Prompt` modal (open,
+  close, type/backspace/delete/clear, move home/end/left/right,
+  error display) accepting any printable rune so language-server-
+  specific query syntax passes through; `BuildFragments(syms,
+  contextLines, reader)` turning `[]lsp.WorkspaceSymbol` into
+  `[]multibuffer.Fragment` with windows merged on overlap and a
+  `kind container.name` suffix per fragment; `FindSymbolsCmd(client,
+  query, contextLines, reader)` tea.Cmd factory wrapping the LSP call
+  with timeout, source-tag, and FragmentsMsg envelope; `OSReader`
+  default plus tests against in-memory map readers.
+- `lsp.Client.WorkspaceSymbol(ctx, query)` wrapper around
+  `workspace/symbol`, returning host-friendly
+  `[]WorkspaceSymbol{Name, Kind, Container, Path, Line, Col}` with
+  `WorkspaceSymbolKind` enum + `Short()` label and `mapSymbolKind`
+  protocol → host conversion; `WorkspaceSymbolClientCapabilities`
+  declared at Initialize so servers actually emit results.
+- `nook` host: `overlaySymbolSearch` overlay, `symbolPrompt` and
+  `lastSymQuery` fields, `openSymbolSearch` handler (re-opens with
+  the last query, surfaces "no LSP" hint), `routeSymbolSearch` for
+  the modal's key handling (Enter fires, Esc cancels, Backspace /
+  Delete / Ctrl+U / Home / End / Ctrl+A / Ctrl+E / arrows for input
+  editing). Modal renders centered over the workspace at 64-column
+  cap; results land in the multibuffer overlay titled "symbols
+  matching <query>".
+- Ctrl+T binding in the global key switch + `ctrl+t` line in the
+  Language server section of the help overlay + `help_test.go`
+  mustHave list extended to include `ctrl+t`.
+
 ## [0.22.0] — 2026-05-24
 
 Find references via LSP in `nook`. Place the cursor on an identifier,

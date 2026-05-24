@@ -166,6 +166,28 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 					PrepareSupport:      true,
 				},
 			},
+			Workspace: &protocol.WorkspaceClientCapabilities{
+				Symbol: &protocol.WorkspaceSymbolClientCapabilities{
+					DynamicRegistration: false,
+					SymbolKind: &protocol.SymbolKindCapabilities{
+						ValueSet: []protocol.SymbolKind{
+							protocol.SymbolKindFile, protocol.SymbolKindModule,
+							protocol.SymbolKindNamespace, protocol.SymbolKindPackage,
+							protocol.SymbolKindClass, protocol.SymbolKindMethod,
+							protocol.SymbolKindProperty, protocol.SymbolKindField,
+							protocol.SymbolKindConstructor, protocol.SymbolKindEnum,
+							protocol.SymbolKindInterface, protocol.SymbolKindFunction,
+							protocol.SymbolKindVariable, protocol.SymbolKindConstant,
+							protocol.SymbolKindString, protocol.SymbolKindNumber,
+							protocol.SymbolKindBoolean, protocol.SymbolKindArray,
+							protocol.SymbolKindObject, protocol.SymbolKindKey,
+							protocol.SymbolKindNull, protocol.SymbolKindEnumMember,
+							protocol.SymbolKindStruct, protocol.SymbolKindEvent,
+							protocol.SymbolKindOperator, protocol.SymbolKindTypeParameter,
+						},
+					},
+				},
+			},
 		},
 		WorkspaceFolders: []protocol.WorkspaceFolder{
 			{URI: string(rootURI), Name: "root"},
@@ -507,6 +529,153 @@ func (c *Client) References(ctx context.Context, path string, line, col int) ([]
 		})
 	}
 	return out, nil
+}
+
+// WorkspaceSymbol kind, distilled from LSP SymbolKind so callers don't
+// depend on the protocol package. The unknown bucket absorbs any future
+// kind value the server emits.
+type WorkspaceSymbolKind int
+
+const (
+	WorkspaceSymbolKindUnknown WorkspaceSymbolKind = iota
+	WorkspaceSymbolKindFunction
+	WorkspaceSymbolKindMethod
+	WorkspaceSymbolKindConstructor
+	WorkspaceSymbolKindClass
+	WorkspaceSymbolKindStruct
+	WorkspaceSymbolKindInterface
+	WorkspaceSymbolKindEnum
+	WorkspaceSymbolKindEnumMember
+	WorkspaceSymbolKindField
+	WorkspaceSymbolKindProperty
+	WorkspaceSymbolKindVariable
+	WorkspaceSymbolKindConstant
+	WorkspaceSymbolKindModule
+	WorkspaceSymbolKindNamespace
+	WorkspaceSymbolKindPackage
+	WorkspaceSymbolKindTypeParameter
+	WorkspaceSymbolKindFile
+)
+
+// Short returns a compact label suitable for a fragment header or status
+// line. Empty for unknown so callers can render without padding.
+func (k WorkspaceSymbolKind) Short() string {
+	switch k {
+	case WorkspaceSymbolKindFunction:
+		return "func"
+	case WorkspaceSymbolKindMethod:
+		return "method"
+	case WorkspaceSymbolKindConstructor:
+		return "ctor"
+	case WorkspaceSymbolKindClass:
+		return "class"
+	case WorkspaceSymbolKindStruct:
+		return "struct"
+	case WorkspaceSymbolKindInterface:
+		return "iface"
+	case WorkspaceSymbolKindEnum:
+		return "enum"
+	case WorkspaceSymbolKindEnumMember:
+		return "enum-member"
+	case WorkspaceSymbolKindField:
+		return "field"
+	case WorkspaceSymbolKindProperty:
+		return "property"
+	case WorkspaceSymbolKindVariable:
+		return "var"
+	case WorkspaceSymbolKindConstant:
+		return "const"
+	case WorkspaceSymbolKindModule:
+		return "module"
+	case WorkspaceSymbolKindNamespace:
+		return "namespace"
+	case WorkspaceSymbolKindPackage:
+		return "package"
+	case WorkspaceSymbolKindTypeParameter:
+		return "typeparam"
+	case WorkspaceSymbolKindFile:
+		return "file"
+	}
+	return ""
+}
+
+// WorkspaceSymbol is the host-side view of one workspace/symbol result.
+// Path is an absolute filesystem path, Line/Col are 0-indexed. Container
+// is the parent name (e.g. "MyType" for a method "MyType.Foo") and is
+// often empty for top-level symbols.
+type WorkspaceSymbol struct {
+	Name      string
+	Kind      WorkspaceSymbolKind
+	Container string
+	Path      string
+	Line      int
+	Col       int
+}
+
+// WorkspaceSymbol asks the server for symbols matching query across the
+// entire workspace. An empty query asks the server for all symbols (gopls
+// returns a generous cap rather than every symbol in the world, which is
+// the right behavior for a picker). Errors only on RPC failure.
+func (c *Client) WorkspaceSymbol(ctx context.Context, query string) ([]WorkspaceSymbol, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	syms, err := c.server.Symbols(ctx, &protocol.WorkspaceSymbolParams{Query: query})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: workspace symbol: %w", err)
+	}
+	out := make([]WorkspaceSymbol, 0, len(syms))
+	for _, s := range syms {
+		out = append(out, WorkspaceSymbol{
+			Name:      s.Name,
+			Kind:      mapSymbolKind(s.Kind),
+			Container: s.ContainerName,
+			Path:      uri.URI(s.Location.URI).Filename(),
+			Line:      int(s.Location.Range.Start.Line),
+			Col:       int(s.Location.Range.Start.Character),
+		})
+	}
+	return out, nil
+}
+
+func mapSymbolKind(k protocol.SymbolKind) WorkspaceSymbolKind {
+	switch k {
+	case protocol.SymbolKindFile:
+		return WorkspaceSymbolKindFile
+	case protocol.SymbolKindModule:
+		return WorkspaceSymbolKindModule
+	case protocol.SymbolKindNamespace:
+		return WorkspaceSymbolKindNamespace
+	case protocol.SymbolKindPackage:
+		return WorkspaceSymbolKindPackage
+	case protocol.SymbolKindClass:
+		return WorkspaceSymbolKindClass
+	case protocol.SymbolKindMethod:
+		return WorkspaceSymbolKindMethod
+	case protocol.SymbolKindProperty:
+		return WorkspaceSymbolKindProperty
+	case protocol.SymbolKindField:
+		return WorkspaceSymbolKindField
+	case protocol.SymbolKindConstructor:
+		return WorkspaceSymbolKindConstructor
+	case protocol.SymbolKindEnum:
+		return WorkspaceSymbolKindEnum
+	case protocol.SymbolKindInterface:
+		return WorkspaceSymbolKindInterface
+	case protocol.SymbolKindFunction:
+		return WorkspaceSymbolKindFunction
+	case protocol.SymbolKindVariable:
+		return WorkspaceSymbolKindVariable
+	case protocol.SymbolKindConstant:
+		return WorkspaceSymbolKindConstant
+	case protocol.SymbolKindEnumMember:
+		return WorkspaceSymbolKindEnumMember
+	case protocol.SymbolKindStruct:
+		return WorkspaceSymbolKindStruct
+	case protocol.SymbolKindTypeParameter:
+		return WorkspaceSymbolKindTypeParameter
+	}
+	return WorkspaceSymbolKindUnknown
 }
 
 // InlayHint asks the server for the inlay hints inside the given line range
