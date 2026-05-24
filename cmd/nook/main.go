@@ -24,6 +24,7 @@
 //	ctrl+space LSP completion popup (↑/↓ to navigate, enter to accept)
 //	alt+enter  LSP code actions at the cursor
 //	f2         LSP rename symbol under cursor
+//	alt+,      reload ~/.config/nook/config.toml
 //	tab        accept ghost-text completion (when present)
 //	ctrl+q     quit
 //	esc        close overlay / blur / dismiss ghost-text
@@ -36,6 +37,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -57,6 +59,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/codeaction"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/config"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/filetree"
@@ -198,6 +201,20 @@ type model struct {
 	// toggles. Default true. When false the host suppresses hint requests
 	// and clears any stale hints from the active editor pane.
 	inlayHintsOn bool
+
+	// cfgPath is the resolved ~/.config/nook/config.toml location. Stored
+	// on the model so alt+, can re-read the same file without re-resolving
+	// XDG_CONFIG_HOME each time. Empty when the host couldn't determine a
+	// path (e.g. no home dir) — the reload key surfaces an error in that
+	// case rather than crashing.
+	cfgPath string
+	// themeName is the name of the currently-applied theme. Stored so the
+	// reload handler can detect a theme change and surface a "restart to
+	// apply" hint, since deeply-themed sub-panes aren't live-reskinned.
+	themeName string
+	// tabWidth is the editor's hard-tab expansion. Sourced from config at
+	// startup and reload; forwarded to bufman and lookup.FormattingCmd.
+	tabWidth int
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -235,19 +252,53 @@ func main() {
 	}
 }
 
+// resolveTheme returns the named theme from the registry, falling back to
+// theme.Default when the name is unregistered. The bool tells the caller
+// whether the fallback fired so the host can surface a status hint.
+func resolveTheme(name string) (theme.Theme, bool) {
+	t, ok := theme.ByName(name)
+	if !ok {
+		return theme.Default, false
+	}
+	return t, true
+}
+
 func newModel(root string) model {
-	t := theme.Default
+	cfgPath, _ := config.Path()
+	cfg := config.Default()
+	loadErr := error(nil)
+	loadMissing := false
+	if cfgPath != "" {
+		c, err := config.Load(cfgPath)
+		switch {
+		case err == nil:
+			cfg = c
+		case errors.Is(err, config.ErrNotFound):
+			loadMissing = true
+		default:
+			loadErr = err
+		}
+	}
+
+	t, themeOK := resolveTheme(cfg.Editor.Theme)
 	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
 	// The welcome card carries the full keymap; the status bar just nudges
 	// new users toward the help overlay. Once a file is open, callers
 	// overwrite m.status with feedback for whatever they just did.
 	status := "press ? for keymap"
+	switch {
+	case loadErr != nil:
+		status = "config: " + loadErr.Error() + " (using defaults)"
+	case !themeOK && !loadMissing:
+		status = "theme " + cfg.Editor.Theme + " not found; using default"
+	}
+
 	return model{
 		theme:        t,
 		root:         root,
 		width:        80,
 		height:       24,
-		bufs:         bufman.New(t).WithHighlighter(highlight.New()),
+		bufs:         bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers),
 		gitPane:      git.NewPane(t, root),
 		termPane:     term.NewPane(t, root),
 		picker:       picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
@@ -261,14 +312,52 @@ func newModel(root string) model {
 		lspVersions:  map[string]int32{},
 		diagnostics:  map[string][]protocol.Diagnostic{},
 		finder:       finder.New(t),
-		formatOnSave: true,
+		formatOnSave: cfg.Editor.FormatOnSave,
 		treePane:     filetree.New(t, root),
 		showTree:     false,
 		caPopup:      codeaction.New(),
 		renamePrompt: rename.New(),
 		multibufPane: multibuffer.NewPane(t, root),
-		inlayHintsOn: true,
+		inlayHintsOn: cfg.Editor.InlayHints,
+		cfgPath:      cfgPath,
+		themeName:    cfg.Editor.Theme,
+		tabWidth:     cfg.Editor.TabWidth,
 	}
+}
+
+// reloadConfig re-reads m.cfgPath and applies the runtime-mutable knobs.
+// Editor toggles (format-on-save, inlay hints, tab width, line numbers) take
+// effect immediately. A theme change is detected and surfaced as a status
+// hint asking the user to restart, since deeply-themed sub-panes aren't
+// live-reskinned in v0.15.0. Returns the updated model.
+func (m model) reloadConfig() model {
+	if m.cfgPath == "" {
+		m.status = "config: no path resolved"
+		return m
+	}
+	cfg, err := config.Load(m.cfgPath)
+	if err != nil && !errors.Is(err, config.ErrNotFound) {
+		m.status = "config: " + err.Error() + " (kept current settings)"
+		return m
+	}
+	prevTheme := m.themeName
+	m.formatOnSave = cfg.Editor.FormatOnSave
+	m.inlayHintsOn = cfg.Editor.InlayHints
+	m.tabWidth = cfg.Editor.TabWidth
+	m.themeName = cfg.Editor.Theme
+	m.bufs.WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers)
+	if !m.inlayHintsOn {
+		m = m.clearInlayHints()
+	}
+	switch {
+	case errors.Is(err, config.ErrNotFound):
+		m.status = "config: no file at " + m.cfgPath + " (using defaults)"
+	case prevTheme != cfg.Editor.Theme:
+		m.status = "settings reloaded — restart nook to apply theme change"
+	default:
+		m.status = "settings reloaded"
+	}
+	return m
 }
 
 func (m model) Init() tea.Cmd {
@@ -1060,6 +1149,15 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.clearInlayHints()
 			m.status = "inlay hints: off"
 			return m, nil
+		case ',':
+			// Alt+, reloads ~/.config/nook/config.toml. Editor toggles take
+			// effect immediately; theme changes need a restart since deeply-
+			// themed sub-panes aren't live-reskinned in v0.15.0.
+			m = m.reloadConfig()
+			if m.inlayHintsOn {
+				return m, m.refreshInlayHintsCmd()
+			}
+			return m, nil
 		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
@@ -1255,8 +1353,12 @@ func (m model) saveActive(formatFirst bool) (tea.Model, tea.Cmd) {
 	// so a stale response (the user typed more before gopls answered)
 	// can be discarded in the message handler.
 	version := m.lspVersions[p.Path()]
+	tabW := m.tabWidth
+	if tabW <= 0 {
+		tabW = 4
+	}
 	m.status = "formatting " + filepath.Base(p.Path()) + "…"
-	return m, lookup.FormattingCmd(m.lsp, p.Path(), version, 4, false)
+	return m, lookup.FormattingCmd(m.lsp, p.Path(), version, tabW, false)
 }
 
 // handleFormattingMsg applies a textDocument/formatting response to the

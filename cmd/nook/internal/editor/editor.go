@@ -144,6 +144,13 @@ type Pane struct {
 	// Editing operations apply at the primary AND at every extra; movement
 	// keys collapse extras to the primary. See applyAtAllCursors.
 	extras []extraCursor
+
+	// tabWidth is the column count a hard tab expands to during rendering.
+	// Defaults to 4 (NewPane sets it). On-disk bytes always stay tabs.
+	tabWidth int
+	// lineNumbers controls whether the gutter prints the 1-based row number.
+	// Defaults to true. The marker column (git + diagnostic) renders regardless.
+	lineNumbers bool
 }
 
 // extraCursor is an additional editing cursor beyond the primary at
@@ -168,8 +175,36 @@ type Range struct {
 
 // NewPane constructs an empty pane.
 func NewPane(t theme.Theme) Pane {
-	return Pane{theme: t, buf: NewBuffer(), width: 80, height: 24, searchCurrent: -1}
+	return Pane{theme: t, buf: NewBuffer(), width: 80, height: 24, searchCurrent: -1, tabWidth: 4, lineNumbers: true}
 }
+
+// SetTabWidth sets the rendered tab expansion. Values <= 0 clamp to 4.
+// Defaults to 4. Affects rendering only; file bytes still hold tabs.
+func (p Pane) SetTabWidth(n int) Pane {
+	if n <= 0 {
+		n = 4
+	}
+	p.tabWidth = n
+	return p
+}
+
+// TabWidth reports the rendered tab expansion.
+func (p Pane) TabWidth() int {
+	if p.tabWidth <= 0 {
+		return 4
+	}
+	return p.tabWidth
+}
+
+// SetLineNumbers toggles the row-number gutter. The marker column (git +
+// diagnostic) is not affected.
+func (p Pane) SetLineNumbers(b bool) Pane {
+	p.lineNumbers = b
+	return p
+}
+
+// LineNumbers reports whether the row-number gutter is currently visible.
+func (p Pane) LineNumbers() bool { return p.lineNumbers }
 
 // WithSearchMatches stores the search matches to paint as background
 // highlights and the index of the currently active hit (or -1 for none).
@@ -1148,9 +1183,16 @@ func (p Pane) View() string {
 	}
 
 	gw := numWidth(len(p.buf.Lines))
+	if !p.lineNumbers {
+		gw = 0
+	}
 	contentWidth := p.width - gw - 2
 	if contentWidth < 1 {
 		contentWidth = 1
+	}
+	tabW := p.tabWidth
+	if tabW <= 0 {
+		tabW = 4
 	}
 
 	// Group every cursor (primary + extras) by row so renderHighlightedRow can
@@ -1167,12 +1209,14 @@ func (p Pane) View() string {
 
 	var rows []string
 	for i := p.offset; i < end; i++ {
-		num := fmt.Sprintf("%*d", gw, i+1)
 		var gut string
-		if i == p.row {
-			gut = cursorLineGutterStyle.Render(num)
-		} else {
-			gut = gutterStyle.Render(num)
+		if p.lineNumbers {
+			num := fmt.Sprintf("%*d", gw, i+1)
+			if i == p.row {
+				gut = cursorLineGutterStyle.Render(num)
+			} else {
+				gut = gutterStyle.Render(num)
+			}
 		}
 		// Two-character marker column. First char carries the git-diff state
 		// (added / modified / deleted-above); second char carries the worst
@@ -1212,9 +1256,9 @@ func (p Pane) View() string {
 					ghost = p.ghostText
 				}
 			}
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, cols, primaryCol, ghost, hints, contentWidth, t, true)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW)
 		} else {
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", hints, contentWidth, t, false)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", hints, contentWidth, t, false, tabW)
 		}
 		rows = append(rows, gut+marker+" "+line)
 	}
@@ -1387,7 +1431,10 @@ func (p Pane) matchesForRow(row int) ([]Range, int) {
 // hints is the inlay-hint slice for the row; each renders as dim italic text
 // at its display column, between the rune at that column and the rune to its
 // left. Hints anchored at or past end-of-line render after the last rune.
-func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool) string {
+func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int) string {
+	if tabWidth <= 0 {
+		tabWidth = 4
+	}
 	cur := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary)
 	muted := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true)
 	hintStyle := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true).Italic(true)
@@ -1439,7 +1486,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 			}
 		}
 		if c == '\t' {
-			for k := 0; k < 4; k++ {
+			for k := 0; k < tabWidth; k++ {
 				expanded = append(expanded, ' ')
 				runeKind = append(runeKind, highlight.KindPlain)
 				runeMatch = append(runeMatch, mk)

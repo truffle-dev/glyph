@@ -1630,3 +1630,188 @@ func TestInlayHintCmdNilWhenDisabled(t *testing.T) {
 		t.Fatal("refreshInlayHintsCmd should be nil when hints are disabled")
 	}
 }
+
+// writeNookConfig points XDG_CONFIG_HOME at a fresh temp dir, writes the
+// given TOML body under nook/config.toml, and returns the resolved path.
+// Use this in v0.15.0 host tests to drive newModel + alt+, behavior.
+func writeNookConfig(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfg := filepath.Join(dir, "nook", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestNewModelLoadsConfigOptions(t *testing.T) {
+	writeNookConfig(t, `[editor]
+tab_width = 2
+format_on_save = false
+line_numbers = false
+inlay_hints = false
+theme = "tokyo-night"
+`)
+	m := newModel(t.TempDir())
+	if m.formatOnSave {
+		t.Error("config format_on_save=false not applied")
+	}
+	if m.inlayHintsOn {
+		t.Error("config inlay_hints=false not applied")
+	}
+	if m.tabWidth != 2 {
+		t.Errorf("tabWidth = %d, want 2", m.tabWidth)
+	}
+	if m.themeName != "tokyo-night" {
+		t.Errorf("themeName = %q, want %q", m.themeName, "tokyo-night")
+	}
+	// Sanity: a buffer opened after startup picks up the tab width and the
+	// line-numbers toggle from the manager.
+	root := t.TempDir()
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.bufs.OpenOrSwitch(path)
+	p := m.bufs.Active()
+	if p.TabWidth() != 2 {
+		t.Errorf("opened buffer TabWidth = %d, want 2", p.TabWidth())
+	}
+	if p.LineNumbers() {
+		t.Error("opened buffer LineNumbers = true, want false")
+	}
+}
+
+func TestNewModelDefaultsWhenNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	m := newModel(t.TempDir())
+	if !m.formatOnSave {
+		t.Error("formatOnSave should default to true")
+	}
+	if !m.inlayHintsOn {
+		t.Error("inlayHintsOn should default to true")
+	}
+	if m.tabWidth != 4 {
+		t.Errorf("tabWidth = %d, want default 4", m.tabWidth)
+	}
+	if m.themeName != "default" {
+		t.Errorf("themeName = %q, want %q", m.themeName, "default")
+	}
+}
+
+func TestNewModelUnknownThemeFallsBack(t *testing.T) {
+	writeNookConfig(t, `[editor]
+theme = "purple-pony"
+`)
+	m := newModel(t.TempDir())
+	// Status hint should mention the unknown theme so the user can fix it.
+	if !strings.Contains(m.status, "purple-pony") {
+		t.Errorf("status = %q, want it to mention purple-pony", m.status)
+	}
+	// Theme should be the safe default — same Bg as theme.Default.
+	if m.theme.Bg == "" {
+		t.Fatal("model theme has empty Bg")
+	}
+}
+
+func TestNewModelMalformedConfigSurfacesError(t *testing.T) {
+	writeNookConfig(t, `[editor
+tab_width = 4
+`)
+	m := newModel(t.TempDir())
+	if !strings.HasPrefix(m.status, "config:") {
+		t.Errorf("status = %q, want it to start with %q", m.status, "config:")
+	}
+	// Defaults must still apply so the editor is usable.
+	if !m.formatOnSave || !m.inlayHintsOn || m.tabWidth != 4 {
+		t.Errorf("malformed config did not fall back to defaults: %+v", m)
+	}
+}
+
+func TestAltCommaReloadsConfig(t *testing.T) {
+	cfg := writeNookConfig(t, `[editor]
+inlay_hints = true
+tab_width = 4
+`)
+	m := newModel(t.TempDir())
+	if !m.inlayHintsOn || m.tabWidth != 4 {
+		t.Fatalf("startup state unexpected: %+v", m)
+	}
+	// Rewrite the same file with new values, then fire alt+,.
+	if err := os.WriteFile(cfg, []byte(`[editor]
+inlay_hints = false
+tab_width = 8
+format_on_save = false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}, Alt: true})
+	mm := updated.(model)
+	if mm.inlayHintsOn {
+		t.Error("reload did not apply inlay_hints=false")
+	}
+	if mm.formatOnSave {
+		t.Error("reload did not apply format_on_save=false")
+	}
+	if mm.tabWidth != 8 {
+		t.Errorf("reload tabWidth = %d, want 8", mm.tabWidth)
+	}
+	if !strings.Contains(mm.status, "reloaded") {
+		t.Errorf("status = %q, want it to mention reload", mm.status)
+	}
+}
+
+func TestAltCommaThemeChangeAsksForRestart(t *testing.T) {
+	cfg := writeNookConfig(t, `[editor]
+theme = "default"
+`)
+	m := newModel(t.TempDir())
+	if err := os.WriteFile(cfg, []byte(`[editor]
+theme = "tokyo-night"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}, Alt: true})
+	mm := updated.(model)
+	if mm.themeName != "tokyo-night" {
+		t.Errorf("themeName after reload = %q, want %q", mm.themeName, "tokyo-night")
+	}
+	if !strings.Contains(mm.status, "restart") {
+		t.Errorf("status = %q, want it to mention restart", mm.status)
+	}
+}
+
+func TestAltCommaTurningOffInlayHintsClearsActiveBuffer(t *testing.T) {
+	cfg := writeNookConfig(t, `[editor]
+inlay_hints = true
+`)
+	root := t.TempDir()
+	m := newModel(root)
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.bufs.OpenOrSwitch(path)
+	pa := m.bufs.Active()
+	*pa = pa.SetInlayHints(map[int][]inlayhint.Hint{
+		0: {{Row: 0, Col: 0, Label: "stale"}},
+	})
+	if err := os.WriteFile(cfg, []byte(`[editor]
+inlay_hints = false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}, Alt: true})
+	mm := updated.(model)
+	if mm.inlayHintsOn {
+		t.Fatal("inlay_hints did not disable on reload")
+	}
+	if got := mm.bufs.Active().InlayHintsAt(0); len(got) != 0 {
+		t.Fatalf("disabled-hint reload did not clear active buffer hints; got %d", len(got))
+	}
+}

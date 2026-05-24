@@ -20,11 +20,17 @@ type Manager struct {
 
 	// highlighter is shared across panes. nil disables highlighting.
 	highlighter highlight.Highlighter
+
+	// tabWidth and lineNumbers are editor settings forwarded to every pane.
+	// Storing them on the manager keeps newly-opened buffers consistent with
+	// the current configuration even after a runtime reload.
+	tabWidth    int
+	lineNumbers bool
 }
 
 // New constructs an empty manager.
 func New(t theme.Theme) *Manager {
-	return &Manager{theme: t, active: -1}
+	return &Manager{theme: t, active: -1, tabWidth: 4, lineNumbers: true}
 }
 
 // WithHighlighter sets the syntax highlighter applied to every new pane.
@@ -34,6 +40,29 @@ func (m *Manager) WithHighlighter(h highlight.Highlighter) *Manager {
 	m.highlighter = h
 	for i := range m.panes {
 		m.panes[i] = m.panes[i].WithHighlighter(h)
+	}
+	return m
+}
+
+// WithTabWidth sets the rendered tab expansion for every open pane and any
+// pane opened later. Values <= 0 clamp to 4.
+func (m *Manager) WithTabWidth(n int) *Manager {
+	if n <= 0 {
+		n = 4
+	}
+	m.tabWidth = n
+	for i := range m.panes {
+		m.panes[i] = m.panes[i].SetTabWidth(n)
+	}
+	return m
+}
+
+// WithLineNumbers toggles the row-number gutter for every open pane and any
+// pane opened later.
+func (m *Manager) WithLineNumbers(b bool) *Manager {
+	m.lineNumbers = b
+	for i := range m.panes {
+		m.panes[i] = m.panes[i].SetLineNumbers(b)
 	}
 	return m
 }
@@ -98,7 +127,7 @@ func (m *Manager) OpenOrSwitch(abs string) (int, OpenAction) {
 		m.Switch(i)
 		return i, Switched
 	}
-	p := editor.NewPane(m.theme).WithHighlighter(m.highlighter).WithSize(m.width, m.height).Open(abs).Focus()
+	p := editor.NewPane(m.theme).WithHighlighter(m.highlighter).WithSize(m.width, m.height).SetTabWidth(m.tabWidth).SetLineNumbers(m.lineNumbers).Open(abs).Focus()
 	if m.active >= 0 {
 		cur := m.panes[m.active]
 		if cur.Path() == "" && !cur.Dirty() {

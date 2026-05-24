@@ -6,6 +6,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-05-24
+
+Settings file and themes for `nook`. A user-editable
+`~/.config/nook/config.toml` now drives the editor knobs and the color
+palette so the IDE can be reshaped without recompiling. Four new themes
+ride alongside the existing pair (`default`, `light`): `tokyo-night`,
+`catppuccin-mocha`, and `rose-pine`. `alt+,` re-reads the file at
+runtime; editor toggles (format-on-save, inlay hints, tab width, line
+numbers) take effect immediately. A theme change is detected and
+surfaced as a status hint asking the user to restart, since deeply-
+themed sub-panes aren't live-reskinned in v0.15.0.
+
+The file is optional. A missing config is silently equivalent to the
+baseline defaults, and unknown keys are accepted so a forward-compat
+key from a newer nook doesn't break an older one. A malformed file
+prints the parse error in the status bar and the editor still opens
+with default settings — the file is a knob, not a gate.
+
+### Added
+
+- `components/theme` — three new palettes: `TokyoNight` (folke/tokyonight
+  `night` variant), `CatppuccinMocha` (catppuccin/palette
+  `catppuccin-mocha` spec), `RosePine` (rose-pine/rose-pine `main`
+  variant). New `theme.ByName(name) (Theme, bool)` and `theme.Names()
+  []string` registry surface so consumers (settings UI, future
+  `--list-themes` flag) can look up by stable identifier without
+  hard-coding a switch.
+- `cmd/nook/internal/config` — new package. `Config{Editor:
+  EditorConfig{TabWidth, FormatOnSave, LineNumbers, InlayHints,
+  Theme}}` deserialized from TOML; `Default()` returns the baseline,
+  `Path()` resolves `$XDG_CONFIG_HOME/nook/config.toml` (mirroring
+  alacritty / helix / zellij), `Load(path)` returns
+  `(Config, ErrNotFound)` when the file is absent so the host can
+  fall back silently. Unknown keys are tolerated. Tests cover all
+  the failure shapes (missing file, partial file, malformed TOML,
+  zero-value TabWidth, empty Theme, unknown forward-compat keys).
+- `editor.Pane.SetTabWidth(int)` + `SetLineNumbers(bool)` plus
+  matching readers, threaded into `renderHighlightedRow` so tab
+  expansion follows the configured width and the gutter respects
+  the `line_numbers` flag. `bufman.Manager.WithTabWidth` /
+  `WithLineNumbers` propagate to every open pane and every pane
+  opened later.
+- Host wiring in `cmd/nook/main.go`: `newModel` reads config at
+  startup and surfaces a status hint for unknown themes or parse
+  errors. `reloadConfig` re-reads on `alt+,` and applies the
+  runtime-mutable knobs (format-on-save, inlay hints, tab width,
+  line numbers); theme changes are detected and routed to a
+  "restart to apply" hint. `lookup.FormattingCmd` now passes the
+  configured tab width instead of a hard-coded 4.
+- `cmd/nook/internal/help` — new "Settings" section with the
+  `alt+,` reload binding.
+
 ## [0.14.0] — 2026-05-24
 
 Inlay hints for `nook`. When gopls is attached and the cursor lands on

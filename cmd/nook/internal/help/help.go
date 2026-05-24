@@ -108,6 +108,9 @@ func Default() []Section {
 			{"ctrl+`", "Toggle embedded terminal"},
 			{"esc", "Close overlay / blur pane"},
 		}},
+		{Name: "Settings", Bindings: []Binding{
+			{"alt+,", "Reload ~/.config/nook/config.toml"},
+		}},
 		{Name: "Global", Bindings: []Binding{
 			{"?", "Toggle this help"},
 			{"ctrl+q", "Quit nook"},
