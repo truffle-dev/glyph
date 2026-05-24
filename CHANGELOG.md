@@ -6,6 +6,76 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-05-24
+
+Workspace-wide diagnostics panel for `nook`. The editor already shows
+gutter markers and a per-file `E/W` count in the status bar, but neither
+surface answers the question every IDE user asks twenty times a day:
+*what's broken across the whole project right now?* Alt+P opens a
+focused overlay listing every diagnostic LSP has published, sorted by
+severity then file then line, with the source server in italics next to
+each row. Enter on a row opens the file at the diagnostic's source site
+and closes the overlay. Esc dismisses without moving.
+
+The list is rebuilt from the host's existing `m.diagnostics` map every
+time the overlay opens, so it reflects the current LSP state rather
+than a snapshot. No new collection wiring was needed — the workspace
+store has been accumulating publishDiagnostics events since v0.6.
+
+Why Alt+P and not the more familiar Ctrl+Shift+M: terminals collapse
+Ctrl+Shift+M into Ctrl+M (Enter), which is unrecoverable inside
+bubbletea. Alt+P is the portable surface (mnemonic: "problems") and
+mirrors how alt+m/alt+y/alt+, already work for adjacent overlays.
+
+### Added
+
+- `cmd/nook/internal/diagnostics` — new package. `Severity` enum (LSP
+  values 1–4), `Entry{Path, Row, Col, Severity, Source, Message}` row
+  type, `Sort([]Entry) []Entry` stable sort (severity ASC, path ASC,
+  row ASC, col ASC), `Pane` model with `NewPane`/`WithSize`/
+  `WithEntries`/`Focus`/`Blur` builders, `Update` handling Esc →
+  `CancelMsg`, Enter → `OpenAtMsg`, Up/Down/Home/End/PgUp/PgDn
+  navigation. View renders a bordered card with a "workspace
+  diagnostics" header, severity counts (`N errors  N warnings  N info
+  N hints`), and one row per entry with a severity-colored single-
+  letter badge, theme-muted relative path with 1-indexed
+  `:row:col`, italic source tag, and the message. Cursor row paints
+  on `SurfaceStrong`. ANSI-aware cell-width truncation keeps long
+  messages from overflowing the card.
+- `cmd/nook/main.go` — new `overlayDiagnostics` overlay, `diagPane
+  diagnostics.Pane` model field, `alt+p` handler that calls
+  `collectDiagnosticEntries()` (walks `m.diagnostics`,
+  one `diagnostics.Entry` per LSP diagnostic, message newlines
+  collapsed to spaces). `diagnostics.OpenAtMsg` handler calls
+  `bufman.OpenOrSwitch`, jumps the editor to `msg.Row+1, msg.Col+1`,
+  blurs the overlay pane, restores diagnostics to the active editor,
+  and triggers gopls/gutter/inlay refresh. `diagnostics.CancelMsg`
+  handler blurs and re-focuses the editor.
+- `cmd/nook/internal/help` — new "Problems" section in the keymap
+  overlay covering alt+p, navigation, enter, and esc.
+
+### Tests
+
+- `cmd/nook/internal/diagnostics/diagnostics_test.go` — 21 tests
+  covering severity mark/color helpers, sort stability (severity →
+  path → row → col), input non-mutation, pane state machine
+  (focus/blur, cursor clamp on WithEntries shrink/empty, blurred-pane
+  key suppression), all six key paths (Esc, Enter, Up, Down, Home,
+  End, PgUp, PgDn) with boundary clamping, view edge cases (empty
+  state, header counts, 1-indexed location, message and source
+  inclusion), formatLocation under three root configurations (within,
+  outside, no root), and the ANSI-CSI strip + cell truncation
+  helpers.
+- `cmd/nook/main_test.go` — `TestAltPOpensDiagnostics`,
+  `TestDiagnosticsCollectsAllOpenBuffers` (multiple paths and
+  severities round-trip through the map),
+  `TestDiagnosticsCollectStripsMessageNewlines`,
+  `TestDiagnosticsOpenAtMsgJumpsAndCloses` (uses real git fixture
+  repo + bufman + JumpTo),
+  `TestDiagnosticsCancelMsgClosesOverlay`,
+  `TestDiagnosticsOverlayRoutesKeys` (Esc through overlay routing
+  produces a `CancelMsg` cmd).
+
 ## [0.15.0] — 2026-05-24
 
 Settings file and themes for `nook`. A user-editable

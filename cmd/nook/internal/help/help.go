@@ -88,6 +88,14 @@ func Default() []Section {
 			{"enter", "Open file at the row's line"},
 			{"esc", "Close multibuffer"},
 		}},
+		{Name: "Problems", Bindings: []Binding{
+			{"alt+p", "Workspace-wide diagnostics panel"},
+			{"↑ ↓", "Navigate rows"},
+			{"pgup / pgdn", "Page through entries"},
+			{"home / end", "Jump to first / last row"},
+			{"enter", "Open file at the diagnostic's source"},
+			{"esc", "Close panel"},
+		}},
 		{Name: "AI wedges", Bindings: []Binding{
 			{"ctrl+k", "Inline edit on current line (Haiku 4.5)"},
 			{"ctrl+l", "Multi-file composer (Sonnet 4.6)"},

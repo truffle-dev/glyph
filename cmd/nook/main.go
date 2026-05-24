@@ -25,6 +25,7 @@
 //	alt+enter  LSP code actions at the cursor
 //	f2         LSP rename symbol under cursor
 //	alt+,      reload ~/.config/nook/config.toml
+//	alt+p      workspace-wide diagnostics panel
 //	tab        accept ghost-text completion (when present)
 //	ctrl+q     quit
 //	esc        close overlay / blur / dismiss ghost-text
@@ -60,6 +61,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/config"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/diagnostics"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/filetree"
@@ -96,6 +98,7 @@ const (
 	overlayCodeAction
 	overlayRename
 	overlayMultibuffer
+	overlayDiagnostics
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -196,6 +199,11 @@ type model struct {
 	// files into one scrollable surface). Alt+m loads working-tree-vs-HEAD
 	// diff fragments; Enter on any row jumps to that file+line.
 	multibufPane multibuffer.Pane
+
+	// Workspace-wide diagnostics panel (alt+p). Rebuilt from m.diagnostics
+	// every time the overlay opens so it reflects the current LSP state;
+	// Enter on a row jumps to the source site.
+	diagPane diagnostics.Pane
 
 	// inlayHintsOn drives whether gopls inlay hints are rendered. Alt+y
 	// toggles. Default true. When false the host suppresses hint requests
@@ -318,6 +326,7 @@ func newModel(root string) model {
 		caPopup:      codeaction.New(),
 		renamePrompt: rename.New(),
 		multibufPane: multibuffer.NewPane(t, root),
+		diagPane:     diagnostics.NewPane(t, root),
 		inlayHintsOn: cfg.Editor.InlayHints,
 		cfgPath:      cfgPath,
 		themeName:    cfg.Editor.Theme,
@@ -882,6 +891,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case diagnostics.OpenAtMsg:
+		_, action := m.bufs.OpenOrSwitch(msg.Path)
+		if p := m.bufs.Active(); p != nil {
+			// editor.JumpTo takes 1-based row/col; OpenAtMsg carries
+			// 0-based values straight from the LSP diagnostic.
+			*p = p.JumpTo(msg.Row+1, msg.Col+1).Focus()
+		}
+		m.diagPane = m.diagPane.Blur()
+		m.overlay = overlayNone
+		m = m.resize()
+		m = m.applyDiagnosticsToActive()
+		rel, _ := filepath.Rel(m.root, msg.Path)
+		switch action {
+		case bufman.Switched:
+			m.status = fmt.Sprintf("switched to %s:%d:%d", rel, msg.Row+1, msg.Col+1)
+		default:
+			m.status = fmt.Sprintf("opened %s:%d:%d", rel, msg.Row+1, msg.Col+1)
+		}
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
+
+	case diagnostics.CancelMsg:
+		m.diagPane = m.diagPane.Blur()
+		m.overlay = overlayNone
+		if p := m.bufs.Active(); p != nil {
+			*p = p.Focus()
+		}
+		return m, nil
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
@@ -1137,6 +1174,15 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.overlay = overlayMultibuffer
 			m.multibufPane = m.multibufPane.WithSize(m.width-4, m.height-4).Reset("uncommitted changes").Focus()
 			return m, multibuffer.LoadDiffCmd(m.root, "HEAD")
+		case 'p':
+			// Alt+p opens the workspace-wide diagnostics panel. The list
+			// is rebuilt from m.diagnostics on each open so it reflects
+			// the current LSP state; ctrl+shift+m (Cursor / VS Code's
+			// keybinding) collides with Enter in most terminals, so
+			// alt+p (mnemonic: "problems") is the portable surface.
+			m.overlay = overlayDiagnostics
+			m.diagPane = m.diagPane.WithSize(m.width-4, m.height-4).WithEntries(m.collectDiagnosticEntries()).Focus()
+			return m, nil
 		case 'y':
 			// Alt+y toggles gopls inlay hints (type annotations + parameter
 			// names) for every open buffer. Hints are visual-only; the
@@ -1189,6 +1235,10 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case overlayMultibuffer:
 		var cmd tea.Cmd
 		m.multibufPane, cmd = m.multibufPane.Update(km)
+		return m, cmd
+	case overlayDiagnostics:
+		var cmd tea.Cmd
+		m.diagPane, cmd = m.diagPane.Update(km)
 		return m, cmd
 	}
 
@@ -2426,6 +2476,19 @@ func (m model) View() string {
 		float := centerOverlay(m.width, m.height-1, pane.View())
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}
+	if m.overlay == overlayDiagnostics {
+		// Diagnostics panel uses the same large-surface shape as multibuffer.
+		// The list can grow long across a real workspace; floating it small
+		// would force a tiny visible window.
+		boxW := m.width - 4
+		boxH := m.height - 4
+		if boxH < 6 {
+			boxH = 6
+		}
+		pane := m.diagPane.WithSize(boxW, boxH)
+		float := centerOverlay(m.width, m.height-1, pane.View())
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
 
 	left := m.renderMainColumn()
 
@@ -2801,6 +2864,27 @@ func mapSeverity(s protocol.DiagnosticSeverity) editor.Severity {
 		return editor.SeverityHint
 	}
 	return editor.SeverityError
+}
+
+// collectDiagnosticEntries walks the workspace-wide diagnostic store and
+// produces one diagnostics.Entry per LSP diagnostic, keyed back to its
+// source path. Used by the alt+p overlay to render every problem at once.
+// Returns an unsorted slice; the diagnostics.Pane sorts on WithEntries.
+func (m model) collectDiagnosticEntries() []diagnostics.Entry {
+	var out []diagnostics.Entry
+	for path, items := range m.diagnostics {
+		for _, d := range items {
+			out = append(out, diagnostics.Entry{
+				Path:     path,
+				Row:      int(d.Range.Start.Line),
+				Col:      int(d.Range.Start.Character),
+				Severity: diagnostics.Severity(d.Severity),
+				Source:   d.Source,
+				Message:  strings.ReplaceAll(d.Message, "\n", " "),
+			})
+		}
+	}
+	return out
 }
 
 // diagCounts summarizes the active buffer's diagnostics for the status bar.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/diagnostics"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/filetree"
@@ -1518,6 +1519,152 @@ func TestMultibufferOverlayRoutesKeys(t *testing.T) {
 	}
 	if _, ok := cmd().(multibuffer.CancelMsg); !ok {
 		t.Errorf("Esc on multibuffer overlay produced %T, want CancelMsg", cmd())
+	}
+}
+
+func TestAltPOpensDiagnostics(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}, Alt: true})
+	mm := updated.(model)
+	if mm.overlay != overlayDiagnostics {
+		t.Fatalf("alt+p did not open diagnostics overlay; got overlay=%v", mm.overlay)
+	}
+	if !mm.diagPane.IsFocused() {
+		t.Errorf("alt+p did not focus the diagnostics pane")
+	}
+}
+
+func TestDiagnosticsCollectsAllOpenBuffers(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.diagnostics["/work/a.go"] = []protocol.Diagnostic{
+		{
+			Range:    protocol.Range{Start: protocol.Position{Line: 4, Character: 9}},
+			Severity: protocol.DiagnosticSeverityError,
+			Source:   "gopls",
+			Message:  "undefined: foo",
+		},
+	}
+	m.diagnostics["/work/b.go"] = []protocol.Diagnostic{
+		{
+			Range:    protocol.Range{Start: protocol.Position{Line: 0, Character: 0}},
+			Severity: protocol.DiagnosticSeverityWarning,
+			Source:   "gopls",
+			Message:  "unused variable",
+		},
+	}
+	entries := m.collectDiagnosticEntries()
+	if len(entries) != 2 {
+		t.Fatalf("collectDiagnosticEntries len = %d, want 2", len(entries))
+	}
+	paths := map[string]diagnostics.Entry{}
+	for _, e := range entries {
+		paths[e.Path] = e
+	}
+	if a, ok := paths["/work/a.go"]; !ok {
+		t.Errorf("missing a.go entry")
+	} else {
+		if a.Row != 4 || a.Col != 9 || a.Severity != diagnostics.SeverityError || a.Source != "gopls" {
+			t.Errorf("a.go entry = %+v", a)
+		}
+	}
+	if b, ok := paths["/work/b.go"]; !ok {
+		t.Errorf("missing b.go entry")
+	} else {
+		if b.Severity != diagnostics.SeverityWarning {
+			t.Errorf("b.go severity = %v, want Warning", b.Severity)
+		}
+	}
+}
+
+func TestDiagnosticsCollectStripsMessageNewlines(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.diagnostics["/work/x.go"] = []protocol.Diagnostic{
+		{
+			Range:    protocol.Range{},
+			Severity: protocol.DiagnosticSeverityError,
+			Message:  "line one\nline two",
+		},
+	}
+	entries := m.collectDiagnosticEntries()
+	if len(entries) != 1 {
+		t.Fatalf("entries len = %d, want 1", len(entries))
+	}
+	if strings.Contains(entries[0].Message, "\n") {
+		t.Errorf("Message should have newlines stripped, got %q", entries[0].Message)
+	}
+	if !strings.Contains(entries[0].Message, "line one line two") {
+		t.Errorf("Message = %q, want collapsed", entries[0].Message)
+	}
+}
+
+func TestDiagnosticsOpenAtMsgJumpsAndCloses(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayDiagnostics
+	m.diagPane = m.diagPane.Focus()
+
+	updated, _ := m.Update(diagnostics.OpenAtMsg{
+		Path: filepath.Join(root, "a.go"),
+		Row:  2, // 0-based — host adds +1 when calling JumpTo
+		Col:  5,
+	})
+	mm := updated.(model)
+	if mm.overlay != overlayNone {
+		t.Errorf("OpenAtMsg should clear overlay; got %v", mm.overlay)
+	}
+	if mm.activePath() == "" || !strings.HasSuffix(mm.activePath(), "a.go") {
+		t.Errorf("OpenAtMsg should open the target file; activePath = %q", mm.activePath())
+	}
+	if mm.diagPane.IsFocused() {
+		t.Errorf("OpenAtMsg should blur diagnostics pane")
+	}
+	if p := mm.bufs.Active(); p != nil {
+		if p.CursorRow() != 2 {
+			t.Errorf("cursor row = %d, want 2", p.CursorRow())
+		}
+	}
+}
+
+func TestDiagnosticsCancelMsgClosesOverlay(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 100
+	m.height = 24
+	m = m.resize()
+	m.overlay = overlayDiagnostics
+	m.diagPane = m.diagPane.Focus()
+
+	updated, _ := m.Update(diagnostics.CancelMsg{})
+	mm := updated.(model)
+	if mm.overlay != overlayNone {
+		t.Errorf("CancelMsg should clear overlay; got %v", mm.overlay)
+	}
+	if mm.diagPane.IsFocused() {
+		t.Errorf("CancelMsg should blur the diagnostics pane")
+	}
+}
+
+func TestDiagnosticsOverlayRoutesKeys(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 100
+	m.height = 24
+	m = m.resize()
+	m.overlay = overlayDiagnostics
+	m.diagPane = m.diagPane.Focus()
+
+	// Esc on the overlay should produce a CancelMsg cmd.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("Esc on diagnostics overlay returned nil cmd")
+	}
+	if _, ok := cmd().(diagnostics.CancelMsg); !ok {
+		t.Errorf("Esc on diagnostics overlay produced %T, want CancelMsg", cmd())
 	}
 }
 
