@@ -62,6 +62,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/finder"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/help"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/hover"
@@ -281,6 +282,39 @@ func (m model) refreshGitCmd() tea.Cmd {
 	}
 }
 
+// refreshGutterCmd returns a tea.Cmd that recomputes per-line git markers for
+// the active buffer's file. Empty when there is no active buffer or no path.
+// Called whenever a buffer is opened or saved.
+func (m model) refreshGutterCmd() tea.Cmd {
+	p := m.bufs.Active()
+	if p == nil {
+		return nil
+	}
+	path := p.Path()
+	if path == "" {
+		return nil
+	}
+	return gitgutter.MarkerCmd(m.root, path)
+}
+
+// applyLineMarkers locates the pane whose path matches the msg and applies the
+// marker map. Late responses for a path no longer open are dropped silently.
+func (m model) applyLineMarkers(msg gitgutter.MarkersMsg) model {
+	if msg.Err != nil || msg.Path == "" {
+		return m
+	}
+	idx := m.bufs.Find(msg.Path)
+	if idx < 0 {
+		return m
+	}
+	p := m.bufs.At(idx)
+	if p == nil {
+		return m
+	}
+	*p = p.SetLineMarkers(msg.Markers)
+	return m
+}
+
 func walkRepo(root string) []string {
 	var out []string
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -344,7 +378,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.treePane.Reveal(full)
 		}
 		m = m.applyDiagnosticsToActive()
-		return m, m.ensureLSPForFile(full)
+		return m, tea.Batch(m.ensureLSPForFile(full), m.refreshGutterCmd())
 
 	case picker.CancelMsg:
 		m.overlay = overlayNone
@@ -359,7 +393,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = "saved " + msg.Path
 		}
-		return m, m.refreshGitCmd()
+		return m, tea.Batch(m.refreshGitCmd(), gitgutter.MarkerCmd(m.root, msg.Path))
+
+	case gitgutter.MarkersMsg:
+		m = m.applyLineMarkers(msg)
+		return m, nil
 
 	case editor.CancelMsg:
 		if p := m.bufs.Active(); p != nil {
@@ -389,7 +427,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.treePane.Reveal(msg.Path)
 		}
 		m = m.applyDiagnosticsToActive()
-		return m, m.ensureLSPForFile(msg.Path)
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd())
 
 	case search.CancelMsg:
 		m.overlay = overlayNone
@@ -602,7 +640,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.applyDiagnosticsToActive()
 		m.status = fmt.Sprintf("jumped to %s:%d:%d", filepath.Base(loc.Path), loc.Line+1, loc.Col+1)
-		return m, m.ensureLSPForFile(loc.Path)
+		return m, tea.Batch(m.ensureLSPForFile(loc.Path), m.refreshGutterCmd())
 
 	case lookup.CompletionMsg:
 		// Discard late responses for a stale request: the user moved
@@ -646,7 +684,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.resize()
 		m = m.applyDiagnosticsToActive()
-		return m, m.ensureLSPForFile(msg.Path)
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd())
 
 	case errMsg:
 		m.status = "error: " + msg.err.Error()

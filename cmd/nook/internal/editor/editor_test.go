@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -448,6 +449,67 @@ func TestClearSearchMatches(t *testing.T) {
 	}
 	if p.SearchCurrent() != -1 {
 		t.Errorf("expected current -1, got %d", p.SearchCurrent())
+	}
+}
+
+func TestSetLineMarkers_AccessorRoundtrip(t *testing.T) {
+	p := NewPane(theme.Default)
+	if got := p.LineMarkerAt(0); got != gitgutter.None {
+		t.Errorf("unset map should return None, got %v", got)
+	}
+	p = p.SetLineMarkers(map[int]gitgutter.Marker{
+		1: gitgutter.Added,
+		3: gitgutter.Modified,
+		7: gitgutter.DeletedAbove,
+	})
+	if got := p.LineMarkerAt(1); got != gitgutter.Added {
+		t.Errorf("row 1: got %v, want Added", got)
+	}
+	if got := p.LineMarkerAt(3); got != gitgutter.Modified {
+		t.Errorf("row 3: got %v, want Modified", got)
+	}
+	if got := p.LineMarkerAt(7); got != gitgutter.DeletedAbove {
+		t.Errorf("row 7: got %v, want DeletedAbove", got)
+	}
+	if got := p.LineMarkerAt(99); got != gitgutter.None {
+		t.Errorf("absent row: got %v, want None", got)
+	}
+	p = p.SetLineMarkers(nil)
+	if got := p.LineMarkerAt(1); got != gitgutter.None {
+		t.Errorf("after clear: got %v, want None", got)
+	}
+}
+
+func TestViewRendersGitSigils(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 8).Focus()
+	// Three buffer lines, one for each marker state.
+	p = p.ReplaceAllFromString("first\nsecond\nthird\n")
+	p = p.SetLineMarkers(map[int]gitgutter.Marker{
+		0: gitgutter.Added,
+		1: gitgutter.Modified,
+		2: gitgutter.DeletedAbove,
+	})
+	out := plain(p.View())
+	// Both block sigils should appear once each in the plain output.
+	if !strings.Contains(out, "▎") {
+		t.Errorf("expected vertical block sigil for added/modified in view:\n%s", out)
+	}
+	if !strings.Contains(out, "▔") {
+		t.Errorf("expected upper-eighth sigil for deleted-above in view:\n%s", out)
+	}
+}
+
+func TestViewWithoutGitMarkersStillRendersDivider(t *testing.T) {
+	// Regression: when no git markers are set the marker column should still
+	// be a space + the divider char, preserving the original two-char width.
+	p := NewPane(theme.Default).WithSize(60, 8).Focus()
+	p, _ = p.Update(runeMsg("hello"))
+	out := plain(p.View())
+	if !strings.Contains(out, "│") {
+		t.Fatalf("expected divider │ in view:\n%s", out)
+	}
+	if strings.Contains(out, "▎") || strings.Contains(out, "▔") {
+		t.Errorf("unset markers should not render git sigils:\n%s", out)
 	}
 }
 

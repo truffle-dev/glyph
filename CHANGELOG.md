@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-24
+
+Per-line git gutter inside `nook`. Each row in the editor now carries a
+two-character marker column: the leading char surfaces the working-tree
+diff state for that line (added, modified, or deleted-above), the
+trailing char keeps its LSP diagnostic sigil. Both signals are visible
+simultaneously and the column width is unchanged. The host computes
+markers by shelling out to `git diff --no-color --unified=0` against
+the index (and against `/dev/null` for untracked files), so the gutter
+matches whatever `git diff` shows on the same file. Refreshed on
+buffer open, save, picker/search/filetree open, and go-to-definition
+landing.
+
+### Added
+
+- `cmd/nook/internal/gitgutter` — `Marker` enum (`None`, `Added`,
+  `Modified`, `DeletedAbove`), `Compute(ctx, root, path)` end-to-end
+  pipeline, `Parse(diff)` pure unified-diff parser, `MarkerCmd(root,
+  path)` `tea.Cmd` factory, and `MarkersMsg{Path, Markers, Err}` for
+  host dispatch with stale-path discard.
+- `editor.Pane.SetLineMarkers(rows)` / `LineMarkerAt(row)` accessors
+  parallel to the existing diagnostic accessors; the `View()` render
+  loop composes the two-character marker (git sigil + diagnostic
+  sigil) into a fixed-width column.
+
+### Changed
+
+- Buffer-open sites (`picker.SelectMsg`, `search.OpenMsg`,
+  `filetree.OpenMsg`, `lookup.DefinitionMsg`) and `editor.SavedMsg`
+  now fire `gitgutter.MarkerCmd` so markers reflect the current
+  working-tree state.
+
 ## [0.10.0] — 2026-05-24
 
 Code actions and rename inside `nook`. `alt+enter` asks the language

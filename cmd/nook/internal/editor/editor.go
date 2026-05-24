@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -107,6 +108,13 @@ type Pane struct {
 	// that row. The host updates it via SetDiagnosticRows whenever the LSP
 	// publishes for the open file.
 	diagnostics map[int]Severity
+
+	// lineMarkers maps 0-based row to a per-line git-diff marker (added,
+	// modified, deleted-above). The host updates it via SetLineMarkers
+	// whenever the open file's working-tree state shifts (on open and on
+	// save). Painted as the leading character of the marker column so it
+	// composes with the diagnostic sigil to its right.
+	lineMarkers map[int]gitgutter.Marker
 
 	// Syntax-highlight cache. spans is the result of the last highlight pass
 	// over the buffer; bufVer is a monotonically-increasing counter bumped by
@@ -353,6 +361,21 @@ func (p Pane) DiagnosticAt(row int) Severity {
 		return SeverityNone
 	}
 	return p.diagnostics[row]
+}
+
+// SetLineMarkers replaces the per-line git-diff marker map. nil clears it. The
+// map is keyed by 0-based row.
+func (p Pane) SetLineMarkers(rows map[int]gitgutter.Marker) Pane {
+	p.lineMarkers = rows
+	return p
+}
+
+// LineMarkerAt returns the git-diff marker for a 0-based row, or gitgutter.None.
+func (p Pane) LineMarkerAt(row int) gitgutter.Marker {
+	if p.lineMarkers == nil {
+		return gitgutter.None
+	}
+	return p.lineMarkers[row]
 }
 
 // InsertText inserts s at the cursor, advancing the cursor. Newlines split the
@@ -618,6 +641,9 @@ func (p Pane) View() string {
 	errStyle := lipgloss.NewStyle().Foreground(t.Error).Bold(true)
 	warnStyle := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
 	infoStyle := lipgloss.NewStyle().Foreground(t.Info)
+	gitAddStyle := lipgloss.NewStyle().Foreground(t.Success)
+	gitModStyle := lipgloss.NewStyle().Foreground(t.Warning)
+	gitDelStyle := lipgloss.NewStyle().Foreground(t.Error)
 	header := lipgloss.NewStyle().Foreground(t.TextMuted).Bold(true)
 	dirty := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
 	muted := lipgloss.NewStyle().Foreground(t.TextMuted)
@@ -646,17 +672,29 @@ func (p Pane) View() string {
 		} else {
 			gut = gutterStyle.Render(num)
 		}
-		// Diagnostic marker: replace the column-divider with a sigil colored
-		// by severity. Errors take precedence over warnings over info.
-		marker := " │"
+		// Two-character marker column. First char carries the git-diff state
+		// (added / modified / deleted-above); second char carries the worst
+		// LSP diagnostic. Either can be empty (space + │) so the column width
+		// stays fixed regardless of which signals are active.
+		gitChar := " "
+		switch p.LineMarkerAt(i) {
+		case gitgutter.Added:
+			gitChar = gitAddStyle.Render("▎")
+		case gitgutter.Modified:
+			gitChar = gitModStyle.Render("▎")
+		case gitgutter.DeletedAbove:
+			gitChar = gitDelStyle.Render("▔")
+		}
+		diagChar := "│"
 		switch p.DiagnosticAt(i) {
 		case SeverityError:
-			marker = " " + errStyle.Render("●")
+			diagChar = errStyle.Render("●")
 		case SeverityWarning:
-			marker = " " + warnStyle.Render("●")
+			diagChar = warnStyle.Render("●")
 		case SeverityInfo, SeverityHint:
-			marker = " " + infoStyle.Render("●")
+			diagChar = infoStyle.Render("●")
 		}
+		marker := gitChar + diagChar
 		raw := p.buf.Lines[i]
 		spans := p.spans.Spans(i)
 		marks, activeIdx := p.matchesForRow(i)
