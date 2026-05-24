@@ -700,8 +700,7 @@ func TestTabFlowDirtyBlocksClose(t *testing.T) {
 	m.height = 32
 	m = m.resize()
 
-	a := filepath.Join(root, "a.go")
-	updated, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: a}})
+	updated, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: "a.go"}})
 	m = updated.(model)
 
 	// Make the buffer dirty by inserting text in-place.
@@ -732,8 +731,7 @@ func TestCtrlSWithoutLSPSavesPlain(t *testing.T) {
 	m.height = 32
 	m = m.resize()
 
-	a := filepath.Join(root, "a.go")
-	upd, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: a}})
+	upd, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: "a.go"}})
 	m = upd.(model)
 
 	upd, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
@@ -765,8 +763,7 @@ func TestAltSAlwaysSkipsFormat(t *testing.T) {
 		t.Fatal("formatOnSave should default to true")
 	}
 
-	a := filepath.Join(root, "a.go")
-	upd, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: a}})
+	upd, _ := m.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: "a.go"}})
 	m = upd.(model)
 
 	// alt+s arrives as KeyRunes 's' with Alt=true.
