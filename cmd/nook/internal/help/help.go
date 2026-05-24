@@ -65,6 +65,10 @@ func Default() []Section {
 			{"tab", "Accept ghost-text suggestion"},
 			{"esc", "Dismiss ghost text"},
 		}},
+		{Name: "Language server", Bindings: []Binding{
+			{"alt+i", "Hover info for symbol under cursor"},
+			{"ctrl+]", "Go to definition"},
+		}},
 		{Name: "Panes", Bindings: []Binding{
 			{"ctrl+g", "Toggle git pane"},
 			{"ctrl+`", "Toggle embedded terminal"},

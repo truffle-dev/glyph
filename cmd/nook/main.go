@@ -15,6 +15,8 @@
 //	ctrl+l     composer multi-file AI edit (Sonnet)
 //	ctrl+`     terminal pane
 //	ctrl+s     save current buffer
+//	alt+i      LSP hover info for symbol under cursor
+//	ctrl+]     LSP go to definition
 //	tab        accept ghost-text completion (when present)
 //	ctrl+q     quit
 //	esc        close overlay / blur / dismiss ghost-text
@@ -51,6 +53,8 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/help"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/hover"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
@@ -68,6 +72,7 @@ const (
 	overlayProjectSearch
 	overlayInlineEdit
 	overlayHelp
+	overlayHover
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -116,6 +121,14 @@ type model struct {
 	// streaming search context
 	searchCancel context.CancelFunc
 	searchProg   *tea.Program // set in Init for streaming
+
+	// LSP hover overlay: filled by lookup.HoverMsg, displayed under
+	// overlayHover. The host stashes the symbol the user asked about so
+	// late responses (cursor already moved on) can be discarded.
+	hoverContents string
+	hoverPath     string
+	hoverRow      int
+	hoverCol      int
 }
 
 func main() {
@@ -468,6 +481,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case lookup.HoverMsg:
+		// Discard late responses for a stale cursor position so the
+		// overlay always reflects the current focus.
+		if p := m.bufs.Active(); p != nil {
+			if p.Path() != msg.Path || p.CursorRow() != msg.Row || p.CursorCol() != msg.Col {
+				return m, nil
+			}
+		}
+		if msg.Err != nil {
+			m.status = "hover: " + msg.Err.Error()
+			return m, nil
+		}
+		if strings.TrimSpace(msg.Info.Contents) == "" {
+			m.status = "no hover info"
+			return m, nil
+		}
+		m.hoverContents = msg.Info.Contents
+		m.hoverPath = msg.Path
+		m.hoverRow = msg.Row
+		m.hoverCol = msg.Col
+		m.overlay = overlayHover
+		return m, nil
+
+	case lookup.DefinitionMsg:
+		if msg.Err != nil {
+			m.status = "definition: " + msg.Err.Error()
+			return m, nil
+		}
+		if len(msg.Locations) == 0 {
+			m.status = "no definition found"
+			return m, nil
+		}
+		// Take the first definition. gopls usually returns exactly
+		// one; multi-location results are interface methods and we
+		// can build a chooser later.
+		loc := msg.Locations[0]
+		m.bufs.OpenOrSwitch(loc.Path)
+		if p := m.bufs.Active(); p != nil {
+			*p = p.JumpTo(loc.Line, loc.Col).Focus()
+		}
+		m = m.resize()
+		m = m.applyDiagnosticsToActive()
+		m.status = fmt.Sprintf("jumped to %s:%d:%d", filepath.Base(loc.Path), loc.Line+1, loc.Col+1)
+		return m, m.ensureLSPForFile(loc.Path)
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
@@ -517,6 +575,21 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Hover overlay also swallows its own keys: any keypress dismisses
+	// (matches the modeless tooltip pattern in mainstream editors —
+	// click/move/type away and the popup goes). Esc is reserved as the
+	// explicit dismiss too so muscle memory works either way.
+	if m.overlay == overlayHover {
+		m.overlay = overlayNone
+		m.hoverContents = ""
+		if km.Type == tea.KeyEsc {
+			return m, nil
+		}
+		// Fall through so the user's keypress reaches the editor (e.g.
+		// pressing j to scroll down after closing hover doesn't get
+		// eaten).
+	}
+
 	// Global keys
 	switch km.Type {
 	case tea.KeyCtrlQ:
@@ -546,6 +619,13 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleComposer()
 	case tea.KeyCtrlW:
 		return m.closeActiveTab()
+	case tea.KeyCtrlCloseBracket:
+		// Go-to-definition. Asks gopls where the symbol under the
+		// cursor was declared and jumps to it (opening the target file
+		// in a new buffer when it's outside the current one).
+		if p := m.bufs.Active(); p != nil && p.Path() != "" {
+			return m, lookup.DefinitionCmd(m.lsp, p.Path(), p.CursorRow(), p.CursorCol())
+		}
 	}
 	// Alt+] / Alt+[ cycle through open buffers. bubbletea surfaces Alt as
 	// km.Alt with the modified key in km.Runes when KeyRunes; for "]" with
@@ -566,6 +646,14 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.applyDiagnosticsToActive()
 			if p := m.bufs.Active(); p != nil {
 				m.status = "switched to " + filepath.Base(p.Path())
+			}
+			return m, nil
+		case 'i':
+			// LSP hover info on the cursor symbol. Alt+i instead of
+			// Ctrl+. because Ctrl+. has no portable ASCII control code
+			// — only Kitty-protocol terminals send anything for it.
+			if p := m.bufs.Active(); p != nil && p.Path() != "" {
+				return m, lookup.HoverCmd(m.lsp, p.Path(), p.CursorRow(), p.CursorCol())
 			}
 			return m, nil
 		}
@@ -974,6 +1062,23 @@ func (m model) View() string {
 	}
 	if m.overlay == overlayHelp {
 		float := centerOverlay(m.width, m.height-1, help.View(t, m.width))
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlayHover {
+		// Hover floats over the editor rather than replacing it — the
+		// user wants to see the symbol they're hovering on with the
+		// info attached. We pick a width that's narrow enough to read
+		// (~60ch) and clamp height to a third of the screen.
+		boxW := 60
+		if boxW > m.width-4 {
+			boxW = m.width - 4
+		}
+		maxLines := (m.height - 2) / 3
+		if maxLines < 4 {
+			maxLines = 4
+		}
+		box := hover.View(t, m.hoverContents, boxW, maxLines)
+		float := centerOverlay(m.width, m.height-1, box)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}
 
