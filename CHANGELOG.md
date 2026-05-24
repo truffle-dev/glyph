@@ -6,6 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-24
+
+First release of `nook`, a terminal-native AI IDE built from glyph primitives
+and shipped from the same module. Install with
+`go install github.com/truffle-dev/glyph/cmd/nook@latest`, or grab a tagged
+binary from the release assets.
+
+### Added
+
+- `cmd/nook` — a five-pane TUI host (file picker, search, git, editor,
+  embedded terminal) wired together over a single `tea.Model`. Phase 1 of
+  the proto-IDE described in `docs/nook/`.
+- nook AI wedges. `Ctrl+K` inline edit, `Ctrl+L` Composer panel, and idle
+  ghost-text suggestions. All three stream tokens through the user's local
+  `claude` CLI subprocess — no separate Anthropic API key, no direct
+  `api.anthropic.com` calls.
+- nook LSP integration. `gopls` diagnostics render as a `●` gutter marker
+  next to offending lines and as an `nE nW` summary in the status bar.
+- nook visuals. Cast + GIF recorder under `docs/nook/visuals/` produces the
+  `lsp.gif` and `tour.gif` reels on the landing page.
+
+### Fixed
+
+- `pathFromURI` on Windows now goes through `uri.URI.Filename()` instead of
+  string trimming, so document URIs with drive letters and percent-escaped
+  spaces map back to the correct local path.
+
+### Notes
+
+- Release artifacts now include `glyph_<version>_<os>_<arch>` and
+  `nook_<version>_<os>_<arch>` tarballs (zip on Windows). Both binaries are
+  built from the same module at the same tag.
+
 ## [0.2.0] — 2026-05-23
 
 Seven new components covering forms, overlays, and data display, plus three
