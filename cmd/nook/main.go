@@ -74,6 +74,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/hover"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/mdpreview"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/multibuffer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
@@ -110,6 +111,7 @@ const (
 	rightTerm
 	rightDiff
 	rightComposer
+	rightPreview
 )
 
 type model struct {
@@ -204,6 +206,12 @@ type model struct {
 	// every time the overlay opens so it reflects the current LSP state;
 	// Enter on a row jumps to the source site.
 	diagPane diagnostics.Pane
+
+	// Markdown preview pane (alt+v). Right-column sibling of git/term/
+	// composer — opening one closes the others. Refreshed from the active
+	// buffer on toggle and after every save; non-.md/.markdown buffers are
+	// rejected with a status hint so the toggle never silently fails.
+	mdPane mdpreview.Pane
 
 	// inlayHintsOn drives whether gopls inlay hints are rendered. Alt+y
 	// toggles. Default true. When false the host suppresses hint requests
@@ -327,6 +335,7 @@ func newModel(root string) model {
 		renamePrompt: rename.New(),
 		multibufPane: multibuffer.NewPane(t, root),
 		diagPane:     diagnostics.NewPane(t, root),
+		mdPane:       mdpreview.NewPane(t),
 		inlayHintsOn: cfg.Editor.InlayHints,
 		cfgPath:      cfgPath,
 		themeName:    cfg.Editor.Theme,
@@ -561,6 +570,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				*p = p.ApplySave()
 			}
 			m.status = "saved " + msg.Path
+			// Refresh the markdown preview when the saved file is the
+			// one currently being previewed. Updating from disk would be
+			// equivalent here, but reading from the buffer keeps the
+			// refresh in-memory.
+			if m.right == rightPreview && m.mdPane.Path() == msg.Path {
+				if p := m.bufs.Active(); p != nil && p.Path() == msg.Path {
+					m.mdPane = m.mdPane.WithSource(msg.Path, p.Contents())
+				}
+			}
 		}
 		return m, tea.Batch(m.refreshGitCmd(), gitgutter.MarkerCmd(m.root, msg.Path), m.refreshInlayHintsCmd())
 
@@ -673,6 +691,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case term.CancelMsg:
 		m.right = rightNone
 		m.termPane = m.termPane.Blur()
+		return m, nil
+
+	case mdpreview.CancelMsg:
+		m.right = rightNone
+		m.mdPane = m.mdPane.Blur()
+		m = m.resize()
 		return m, nil
 
 	case searchPumpMsg:
@@ -1183,6 +1207,13 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.overlay = overlayDiagnostics
 			m.diagPane = m.diagPane.WithSize(m.width-4, m.height-4).WithEntries(m.collectDiagnosticEntries()).Focus()
 			return m, nil
+		case 'v':
+			// Alt+v toggles the markdown preview pane. Only opens on .md /
+			// .markdown buffers — non-markdown buffers get a status hint so
+			// the toggle never silently swallows the keystroke. Ctrl+Shift+V
+			// is reserved by most terminal emulators for paste, so alt+v is
+			// the portable surface.
+			return m.toggleMdPreview()
 		case 'y':
 			// Alt+y toggles gopls inlay hints (type annotations + parameter
 			// names) for every open buffer. Hints are visual-only; the
@@ -1272,6 +1303,11 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.termPane.Focused() {
 		var cmd tea.Cmd
 		m.termPane, cmd = m.termPane.Update(km)
+		return m, cmd
+	}
+	if m.mdPane.Focused() {
+		var cmd tea.Cmd
+		m.mdPane, cmd = m.mdPane.Update(km)
 		return m, cmd
 	}
 	// Default to editor — only routes if there's an active buffer.
@@ -2244,6 +2280,50 @@ type searchPumpMsg struct {
 	done  <-chan error
 }
 
+// toggleMdPreview opens or closes the markdown preview pane on the right
+// column. When opening, requires the active buffer to be a markdown file
+// (.md / .markdown) — non-markdown buffers get a status-bar hint and the
+// pane stays closed. Closing also blurs the pane so the editor reclaims
+// focus on the next keystroke.
+//
+// Preview is a right-column sibling of git / term / composer: opening
+// one closes the others, since the right column only renders a single
+// pane at a time.
+func (m model) toggleMdPreview() (tea.Model, tea.Cmd) {
+	if m.right == rightPreview {
+		m.right = rightNone
+		m.mdPane = m.mdPane.Blur()
+		m = m.resize()
+		return m, nil
+	}
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
+		m.status = "open a markdown file to preview"
+		return m, nil
+	}
+	if !mdpreview.IsMarkdownPath(p.Path()) {
+		m.status = "preview only works on .md / .markdown files"
+		return m, nil
+	}
+	// Close any sibling right pane and feed the current buffer into the
+	// preview so the open render reflects the buffer state, not a stale
+	// snapshot from the last open.
+	if m.right == rightGit {
+		m.gitPane = m.gitPane.Blur()
+	}
+	if m.right == rightTerm {
+		m.termPane = m.termPane.Blur()
+	}
+	if m.right == rightComposer {
+		m.composer = m.composer.Blur()
+	}
+	m.mdPane = m.mdPane.WithSource(p.Path(), p.Contents()).Focus()
+	m.right = rightPreview
+	m = m.resize()
+	m.status = "preview: " + filepath.Base(p.Path())
+	return m, nil
+}
+
 func (m model) toggleTerm() (tea.Model, tea.Cmd) {
 	if m.right == rightTerm {
 		m.right = rightNone
@@ -2373,6 +2453,7 @@ func (m model) resize() model {
 	m.gitPane = m.gitPane.WithSize(rightW, bodyH)
 	m.termPane = m.termPane.WithSize(rightW, bodyH)
 	m.composer = m.composer.WithSize(rightW, bodyH)
+	m.mdPane = m.mdPane.WithSize(rightW, bodyH)
 	m.editPane = m.editPane.WithSize(min(70, m.width-4), 10)
 	m.search = m.search.WithSize(m.width-4, m.height-6)
 	m.picker = m.picker.WithSize(m.width-8, m.height-6)
@@ -2533,6 +2614,8 @@ func (m model) View() string {
 			right = renderDiff(t, m.diffTitle, m.diffBody, m.width/3, m.height-2)
 		case rightComposer:
 			right = m.composer.View()
+		case rightPreview:
+			right = m.mdPane.View()
 		}
 		pieces = append(pieces, verticalBar(), right)
 	}

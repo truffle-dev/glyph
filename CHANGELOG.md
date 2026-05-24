@@ -6,6 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-05-24
+
+Markdown preview pane for `nook`. Alt+V toggles a right-column preview
+of the active `.md` / `.markdown` buffer, rendered by glyph's existing
+`components/markdown-viewer` Bubble Tea snippet. Headings, lists,
+blockquotes, code blocks, inline emphasis, and links all render with
+the active theme's tokens.
+
+The pane is read-only — editing still happens in the editor — and
+refreshes automatically when the previewed buffer hits disk via Ctrl+S
+or Alt+S. Non-markdown buffers don't open the pane: the toggle shows
+a one-line status hint instead, so the keystroke never silently fails.
+
+Preview competes for the right column the same way git, terminal, and
+composer already do — opening one closes the others. PgUp / PgDn /
+Home / End scroll the preview when it owns focus. Esc closes it and
+returns focus to the editor.
+
+Why Alt+V and not Ctrl+Shift+V: most terminals reserve Ctrl+Shift+V
+for paste, which is unrecoverable. Alt+V mirrors how alt+m / alt+p /
+alt+y already work for adjacent panes and overlays.
+
+### Added
+
+- `cmd/nook/internal/mdpreview`: thin nook pane wrapping the reusable
+  `components/markdown-viewer` Viewer with nook's `Focus / Blur /
+  WithSize` conventions and an `IsMarkdownPath` extension gate.
+- `Alt+V` host keybinding wired into the right-pane competition with
+  git / term / composer.
+- Refresh-on-save: `editor.SavedMsg` for the previewed path re-seeds
+  the pane from the active buffer's contents.
+- Help overlay entry under "Panes".
+
 ## [0.16.0] — 2026-05-24
 
 Workspace-wide diagnostics panel for `nook`. The editor already shows

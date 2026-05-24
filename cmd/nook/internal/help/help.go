@@ -114,6 +114,7 @@ func Default() []Section {
 			{"ctrl+b", "Toggle file tree (left)"},
 			{"ctrl+g", "Toggle git pane"},
 			{"ctrl+`", "Toggle embedded terminal"},
+			{"alt+v", "Toggle markdown preview (.md / .markdown only)"},
 			{"esc", "Close overlay / blur pane"},
 		}},
 		{Name: "Settings", Bindings: []Binding{
