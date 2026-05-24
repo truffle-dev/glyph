@@ -21,6 +21,7 @@
 //	alt+i      LSP hover info for symbol under cursor
 //	alt+j      expand snippet at cursor (Tab cycles tabstops, Esc exits)
 //	alt+y      toggle gopls inlay hints (type annotations, parameter names)
+//	alt+b      toggle inline git blame on cursor row (GitLens-style)
 //	ctrl+]     LSP go to definition
 //	ctrl+space LSP completion popup (↑/↓ to navigate, enter to accept)
 //	alt+enter  LSP code actions at the cursor
@@ -75,6 +76,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/help"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/hover"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/inlineblame"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/mdpreview"
@@ -224,6 +226,13 @@ type model struct {
 	// toggles. Default true. When false the host suppresses hint requests
 	// and clears any stale hints from the active editor pane.
 	inlayHintsOn bool
+
+	// blameOn drives whether the cursor row's git-blame entry is rendered
+	// as a dim italic strip after the line. Alt+b toggles. Default false
+	// (opt-in). When toggled on the host fires a BlameCmd for the active
+	// buffer and flips SetBlameVisible(true) on every open pane; the
+	// blame map is retained when toggled off so re-enabling is instant.
+	blameOn bool
 
 	// cfgPath is the resolved ~/.config/nook/config.toml location. Stored
 	// on the model so alt+, can re-read the same file without re-resolving
@@ -524,6 +533,64 @@ func (m model) clearInlayHints() model {
 	return m
 }
 
+// refreshBlameCmd requests a fresh git-blame map for the active buffer's
+// path. Returns nil when the feature is off, no active buffer, or no path.
+func (m model) refreshBlameCmd() tea.Cmd {
+	if !m.blameOn {
+		return nil
+	}
+	p := m.bufs.Active()
+	if p == nil {
+		return nil
+	}
+	path := p.Path()
+	if path == "" {
+		return nil
+	}
+	return inlineblame.BlameCmd(m.root, path)
+}
+
+// refreshBlameOnPathCmd is like refreshBlameCmd but pins to a specific path
+// (used by editor.SavedMsg where the saved file may not be the active one).
+func (m model) refreshBlameOnPathCmd(path string) tea.Cmd {
+	if !m.blameOn || path == "" {
+		return nil
+	}
+	return inlineblame.BlameCmd(m.root, path)
+}
+
+// applyBlame locates the pane matching msg.Path and stores the blame map.
+// Late responses for a path no longer open are dropped silently.
+func (m model) applyBlame(msg inlineblame.BlameMsg) model {
+	if msg.Err != nil || msg.Path == "" {
+		return m
+	}
+	idx := m.bufs.Find(msg.Path)
+	if idx < 0 {
+		return m
+	}
+	p := m.bufs.At(idx)
+	if p == nil {
+		return m
+	}
+	*p = p.SetBlame(msg.Lines).SetBlameVisible(m.blameOn)
+	return m
+}
+
+// setBlameVisibility flips SetBlameVisible(b) on every open buffer. Called
+// when the user toggles alt+b — keeps blame data in place so re-enable is
+// instant.
+func (m model) setBlameVisibility(b bool) model {
+	for i := 0; i < m.bufs.Count(); i++ {
+		p := m.bufs.At(i)
+		if p == nil {
+			continue
+		}
+		*p = p.SetBlameVisible(b)
+	}
+	return m
+}
+
 func walkRepo(root string) []string {
 	var out []string
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -587,7 +654,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.treePane.Reveal(full)
 		}
 		m = m.applyDiagnosticsToActive()
-		return m, tea.Batch(m.ensureLSPForFile(full), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
+		return m, tea.Batch(m.ensureLSPForFile(full), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
 
 	case picker.CancelMsg:
 		m.overlay = overlayNone
@@ -611,7 +678,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		return m, tea.Batch(m.refreshGitCmd(), gitgutter.MarkerCmd(m.root, msg.Path), m.refreshInlayHintsCmd())
+		return m, tea.Batch(m.refreshGitCmd(), gitgutter.MarkerCmd(m.root, msg.Path), m.refreshInlayHintsCmd(), m.refreshBlameOnPathCmd(msg.Path))
 
 	case gitgutter.MarkersMsg:
 		m = m.applyLineMarkers(msg)
@@ -619,6 +686,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case lookup.InlayHintMsg:
 		m = m.applyInlayHints(msg)
+		return m, nil
+
+	case inlineblame.BlameMsg:
+		m = m.applyBlame(msg)
 		return m, nil
 
 	case editor.CancelMsg:
@@ -649,7 +720,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.treePane.Reveal(msg.Path)
 		}
 		m = m.applyDiagnosticsToActive()
-		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
 
 	case search.CancelMsg:
 		m.overlay = overlayNone
@@ -868,7 +939,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.applyDiagnosticsToActive()
 		m.status = fmt.Sprintf("jumped to %s:%d:%d", filepath.Base(loc.Path), loc.Line+1, loc.Col+1)
-		return m, tea.Batch(m.ensureLSPForFile(loc.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
+		return m, tea.Batch(m.ensureLSPForFile(loc.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
 
 	case lookup.CompletionMsg:
 		// Discard late responses for a stale request: the user moved
@@ -912,7 +983,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.resize()
 		m = m.applyDiagnosticsToActive()
-		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
 
 	case multibuffer.FragmentsMsg:
 		m.multibufPane = m.multibufPane.SetFragments(msg.Fragments, msg.Err)
@@ -936,7 +1007,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.status = fmt.Sprintf("opened %s:%d", rel, msg.Line)
 		}
-		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
 
 	case multibuffer.CancelMsg:
 		m.multibufPane = m.multibufPane.Blur()
@@ -964,7 +1035,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.status = fmt.Sprintf("opened %s:%d:%d", rel, msg.Row+1, msg.Col+1)
 		}
-		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
 
 	case diagnostics.CancelMsg:
 		m.diagPane = m.diagPane.Blur()
@@ -1314,6 +1385,19 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m = m.clearInlayHints()
 			m.status = "inlay hints: off"
+			return m, nil
+		case 'b':
+			// Alt+b toggles GitLens-style inline blame on the cursor row of
+			// the active editor pane. Blame data is fetched on file open
+			// and save regardless of visibility, so toggling never re-shells
+			// git for already-open buffers. Default is off.
+			m.blameOn = !m.blameOn
+			m = m.setBlameVisibility(m.blameOn)
+			if m.blameOn {
+				m.status = "inline blame: on"
+				return m, m.refreshBlameCmd()
+			}
+			m.status = "inline blame: off"
 			return m, nil
 		case ',':
 			// Alt+, reloads ~/.config/nook/config.toml. Editor toggles take

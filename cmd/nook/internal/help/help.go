@@ -131,6 +131,9 @@ func Default() []Section {
 			{"alt+v", "Toggle markdown preview (.md / .markdown only)"},
 			{"esc", "Close overlay / blur pane"},
 		}},
+		{Name: "Git", Bindings: []Binding{
+			{"alt+b", "Toggle inline blame on cursor row (GitLens-style)"},
+		}},
 		{Name: "Settings", Bindings: []Binding{
 			{"alt+,", "Reload ~/.config/nook/config.toml"},
 		}},

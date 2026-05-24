@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -23,9 +24,14 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/inlineblame"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
 	"github.com/truffle-dev/glyph/components/theme"
 )
+
+// nowFunc is the clock source for blame strip rendering. Overridable from
+// tests so the relative-time formatting is deterministic.
+var nowFunc = func() time.Time { return time.Now() }
 
 // SavedMsg is emitted after a successful save.
 type SavedMsg struct {
@@ -124,6 +130,14 @@ type Pane struct {
 	// The host updates it via SetInlayHints whenever the LSP responds with
 	// a fresh batch for the open file. nil disables hint rendering.
 	inlayHints map[int][]inlayhint.Hint
+
+	// blame maps 0-based row to the git-blame entry for that row. The host
+	// fills this via SetBlame whenever a file is opened or saved while the
+	// inline-blame feature is enabled. blameVisible gates whether the cursor
+	// row's entry is rendered as dim italic text after the line; the map is
+	// always kept so a toggle doesn't have to re-shell out.
+	blame        map[int]inlineblame.Line
+	blameVisible bool
 
 	// Syntax-highlight cache. spans is the result of the last highlight pass
 	// over the buffer; bufVer is a monotonically-increasing counter bumped by
@@ -475,6 +489,33 @@ func (p Pane) InlayHintsAt(row int) []inlayhint.Hint {
 		return nil
 	}
 	return p.inlayHints[row]
+}
+
+// SetBlame replaces the per-row git-blame map. nil clears it. The map is
+// keyed by 0-based row. Rendering is gated separately by SetBlameVisible
+// so the host can toggle visibility without re-fetching.
+func (p Pane) SetBlame(rows map[int]inlineblame.Line) Pane {
+	p.blame = rows
+	return p
+}
+
+// SetBlameVisible controls whether the cursor row's blame entry is painted
+// after the line. False renders nothing even when the blame map is populated.
+func (p Pane) SetBlameVisible(b bool) Pane {
+	p.blameVisible = b
+	return p
+}
+
+// BlameVisible reports whether inline blame is currently rendered.
+func (p Pane) BlameVisible() bool { return p.blameVisible }
+
+// BlameAt returns the blame entry for a 0-based row and whether one exists.
+func (p Pane) BlameAt(row int) (inlineblame.Line, bool) {
+	if p.blame == nil {
+		return inlineblame.Line{}, false
+	}
+	v, ok := p.blame[row]
+	return v, ok
 }
 
 // InsertText inserts s at the cursor, advancing the cursor. Newlines split the
@@ -1457,6 +1498,11 @@ func (p Pane) View() string {
 		} else {
 			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", hints, contentWidth, t, false, tabW)
 		}
+		if p.blameVisible && i == p.row {
+			if entry, ok := p.BlameAt(i); ok {
+				line = appendBlameStrip(line, entry, contentWidth, t)
+			}
+		}
 		rows = append(rows, gut+marker+" "+line)
 	}
 	for len(rows) < visible {
@@ -1478,6 +1524,26 @@ func (p Pane) View() string {
 
 func renderCursor(line string, col int, t theme.Theme) string {
 	return renderCursorRowClipped(line, col, "", -1, t)
+}
+
+// appendBlameStrip pads the rendered cursor row to a fixed gap and appends
+// the blame entry as dim italic text, truncated so the total displayed width
+// stays at or below contentWidth. Returns the rendered line unchanged when
+// there isn't room for even a short suffix.
+func appendBlameStrip(line string, entry inlineblame.Line, contentWidth int, t theme.Theme) string {
+	const gap = 4
+	const minBlame = 12
+	used := lipgloss.Width(line)
+	remaining := contentWidth - used - gap
+	if remaining < minBlame {
+		return line
+	}
+	strip := inlineblame.Render(entry, nowFunc(), remaining)
+	if strip == "" {
+		return line
+	}
+	style := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true).Italic(true)
+	return line + strings.Repeat(" ", gap) + style.Render(strip)
 }
 
 // renderCursorRowClipped budgets visible columns first (treating ghost text as

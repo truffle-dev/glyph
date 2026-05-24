@@ -6,6 +6,67 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-05-24
+
+GitLens-style inline blame for `nook`'s editor pane. Open any file under
+a git work tree, press Alt+B, and the cursor row now shows a dim italic
+strip after the end of the line: `Author • 3 days ago • fix: handle
+empty inputs`. Move the cursor to a different row and the strip follows;
+toggle off and the editor returns to a clean canvas. Lines you haven't
+committed yet render as `(uncommitted)` so the working-tree edits are
+visible without confusion about whose name to expect.
+
+The blame data is computed once per file via `git blame --porcelain`,
+wrapped into a `tea.Cmd` that posts back a `BlameMsg` with the
+working-tree row → metadata map. The host caches the result on the
+active editor pane and re-fetches on file open, save, or buffer switch
+so the strip stays in sync with the most recent commits. Visibility is
+a separate switch from data, so toggling Alt+B doesn't re-shell git for
+buffers you've already opened in the session.
+
+The strip is width-aware: when the line of code already fills the
+viewport budget (a 40-column line on a 40-column pane, for example),
+the blame strip is elided rather than wrapped. When summaries are too
+long for the remaining budget, they're truncated with an ellipsis at
+rune boundaries. The relative-time bucketing reads as English ("just
+now", "1 minute ago", "yesterday", "3 weeks ago", "2 years ago") and
+falls silent for the zero-time sentinel that uncommitted lines carry.
+
+Files outside a git work tree (and binary files git can't blame) produce
+an empty map; the editor pane shows nothing and the toggle is harmless.
+The path on every `BlameMsg` is compared against the active buffer's
+path before applying, so a late response for an old buffer is dropped
+cleanly when the user has already moved on.
+
+### Added
+
+- `cmd/nook/internal/inlineblame`: `Line` struct (SHA / Author / Email /
+  Time / Summary), `IsUncommitted()` predicate, `UncommittedSHA` constant
+  for the all-zero working-tree SHA.
+- `Compute(ctx, root, path)` shells out to `git rev-parse
+  --is-inside-work-tree` then `git blame --porcelain`; returns an empty
+  map (no error) for paths outside a work tree.
+- `Parse(out)` walks porcelain output and fills repeat-SHA references
+  from the first sighting, so abbreviated header lines pick up author /
+  time / summary from the earlier full record.
+- `HumanizeSince(now, t)` buckets the elapsed gap into short relative
+  phrases; returns empty string for zero time.
+- `Render(line, now, maxSummary)` formats `Author • relative-time •
+  Summary` with ellipsis truncation at rune boundaries.
+- `BlameCmd(root, path)` tea.Cmd factory + `BlameMsg{Path, Lines, Err}`
+  with path round-tripped so late responses can be dropped.
+- `editor.Pane.SetBlame` / `SetBlameVisible` / `BlameVisible` / `BlameAt`
+  setters and accessors; `View()` injects the dim italic strip after the
+  cursor row when both data and visibility are present.
+- Host wiring: `model.blameOn` toggle, `refreshBlameCmd` /
+  `refreshBlameOnPathCmd` / `applyBlame` / `setBlameVisibility` helpers,
+  `BlameMsg` case in `Update`. Refresh fires on file open and save and
+  on every buffer switch.
+- `Alt+B` keybinding toggles inline blame; status line reports
+  `"inline blame: on"` / `"inline blame: off"`.
+- Help overlay entry under a new "Git" section listing `alt+b` →
+  "Toggle inline blame on cursor row (GitLens-style)."
+
 ## [0.20.0] — 2026-05-24
 
 Per-file conversation history for `nook`'s Ctrl+L composer. Every
