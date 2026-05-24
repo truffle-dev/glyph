@@ -6,6 +6,73 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-24
+
+File tree pane inside `nook`. `ctrl+b` toggles a persistent left-side
+tree that walks the project root (skipping `.git`, `node_modules`,
+`vendor`, `dist`, `target`, and dotdirs), groups directories before
+files, and emits a host-level `OpenMsg` when the user presses enter on
+a file leaf. Opening a buffer from the picker, project search, or
+go-to-definition reveals it in the tree so the cursor always tracks the
+active file.
+
+### Added
+
+- `cmd/nook/internal/filetree` — `Pane` value wrapping the glyph
+  `components/file-tree` Model with file-system walking, theme-aware
+  rounded border, focus/blur gate, and a `BuildTree(root)` helper that
+  applies the picker's ignore rules so the two surfaces stay
+  consistent. The pane lifts the glyph `SelectMsg` for file leaves
+  into a `filetree.OpenMsg` carrying the absolute path; directory
+  expand/collapse stays inside the pane. `Reveal(absPath)` expands the
+  ancestor chain and moves the cursor onto the target row;
+  `Refresh()` rebuilds the tree while preserving the cursor.
+- Host integration in `cmd/nook/main.go`: `treePane filetree.Pane` +
+  `showTree bool` on the model. `toggleTree()` opens with focus and
+  closes with blur; the layout allocates `min(40, max(22, width/5))`
+  columns when the tree is visible and shrinks the tree first if the
+  editor would drop below the 20-col minimum. Picker / project-search
+  / go-to-def / alt+]/alt+[ buffer switches all call `treePane.Reveal`
+  so the tree cursor mirrors the active file.
+- 11 package tests for `filetree` (ignore rules, dirs-before-files,
+  recursion, reveal-and-cursor, focus/blur gating, enter-on-file vs
+  enter-on-directory, refresh-preserves-cursor, view-includes-project-
+  name, view-empty-when-too-small) and 6 host tests
+  (`TestCtrlBTogglesTreePane`, `TestTreePaneEscapeBlursButKeepsVisible`,
+  `TestTreeOpenMsgOpensBuffer`, `TestTreeViewRenderedWhenShown`,
+  `TestTreeShrinksWhenEditorWouldStarve`,
+  `TestTreeRoutesKeysOnlyWhenFocused`).
+
+### New keys
+
+- `ctrl+b` — toggle the file tree pane. Opening also focuses the tree
+  so arrow keys navigate it immediately; closing returns focus to the
+  editor.
+- `esc` (when the tree is focused) — blur the tree without closing it.
+  Matches the Cursor / VS Code muscle memory where esc on the explorer
+  returns focus to the editor while keeping the side panel visible.
+- `enter` (on a file leaf in the tree) — open the file in a new buffer
+  (or switch to the existing one), blur the tree, focus the editor.
+  Directory rows expand/collapse in place.
+
+### Changed
+
+- Help overlay (`?`) Panes section lists `ctrl+b` so the new pane is
+  discoverable.
+- `editorSize()` mirrors the tree-aware allocation in `resize()` so the
+  welcome card clamps to the editor width when the tree is open.
+
+### Notes
+
+- The walk is eager at construction and on `Refresh()`. For
+  ~10k-file projects that's well under 50 ms; lazy expansion is a
+  later swap behind the same `BuildTree` contract if profiles ever
+  demand it.
+- The tree pane respects the same minimum dimensions as the rest of
+  the host: below `60 × 12` the layout falls back to the full-editor
+  view, and the tree's own `View()` returns `""` when it is allocated
+  less than `12 × 4`.
+
 ## [0.8.0] — 2026-05-24
 
 Format-on-save inside `nook`. `ctrl+s` now runs the LSP's

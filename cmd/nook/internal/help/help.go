@@ -85,6 +85,7 @@ func Default() []Section {
 			{"ctrl+space", "Completion popup (↑/↓ to navigate, enter to accept)"},
 		}},
 		{Name: "Panes", Bindings: []Binding{
+			{"ctrl+b", "Toggle file tree (left)"},
 			{"ctrl+g", "Toggle git pane"},
 			{"ctrl+`", "Toggle embedded terminal"},
 			{"esc", "Close overlay / blur pane"},

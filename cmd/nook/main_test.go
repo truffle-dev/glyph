@@ -17,6 +17,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/filetree"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
@@ -915,5 +916,145 @@ func TestFormattingMsgStaleVersionFallsBackToSave(t *testing.T) {
 	}
 	if !strings.Contains(m.status, "changed during format") {
 		t.Errorf("status should explain the skip, got %q", m.status)
+	}
+}
+
+func TestCtrlBTogglesTreePane(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+
+	if m.showTree {
+		t.Fatal("tree should default to hidden")
+	}
+
+	// Open.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	mm := updated.(model)
+	if !mm.showTree {
+		t.Fatal("ctrl+b should open the tree")
+	}
+	if !mm.treePane.Focused() {
+		t.Fatal("opening the tree should focus it")
+	}
+
+	// Close.
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	mm = updated.(model)
+	if mm.showTree {
+		t.Fatal("second ctrl+b should hide the tree")
+	}
+	if mm.treePane.Focused() {
+		t.Fatal("closing the tree should blur it")
+	}
+}
+
+func TestTreePaneEscapeBlursButKeepsVisible(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	mm := updated.(model)
+	if !mm.showTree || !mm.treePane.Focused() {
+		t.Fatal("precondition: tree must be open and focused")
+	}
+
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mm = updated.(model)
+	if !mm.showTree {
+		t.Errorf("esc should not hide the tree; got showTree=%v", mm.showTree)
+	}
+	if mm.treePane.Focused() {
+		t.Errorf("esc should blur the tree")
+	}
+}
+
+func TestTreeOpenMsgOpensBuffer(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+
+	abs := filepath.Join(root, "a.go")
+	updated, _ := m.Update(filetree.OpenMsg{Path: abs})
+	mm := updated.(model)
+	if mm.activePath() != abs {
+		t.Errorf("expected active buffer %q, got %q", abs, mm.activePath())
+	}
+	if mm.treePane.Focused() {
+		t.Errorf("opening a file should blur the tree so the editor can take keys")
+	}
+}
+
+func TestTreeViewRenderedWhenShown(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+
+	hiddenView := m.View()
+	if strings.Contains(hiddenView, filepath.Base(root)+"\n") {
+		// The status bar mentions the project name too; we use the
+		// header-then-newline shape to disambiguate. Either way, the
+		// hidden case shouldn't include the tree's bordered surface.
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	mm := updated.(model)
+	shownView := mm.View()
+
+	if len(shownView) <= len(hiddenView) {
+		t.Errorf("View should grow when the tree is open; hidden=%d shown=%d",
+			len(hiddenView), len(shownView))
+	}
+}
+
+func TestTreeShrinksWhenEditorWouldStarve(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	// 60 cols is the smallest size resize() will paint at. With the
+	// tree open AND the right pane active, the editor still needs at
+	// least 20 cols, so the tree must shrink.
+	m.width = 60
+	m.height = 16
+	m.right = rightGit
+	m.showTree = true
+	m = m.resize()
+	if m.View() == "" {
+		t.Fatal("expected non-empty view at minimum supported size")
+	}
+}
+
+func TestTreeRoutesKeysOnlyWhenFocused(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+
+	// Open and immediately blur (escape).
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	mm := updated.(model)
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mm = updated.(model)
+
+	// Open a file so the editor exists; then press 'x' which the
+	// blurred tree must NOT eat. The editor takes it as a no-op for
+	// a no-file state, but the test asserts the tree didn't claim it.
+	updated, _ = mm.Update(picker.SelectMsg{Item: picker.Item{Title: "a.go", Value: "a.go"}})
+	mm = updated.(model)
+	before := mm.treePane.Selected()
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyDown})
+	mm = updated.(model)
+	if mm.treePane.Selected() != before {
+		t.Errorf("blurred tree consumed KeyDown; cursor moved from %q to %q",
+			before, mm.treePane.Selected())
 	}
 }

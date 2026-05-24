@@ -20,7 +20,7 @@ func TestDefault_CoversAllRoutedKeys(t *testing.T) {
 		"alt+]", "alt+[",
 		"ctrl+k", "ctrl+l",
 		"alt+i", "ctrl+]", "ctrl+space",
-		"ctrl+g", "ctrl+`",
+		"ctrl+b", "ctrl+g", "ctrl+`",
 		"ctrl+q", "?",
 	}
 	for _, k := range mustHave {

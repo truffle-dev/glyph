@@ -12,6 +12,7 @@
 //	ctrl+f     find in current buffer
 //	ctrl+h     find and replace in current buffer
 //	alt+f      project search
+//	ctrl+b     file tree (left side)
 //	ctrl+g     git pane
 //	ctrl+k     inline AI edit on current line (Haiku)
 //	ctrl+l     composer multi-file AI edit (Sonnet)
@@ -54,6 +55,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/filetree"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/finder"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
@@ -154,6 +156,12 @@ type model struct {
 	// active buffer has a connected language server. Defaults to true;
 	// alt+s saves without formatting as the per-save escape hatch.
 	formatOnSave bool
+
+	// treePane is the persistent left-side file tree, toggled by ctrl+B.
+	// showTree drives visibility; the pane also tracks its own focus so
+	// the host can route keys to it when the user is browsing files.
+	treePane filetree.Pane
+	showTree bool
 }
 
 func main() {
@@ -210,6 +218,8 @@ func newModel(root string) model {
 		diagnostics:  map[string][]protocol.Diagnostic{},
 		finder:       finder.New(t),
 		formatOnSave: true,
+		treePane:     filetree.New(t, root),
+		showTree:     false,
 	}
 }
 
@@ -298,6 +308,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.status = "opened " + path
 		}
+		if m.showTree {
+			m.treePane.Reveal(full)
+		}
 		m = m.applyDiagnosticsToActive()
 		return m, m.ensureLSPForFile(full)
 
@@ -340,6 +353,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.overlay = overlayNone
 		m = m.resize()
 		m.status = fmt.Sprintf("opened %s:%d:%d", msg.Path, msg.Line, msg.Col)
+		if m.showTree {
+			m.treePane.Reveal(msg.Path)
+		}
 		m = m.applyDiagnosticsToActive()
 		return m, m.ensureLSPForFile(msg.Path)
 
@@ -549,6 +565,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			*p = p.JumpTo(loc.Line, loc.Col).Focus()
 		}
 		m = m.resize()
+		if m.showTree {
+			m.treePane.Reveal(loc.Path)
+		}
 		m = m.applyDiagnosticsToActive()
 		m.status = fmt.Sprintf("jumped to %s:%d:%d", filepath.Base(loc.Path), loc.Line+1, loc.Col+1)
 		return m, m.ensureLSPForFile(loc.Path)
@@ -573,6 +592,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case lookup.FormattingMsg:
 		return m.handleFormattingMsg(msg)
+
+	case filetree.OpenMsg:
+		_, action := m.bufs.OpenOrSwitch(msg.Path)
+		m.treePane.Blur()
+		rel, _ := filepath.Rel(m.root, msg.Path)
+		switch action {
+		case bufman.Switched:
+			m.status = "switched to " + rel
+		default:
+			m.status = "opened " + rel
+		}
+		m = m.resize()
+		m = m.applyDiagnosticsToActive()
+		return m, m.ensureLSPForFile(msg.Path)
 
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
@@ -702,6 +735,8 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleComposer()
 	case tea.KeyCtrlW:
 		return m.closeActiveTab()
+	case tea.KeyCtrlB:
+		return m.toggleTree()
 	case tea.KeyCtrlS:
 		return m.saveActive(true)
 	case tea.KeyCtrlCloseBracket:
@@ -727,6 +762,9 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.resize()
 			m = m.applyDiagnosticsToActive()
 			if p := m.bufs.Active(); p != nil {
+				if m.showTree {
+					m.treePane.Reveal(p.Path())
+				}
 				m.status = "switched to " + filepath.Base(p.Path())
 			}
 			return m, nil
@@ -735,6 +773,9 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.resize()
 			m = m.applyDiagnosticsToActive()
 			if p := m.bufs.Active(); p != nil {
+				if m.showTree {
+					m.treePane.Reveal(p.Path())
+				}
 				m.status = "switched to " + filepath.Base(p.Path())
 			}
 			return m, nil
@@ -804,6 +845,20 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.right == rightComposer && m.composer.Focused() {
 		var cmd tea.Cmd
 		m.composer, cmd = m.composer.Update(km)
+		return m, cmd
+	}
+
+	// File-tree gets keys when it's both visible and focused. Esc blurs
+	// the tree but keeps it visible — matches the Cursor/VS Code muscle
+	// memory where esc on the explorer focuses the editor without closing
+	// the side panel.
+	if m.showTree && m.treePane.Focused() {
+		if km.Type == tea.KeyEsc {
+			m.treePane.Blur()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.treePane, cmd = m.treePane.Update(km)
 		return m, cmd
 	}
 
@@ -1442,6 +1497,30 @@ func (m model) toggleTerm() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// toggleTree opens or closes the left-side file tree pane. Opening also
+// refreshes the walk (so newly-created files appear) and gives the tree
+// keyboard focus; closing blurs it. The tree is the most natural place
+// to land focus when the user has no file open yet, but we leave the
+// "where to focus next" decision to the editor's own focus logic.
+func (m model) toggleTree() (tea.Model, tea.Cmd) {
+	if m.showTree {
+		m.showTree = false
+		m.treePane.Blur()
+		m = m.resize()
+		m.status = "file tree closed"
+		return m, nil
+	}
+	m.showTree = true
+	m.treePane.Refresh()
+	if p := m.bufs.Active(); p != nil && p.Path() != "" {
+		m.treePane.Reveal(p.Path())
+	}
+	m.treePane.Focus()
+	m = m.resize()
+	m.status = "file tree open"
+	return m, nil
+}
+
 func (m model) termPumpCmd(ch <-chan []byte) tea.Cmd {
 	return func() tea.Msg {
 		b, ok := <-ch
@@ -1463,9 +1542,22 @@ func (m model) resize() model {
 	}
 	// Layout:
 	// - tab bar (1 row) when at least one buffer is open
-	// - top: workspace (editor) + right (git/term/diff if active)
+	// - top: optional tree (left) + workspace (editor) + right (git/term/diff)
 	// - bottom: status bar
-	leftW := m.width
+	treeW := 0
+	if m.showTree {
+		treeW = m.width / 5
+		if treeW < 22 {
+			treeW = 22
+		}
+		if treeW > 40 {
+			treeW = 40
+		}
+	}
+	leftW := m.width - treeW
+	if treeW > 0 {
+		leftW-- // separator column
+	}
 	rightW := 0
 	if m.right != rightNone {
 		rightW = m.width / 3
@@ -1475,7 +1567,20 @@ func (m model) resize() model {
 		if rightW > m.width-40 {
 			rightW = m.width - 40
 		}
-		leftW = m.width - rightW - 1
+		leftW = m.width - rightW - 1 - treeW
+		if treeW > 0 {
+			leftW-- // separator between tree and editor
+		}
+	}
+	if leftW < 20 {
+		// Editor needs at least 20 cols to be useful; if the tree's
+		// requested width would starve it, shrink the tree first.
+		shrink := 20 - leftW
+		treeW -= shrink
+		if treeW < 0 {
+			treeW = 0
+		}
+		leftW = 20
 	}
 	bodyH := m.height - 2
 	if m.bufs.Count() > 0 {
@@ -1492,6 +1597,9 @@ func (m model) resize() model {
 	m.search = m.search.WithSize(m.width-4, m.height-6)
 	m.picker = m.picker.WithSize(m.width-8, m.height-6)
 	m.finder = m.finder.WithSize(m.width)
+	if treeW > 0 {
+		m.treePane.SetSize(treeW, bodyH)
+	}
 	return m
 }
 
@@ -1559,31 +1667,6 @@ func (m model) View() string {
 		finderBar = m.finder.View()
 	}
 
-	if m.right == rightNone {
-		segments := make([]string, 0, 4)
-		if tabBar != "" {
-			segments = append(segments, tabBar)
-		}
-		segments = append(segments, left)
-		if finderBar != "" {
-			segments = append(segments, finderBar)
-		}
-		segments = append(segments, statusBar)
-		return lipgloss.JoinVertical(lipgloss.Left, segments...)
-	}
-
-	var right string
-	switch m.right {
-	case rightGit:
-		right = m.gitPane.View()
-	case rightTerm:
-		right = m.termPane.View()
-	case rightDiff:
-		right = renderDiff(t, m.diffTitle, m.diffBody, m.width/3, m.height-2)
-	case rightComposer:
-		right = m.composer.View()
-	}
-
 	bodyH := m.height - 2
 	if tabBar != "" {
 		bodyH--
@@ -1591,8 +1674,42 @@ func (m model) View() string {
 	if fh := m.finder.Height(); fh > 0 {
 		bodyH -= fh
 	}
-	bar := lipgloss.NewStyle().Foreground(t.Border).Render(strings.Repeat("│\n", bodyH))
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, bar, right)
+	verticalBar := func() string {
+		return lipgloss.NewStyle().Foreground(t.Border).Render(strings.Repeat("│\n", bodyH))
+	}
+
+	// Body assembly: tree + main + (optional) right pane, joined with
+	// thin border bars.
+	tree := ""
+	if m.showTree {
+		tree = m.treePane.View()
+	}
+
+	pieces := []string{}
+	if tree != "" {
+		pieces = append(pieces, tree, verticalBar())
+	}
+	pieces = append(pieces, left)
+	if m.right != rightNone {
+		var right string
+		switch m.right {
+		case rightGit:
+			right = m.gitPane.View()
+		case rightTerm:
+			right = m.termPane.View()
+		case rightDiff:
+			right = renderDiff(t, m.diffTitle, m.diffBody, m.width/3, m.height-2)
+		case rightComposer:
+			right = m.composer.View()
+		}
+		pieces = append(pieces, verticalBar(), right)
+	}
+	var body string
+	if len(pieces) == 1 {
+		body = pieces[0]
+	} else {
+		body = lipgloss.JoinHorizontal(lipgloss.Top, pieces...)
+	}
 
 	segments := make([]string, 0, 4)
 	if tabBar != "" {
@@ -1634,9 +1751,25 @@ func (m model) shouldShowWelcome() bool {
 }
 
 // editorSize returns the dimensions allocated to the editor pane. The
-// welcome card needs to know this so it can self-clamp.
+// welcome card needs to know this so it can self-clamp. Must mirror
+// resize() exactly: tree on the left when visible, right pane on the
+// right when active, and a minimum-20 editor floor that shrinks the
+// tree when necessary.
 func (m model) editorSize() (int, int) {
-	leftW := m.width
+	treeW := 0
+	if m.showTree {
+		treeW = m.width / 5
+		if treeW < 22 {
+			treeW = 22
+		}
+		if treeW > 40 {
+			treeW = 40
+		}
+	}
+	leftW := m.width - treeW
+	if treeW > 0 {
+		leftW--
+	}
 	if m.right != rightNone {
 		rightW := m.width / 3
 		if rightW < 40 {
@@ -1645,7 +1778,13 @@ func (m model) editorSize() (int, int) {
 		if rightW > m.width-40 {
 			rightW = m.width - 40
 		}
-		leftW = m.width - rightW - 1
+		leftW = m.width - rightW - 1 - treeW
+		if treeW > 0 {
+			leftW--
+		}
+	}
+	if leftW < 20 {
+		leftW = 20
 	}
 	bodyH := m.height - 2
 	if m.bufs.Count() > 0 {
