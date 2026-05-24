@@ -6,6 +6,74 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-24
+
+Syntax highlighting in `nook`. Go, TypeScript, JavaScript, Python, Rust, and
+Markdown render with keyword/string/comment/number/function/type/punctuation
+spans the moment a file opens, with no layout shift and no perceptible delay.
+The highlighter is theme-aware so the palette tracks `theme.Default` and
+`theme.Light` instead of hardcoding ANSI.
+
+### Added
+
+- `cmd/nook/internal/highlight` — pluggable highlighter interface plus a
+  [chroma](https://github.com/alecthomas/chroma) implementation covering
+  250+ languages out of the box. Output is a sparse `Result{Rows: map[int][]Span}`
+  the editor walks alongside the existing line buffer; spans are byte-offset,
+  non-overlapping, never cross a newline, and never exceed line length.
+- `components/theme`: seven new palette tokens — `SyntaxKeyword`,
+  `SyntaxString`, `SyntaxComment`, `SyntaxNumber`, `SyntaxFunction`,
+  `SyntaxType`, `SyntaxPunctuation`. `theme.Default` ships a VS Code-style
+  dark palette; `theme.Light` ships a deeper-saturation parallel. Empty
+  values fall back to the muted/text colors so the editor stays readable
+  on user themes that don't opt in.
+
+### Changed
+
+- `editor.Pane` now caches highlight results behind a per-buffer `bufVer`
+  counter. Tokens are recomputed only on actual buffer mutations, so the
+  hot `View()` path doesn't retokenize per frame.
+- `bufman.Manager` owns the shared `Highlighter` and rewires existing panes
+  when `WithHighlighter` is called, so theme switches don't strand stale
+  spans on open tabs.
+- Row rendering moved into a single `renderHighlightedRow` pass that walks
+  bytes once and handles spans, cursor cell, ghost text, tab expansion,
+  and width clipping together. Contiguous same-kind runes batch into one
+  `lipgloss.Style.Render` call to keep ANSI overhead bounded.
+
+### Notes
+
+- Binary size grows from ~5.6 MB → ~12.8 MB. Chroma embeds its lexer
+  registry, which is what makes `go install @latest` work with zero extra
+  setup. CGO stays off; tree-sitter (via WASM) remains a future drop-in
+  behind the same `Highlighter` interface.
+
+## [0.4.0] — 2026-05-24
+
+Multiple open buffers in `nook`. Opening a second file no longer replaces the
+first. Picker selections and search jumps now route through a buffer manager
+that appends new buffers, switches to already-open ones, and reuses the empty
+welcome pane in place on first open.
+
+### Added
+
+- `cmd/nook/internal/bufman` — buffer manager owning the open-buffer
+  collection. Pointer receiver so tab switches stay atomic against the
+  host's routing reads.
+- `cmd/nook/internal/tabbar` — tab strip above the editor. Basename labels,
+  parent-dir disambiguation when basenames collide, dirty marker (●), and
+  overflow that walks outward from the active tab so the user always sees
+  what they were last editing.
+- Keymap. `alt+]` / `alt+[` cycle buffers, `ctrl+w` closes the active
+  buffer (refuses to close while dirty). Closing the last buffer brings
+  back the welcome card.
+
+### Changed
+
+- LSP tracking moved to per-path. Closing a Go buffer sends `didClose` to
+  gopls and clears the per-path diagnostics + version state, so a stale
+  buffer's findings don't leak into the next file.
+
 ## [0.3.1] — 2026-05-24
 
 First-run UX for `nook`. Opening `nook .` on a fresh checkout used to land on a
@@ -197,7 +265,11 @@ registry, and a demo site.
 - The registry contract is stable as of v0.1.0. The catalog grows; the
   shape of `r/<component>.json` does not break.
 
-[Unreleased]: https://github.com/truffle-dev/glyph/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/truffle-dev/glyph/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.5.0
+[0.4.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.4.0
+[0.3.1]: https://github.com/truffle-dev/glyph/releases/tag/v0.3.1
+[0.3.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.3.0
 [0.2.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.2.0
 [0.1.1]: https://github.com/truffle-dev/glyph/releases/tag/v0.1.1
 [0.1.0]: https://github.com/truffle-dev/glyph/releases/tag/v0.1.0

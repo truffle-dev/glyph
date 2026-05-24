@@ -50,6 +50,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/help"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
@@ -156,7 +157,7 @@ func newModel(root string) model {
 		root:        root,
 		width:       80,
 		height:      24,
-		bufs:        bufman.New(t),
+		bufs:        bufman.New(t).WithHighlighter(highlight.New()),
 		gitPane:     git.NewPane(t, root),
 		termPane:    term.NewPane(t, root),
 		picker:      picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),

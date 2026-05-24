@@ -28,4 +28,14 @@ type Theme struct {
 	Warning lipgloss.Color
 	Error   lipgloss.Color
 	Info    lipgloss.Color
+
+	// Syntax (source-code highlighting palette). Components that don't render
+	// source code can ignore these. Empty values fall back to Text or muted.
+	SyntaxKeyword     lipgloss.Color
+	SyntaxString      lipgloss.Color
+	SyntaxComment     lipgloss.Color
+	SyntaxNumber      lipgloss.Color
+	SyntaxFunction    lipgloss.Color
+	SyntaxType        lipgloss.Color
+	SyntaxPunctuation lipgloss.Color
 }

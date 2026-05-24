@@ -21,6 +21,14 @@ var Default = Theme{
 	Warning: lipgloss.Color("#d8a83c"),
 	Error:   lipgloss.Color("#e25555"),
 	Info:    lipgloss.Color("#5e9bd2"),
+
+	SyntaxKeyword:     lipgloss.Color("#c586c0"),
+	SyntaxString:      lipgloss.Color("#ce9178"),
+	SyntaxComment:     lipgloss.Color("#6a7080"),
+	SyntaxNumber:      lipgloss.Color("#b5cea8"),
+	SyntaxFunction:    lipgloss.Color("#dcdcaa"),
+	SyntaxType:        lipgloss.Color("#4ec9b0"),
+	SyntaxPunctuation: lipgloss.Color("#9a9aa6"),
 }
 
 // Light is the light-paper theme. Most components target Default; Light is a
@@ -43,4 +51,12 @@ var Light = Theme{
 	Warning: lipgloss.Color("#d8a83c"),
 	Error:   lipgloss.Color("#e25555"),
 	Info:    lipgloss.Color("#5e9bd2"),
+
+	SyntaxKeyword:     lipgloss.Color("#a040a0"),
+	SyntaxString:      lipgloss.Color("#a5562a"),
+	SyntaxComment:     lipgloss.Color("#8a7d65"),
+	SyntaxNumber:      lipgloss.Color("#4f7a23"),
+	SyntaxFunction:    lipgloss.Color("#7a5e0c"),
+	SyntaxType:        lipgloss.Color("#0e7a6a"),
+	SyntaxPunctuation: lipgloss.Color("#7d7460"),
 }

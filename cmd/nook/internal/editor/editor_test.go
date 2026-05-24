@@ -3,6 +3,7 @@ package editor
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -10,8 +11,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/components/theme"
 )
+
+// ansiRE strips lipgloss/termenv escape sequences so substring asserts work
+// on the rendered output regardless of how many style chunks the row splits
+// into.
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func plain(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
 func TestMain(m *testing.M) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -323,6 +332,70 @@ func TestGhostTextHiddenWhenBlurred(t *testing.T) {
 	out := p.View()
 	if strings.Contains(out, "tln") {
 		t.Fatalf("expected ghost tail hidden when blurred:\n%s", out)
+	}
+}
+
+func TestHighlightingWiringPreservesPlainText(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "foo.go")
+	os.WriteFile(path, []byte("package main\n\nfunc Foo() {}\n"), 0o644)
+	p := NewPane(theme.Default).WithSize(80, 8).WithHighlighter(highlight.New()).Focus().Open(path)
+	out := plain(p.View())
+	for _, want := range []string{"package", "main", "func", "Foo"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in stripped highlighted view:\n%s", want, out)
+		}
+	}
+}
+
+func TestHighlightingEmitsAnsiForKnownLanguages(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "foo.go")
+	os.WriteFile(path, []byte("package main\n"), 0o644)
+	p := NewPane(theme.Default).WithSize(80, 6).WithHighlighter(highlight.New()).Focus().Open(path)
+	out := p.View()
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("expected ANSI escape in highlighted view, got plain:\n%s", out)
+	}
+}
+
+func TestHighlightingDisabledWhenNoHighlighter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "foo.txt")
+	os.WriteFile(path, []byte("hello world\n"), 0o644)
+	p := NewPane(theme.Default).WithSize(80, 6).Focus().Open(path)
+	out := plain(p.View())
+	if !strings.Contains(out, "hello world") {
+		t.Fatalf("expected plain content with no highlighter:\n%s", out)
+	}
+}
+
+func TestHighlightingRefreshesOnInsert(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "foo.go")
+	os.WriteFile(path, []byte("package main\n"), 0o644)
+	p := NewPane(theme.Default).WithSize(80, 6).WithHighlighter(highlight.New()).Focus().Open(path)
+	// Move cursor past end of "package main", add a newline, then insert.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p, _ = p.Update(runeMsg("var x = 42"))
+	out := plain(p.View())
+	if !strings.Contains(out, "var x = 42") {
+		t.Fatalf("expected inserted text in stripped view:\n%s", out)
+	}
+	if !strings.Contains(p.View(), "\x1b[") {
+		t.Fatalf("expected ANSI escape after insert")
+	}
+}
+
+func TestHighlightingUnknownExtensionStaysPlain(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.xyzq")
+	os.WriteFile(path, []byte("not a real lang\n"), 0o644)
+	p := NewPane(theme.Default).WithSize(80, 6).WithHighlighter(highlight.New()).Focus().Open(path)
+	out := plain(p.View())
+	if !strings.Contains(out, "not a real lang") {
+		t.Fatalf("expected source content in stripped view:\n%s", out)
 	}
 }
 

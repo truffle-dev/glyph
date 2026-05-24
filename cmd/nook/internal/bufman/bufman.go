@@ -6,6 +6,7 @@ package bufman
 
 import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -16,11 +17,25 @@ type Manager struct {
 	active int // -1 when empty
 	width  int
 	height int
+
+	// highlighter is shared across panes. nil disables highlighting.
+	highlighter highlight.Highlighter
 }
 
 // New constructs an empty manager.
 func New(t theme.Theme) *Manager {
 	return &Manager{theme: t, active: -1}
+}
+
+// WithHighlighter sets the syntax highlighter applied to every new pane.
+// Existing open panes are also rewired so theme/highlighter changes take
+// effect on the next render.
+func (m *Manager) WithHighlighter(h highlight.Highlighter) *Manager {
+	m.highlighter = h
+	for i := range m.panes {
+		m.panes[i] = m.panes[i].WithHighlighter(h)
+	}
+	return m
 }
 
 // Count returns the number of open buffers.
@@ -83,7 +98,7 @@ func (m *Manager) OpenOrSwitch(abs string) (int, OpenAction) {
 		m.Switch(i)
 		return i, Switched
 	}
-	p := editor.NewPane(m.theme).WithSize(m.width, m.height).Open(abs).Focus()
+	p := editor.NewPane(m.theme).WithHighlighter(m.highlighter).WithSize(m.width, m.height).Open(abs).Focus()
 	if m.active >= 0 {
 		cur := m.panes[m.active]
 		if cur.Path() == "" && !cur.Dirty() {

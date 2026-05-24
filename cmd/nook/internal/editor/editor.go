@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -106,11 +107,30 @@ type Pane struct {
 	// that row. The host updates it via SetDiagnosticRows whenever the LSP
 	// publishes for the open file.
 	diagnostics map[int]Severity
+
+	// Syntax-highlight cache. spans is the result of the last highlight pass
+	// over the buffer; bufVer is a monotonically-increasing counter bumped by
+	// any mutation; hlVer records the bufVer the cache was computed from.
+	// applyHighlight re-runs the highlighter only when bufVer != hlVer.
+	highlighter highlight.Highlighter
+	spans       highlight.Result
+	bufVer      int
+	hlVer       int
 }
 
 // NewPane constructs an empty pane.
 func NewPane(t theme.Theme) Pane {
 	return Pane{theme: t, buf: NewBuffer(), width: 80, height: 24}
+}
+
+// WithHighlighter attaches a syntax Highlighter. Passing nil disables
+// highlighting (existing tests rely on the no-highlighter path emitting plain
+// text). Highlighting is recomputed lazily when the buffer mutates.
+func (p Pane) WithHighlighter(h highlight.Highlighter) Pane {
+	p.highlighter = h
+	p.hlVer = -1 // force re-run on next applyHighlight
+	(&p).applyHighlight()
+	return p
 }
 
 // WithSize sets pane dimensions.
@@ -155,6 +175,8 @@ func (p Pane) Open(path string) Pane {
 	p.path = path
 	p.row, p.col, p.offset = 0, 0, 0
 	p.err = err
+	p.bufVer++
+	(&p).applyHighlight()
 	return p
 }
 
@@ -201,6 +223,8 @@ func (p Pane) SetLine(row int, newText string) Pane {
 	if p.col > len(newText) {
 		p.col = len(newText)
 	}
+	p.bufVer++
+	(&p).applyHighlight()
 	return p
 }
 
@@ -220,6 +244,8 @@ func (p Pane) ReplaceAllFromString(contents string) Pane {
 	if p.col > len(lines[p.row]) {
 		p.col = len(lines[p.row])
 	}
+	p.bufVer++
+	(&p).applyHighlight()
 	return p
 }
 
@@ -300,6 +326,7 @@ func (p Pane) InsertText(s string) Pane {
 	parts := strings.Split(s, "\n")
 	if len(parts) == 1 {
 		(&p).insertRunes([]rune(parts[0]))
+		(&p).applyHighlight()
 		return p
 	}
 	// Multi-line: insert head into current row, then splice tail rows.
@@ -311,6 +338,7 @@ func (p Pane) InsertText(s string) Pane {
 	last := parts[len(parts)-1]
 	(&p).insertNewline()
 	(&p).insertRunes([]rune(last))
+	(&p).applyHighlight()
 	return p
 }
 
@@ -450,7 +478,24 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 	case tea.KeyRunes:
 		p.insertRunes(km.Runes)
 	}
+	(&p).applyHighlight()
 	return p, nil
+}
+
+// applyHighlight re-runs the highlighter when the buffer version has advanced
+// past the last cached version. Called from any path that mutates the buffer.
+// Safe to call when highlighter is nil; it just returns.
+func (p *Pane) applyHighlight() {
+	if p.highlighter == nil {
+		p.spans = highlight.Result{}
+		return
+	}
+	if p.bufVer == p.hlVer {
+		return
+	}
+	src := strings.Join(p.buf.Lines, "\n")
+	p.spans = p.highlighter.Highlight(p.path, src)
+	p.hlVer = p.bufVer
 }
 
 func (p *Pane) clampCol() {
@@ -468,6 +513,7 @@ func (p *Pane) insertRunes(r []rune) {
 	p.buf.Lines[p.row] = line[:p.col] + string(r) + line[p.col:]
 	p.col += len(r)
 	p.buf.Dirty = true
+	p.bufVer++
 }
 
 func (p *Pane) insertNewline() {
@@ -479,6 +525,7 @@ func (p *Pane) insertNewline() {
 	p.row++
 	p.col = 0
 	p.buf.Dirty = true
+	p.bufVer++
 	p.ensureVisible()
 }
 
@@ -488,6 +535,7 @@ func (p *Pane) delBack() {
 		p.buf.Lines[p.row] = line[:p.col-1] + line[p.col:]
 		p.col--
 		p.buf.Dirty = true
+		p.bufVer++
 		return
 	}
 	if p.row == 0 {
@@ -500,6 +548,7 @@ func (p *Pane) delBack() {
 	p.buf.Lines = append(p.buf.Lines[:p.row], p.buf.Lines[p.row+1:]...)
 	p.row--
 	p.buf.Dirty = true
+	p.bufVer++
 	p.ensureVisible()
 }
 
@@ -508,6 +557,7 @@ func (p *Pane) delForward() {
 	if p.col < len(line) {
 		p.buf.Lines[p.row] = line[:p.col] + line[p.col+1:]
 		p.buf.Dirty = true
+		p.bufVer++
 		return
 	}
 	if p.row >= len(p.buf.Lines)-1 {
@@ -516,6 +566,7 @@ func (p *Pane) delForward() {
 	p.buf.Lines[p.row] = line + p.buf.Lines[p.row+1]
 	p.buf.Lines = append(p.buf.Lines[:p.row+1], p.buf.Lines[p.row+2:]...)
 	p.buf.Dirty = true
+	p.bufVer++
 }
 
 // View renders the pane.
@@ -565,9 +616,9 @@ func (p Pane) View() string {
 		case SeverityInfo, SeverityHint:
 			marker = " " + infoStyle.Render("●")
 		}
-		line := p.buf.Lines[i]
-		// expand tabs to 4 spaces for display
-		line = strings.ReplaceAll(line, "\t", "    ")
+		raw := p.buf.Lines[i]
+		spans := p.spans.Spans(i)
+		var line string
 		if i == p.row {
 			// Budget the visible characters first, then style. We allow the
 			// ghost preview to consume the remaining width after the prefix.
@@ -576,9 +627,9 @@ func (p Pane) View() string {
 			if p.ghostText != "" && p.focused {
 				ghost = p.ghostText
 			}
-			line = renderCursorRowClipped(line, cursorCol, ghost, contentWidth, t)
+			line = renderHighlightedRow(raw, spans, cursorCol, ghost, contentWidth, t, true)
 		} else {
-			line = clip(line, contentWidth)
+			line = renderHighlightedRow(raw, spans, -1, "", contentWidth, t, false)
 		}
 		rows = append(rows, gut+marker+" "+line)
 	}
@@ -698,6 +749,181 @@ func styledRow(prefix, ghost, tail []rune, col, origLen int, cur, muted lipgloss
 		rest = muted.Render(string(ghost[1:]))
 	}
 	return string(prefix) + first + rest + string(tail)
+}
+
+// renderHighlightedRow renders a single buffer row with syntax spans, optional
+// cursor cell, optional ghost-text suffix, tab expansion (\t -> 4 spaces), and
+// width clipping. cursorCol is in RAW byte coords (matching p.col); if
+// drawCursor is false the cursor cell is not drawn. Span byte offsets are also
+// raw and walked alongside the input.
+//
+// Rendering invariants the existing tests rely on:
+//   - The plain text content of the row appears verbatim (substring tests in
+//     editor_test.go check for "hello", "tln", etc.).
+//   - Ghost text is rendered with the first rune cursor-styled, the rest faint.
+//   - Trailing "…" appears only when the row exceeded width.
+func renderHighlightedRow(raw string, spans []highlight.Span, cursorCol int, ghost string, width int, t theme.Theme, drawCursor bool) string {
+	cur := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary)
+	muted := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true)
+	palette := syntaxPalette(t)
+
+	// Pre-expand tabs and build a raw-byte -> display-column index so spans
+	// and the cursor map cleanly into expanded coords. expandedRunes holds
+	// the runes we'll emit; runeKind[i] is the Kind backing expandedRunes[i].
+	var expanded []rune
+	var runeKind []highlight.Kind
+	rawToExpStart := make([]int, len(raw)+1) // raw byte offset -> first expanded rune idx
+	for i := 0; i < len(raw); i++ {
+		rawToExpStart[i] = len(expanded)
+		c := raw[i]
+		// Find which span covers this byte (linear scan; spans are sorted).
+		kind := highlight.KindPlain
+		for _, s := range spans {
+			if i >= s.Start && i < s.End {
+				kind = s.Kind
+				break
+			}
+			if s.Start > i {
+				break
+			}
+		}
+		if c == '\t' {
+			for k := 0; k < 4; k++ {
+				expanded = append(expanded, ' ')
+				runeKind = append(runeKind, highlight.KindPlain)
+			}
+			continue
+		}
+		// Standard byte. For multi-byte UTF-8 we still emit per-rune below;
+		// here we just count the leading byte. We append the rune later via
+		// rune iteration to keep widths sane.
+		expanded = append(expanded, rune(c))
+		runeKind = append(runeKind, kind)
+	}
+	rawToExpStart[len(raw)] = len(expanded)
+
+	// Convert raw cursor col to a display column (rune index in expanded).
+	dispCursor := -1
+	if drawCursor {
+		if cursorCol < 0 {
+			cursorCol = 0
+		}
+		if cursorCol >= len(raw) {
+			dispCursor = len(expanded)
+		} else {
+			dispCursor = rawToExpStart[cursorCol]
+		}
+	}
+
+	ghostRunes := []rune(ghost)
+	// Width budget: visible content + (1 if endCursor) + (1 if ellipsis).
+	endCursor := drawCursor && dispCursor >= len(expanded) && len(ghostRunes) == 0
+	totalCells := len(expanded) + len(ghostRunes)
+	if endCursor {
+		totalCells++
+	}
+	clipped := false
+	if width > 0 && totalCells > width {
+		clipped = true
+		// Reserve 1 col for ellipsis (and 1 for endCursor if drawn).
+		budget := width - 1
+		if budget < 0 {
+			budget = 0
+		}
+		if endCursor && budget > 0 {
+			budget--
+		}
+		// Trim from the back. Prefer keeping expanded then ghost.
+		if budget <= len(expanded) {
+			expanded = expanded[:budget]
+			runeKind = runeKind[:budget]
+			ghostRunes = nil
+		} else {
+			remain := budget - len(expanded)
+			if remain < len(ghostRunes) {
+				ghostRunes = ghostRunes[:remain]
+			}
+		}
+	}
+
+	// Emit. Batch contiguous runes of the same kind into one Style.Render call
+	// — per-rune emission inflates ANSI overhead and breaks substring asserts
+	// in tests because each rune gets surrounded by escape codes. The cursor
+	// cell breaks the run and is emitted separately.
+	var b strings.Builder
+	flush := func(buf []rune, k highlight.Kind) {
+		if len(buf) == 0 {
+			return
+		}
+		if k == highlight.KindPlain {
+			b.WriteString(string(buf))
+			return
+		}
+		st, ok := palette[k]
+		if !ok {
+			b.WriteString(string(buf))
+			return
+		}
+		b.WriteString(st.Render(string(buf)))
+	}
+	var run []rune
+	var runKind highlight.Kind
+	for i, r := range expanded {
+		if drawCursor && i == dispCursor {
+			flush(run, runKind)
+			run = nil
+			b.WriteString(cur.Render(string(r)))
+			continue
+		}
+		k := runeKind[i]
+		if len(run) > 0 && k != runKind {
+			flush(run, runKind)
+			run = run[:0]
+		}
+		runKind = k
+		run = append(run, r)
+	}
+	flush(run, runKind)
+	// Ghost text rendered next; first rune cursor-styled if the cursor is at
+	// EOL (no rune under it), else all muted.
+	if len(ghostRunes) > 0 {
+		if drawCursor && dispCursor >= len(expanded) {
+			b.WriteString(cur.Render(string(ghostRunes[0])))
+			if len(ghostRunes) > 1 {
+				b.WriteString(muted.Render(string(ghostRunes[1:])))
+			}
+		} else {
+			b.WriteString(muted.Render(string(ghostRunes)))
+		}
+	} else if drawCursor && dispCursor >= len(expanded) {
+		// Cursor at EOL with no ghost: paint a space cursor.
+		b.WriteString(cur.Render(" "))
+	}
+	if clipped {
+		b.WriteString("…")
+	}
+	return b.String()
+}
+
+// syntaxPalette materializes per-Kind lipgloss styles once per row render.
+// Theme colors map onto the palette; missing tokens (e.g. an older theme that
+// hasn't been updated yet) fall back to Text.
+func syntaxPalette(t theme.Theme) map[highlight.Kind]lipgloss.Style {
+	pick := func(c, fallback lipgloss.Color) lipgloss.Color {
+		if string(c) == "" {
+			return fallback
+		}
+		return c
+	}
+	return map[highlight.Kind]lipgloss.Style{
+		highlight.KindKeyword:     lipgloss.NewStyle().Foreground(pick(t.SyntaxKeyword, t.Primary)),
+		highlight.KindString:      lipgloss.NewStyle().Foreground(pick(t.SyntaxString, t.Accent)),
+		highlight.KindComment:     lipgloss.NewStyle().Foreground(pick(t.SyntaxComment, t.TextMuted)).Italic(true),
+		highlight.KindNumber:      lipgloss.NewStyle().Foreground(pick(t.SyntaxNumber, t.Success)),
+		highlight.KindFunction:    lipgloss.NewStyle().Foreground(pick(t.SyntaxFunction, t.Warning)),
+		highlight.KindType:        lipgloss.NewStyle().Foreground(pick(t.SyntaxType, t.Info)),
+		highlight.KindPunctuation: lipgloss.NewStyle().Foreground(pick(t.SyntaxPunctuation, t.TextMuted)),
+	}
 }
 
 func clip(s string, w int) string {
