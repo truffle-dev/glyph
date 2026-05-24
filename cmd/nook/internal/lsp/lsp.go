@@ -477,6 +477,38 @@ func (c *Client) Definition(ctx context.Context, path string, line, col int) ([]
 	return out, nil
 }
 
+// References asks the server for every workspace site that mentions the
+// symbol at (path, line, col). Returns absolute paths with 0-indexed
+// positions, the same shape as Definition. IncludeDeclaration is true so
+// the declaration appears alongside the call sites (matching VS Code and
+// Zed defaults). nil-client and empty server are treated as initialization
+// errors so the host can wire alt+u unconditionally and surface a hint
+// when the LSP is still attaching.
+func (c *Client) References(ctx context.Context, path string, line, col int) ([]Location, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	locs, err := c.server.References(ctx, &protocol.ReferenceParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+			Position:     protocol.Position{Line: uint32(line), Character: uint32(col)},
+		},
+		Context: protocol.ReferenceContext{IncludeDeclaration: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: references: %w", err)
+	}
+	out := make([]Location, 0, len(locs))
+	for _, l := range locs {
+		out = append(out, Location{
+			Path: uri.URI(l.URI).Filename(),
+			Line: int(l.Range.Start.Line),
+			Col:  int(l.Range.Start.Character),
+		})
+	}
+	return out, nil
+}
+
 // InlayHint asks the server for the inlay hints inside the given line range
 // of the open document. startLine is inclusive, endLine is exclusive (the
 // LSP range semantics with character=0 on each end). Returns an empty slice

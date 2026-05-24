@@ -123,6 +123,7 @@ func Default() []Section {
 			{"alt+enter", "Code actions (quickfix / refactor) at the cursor"},
 			{"f2", "Rename symbol under cursor (workspace-wide)"},
 			{"alt+y", "Toggle gopls inlay hints (type annotations, parameter names)"},
+			{"alt+u", "Find references to identifier under cursor"},
 		}},
 		{Name: "Panes", Bindings: []Binding{
 			{"ctrl+b", "Toggle file tree (left)"},

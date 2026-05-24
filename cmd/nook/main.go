@@ -70,6 +70,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/filetree"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/finder"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/findrefs"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
@@ -1420,6 +1421,14 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// terminal collapses Ctrl+Shift+B to Ctrl+B (file tree), so alt+t
 			// is the portable surface. Mnemonic: "tasks".
 			return m.openTasksOverlay()
+		case 'u':
+			// Alt+u asks the language server for every workspace site that
+			// mentions the symbol under the cursor, then renders the hits
+			// through the existing multibuffer overlay so Enter jumps and
+			// Esc closes. Cursor / VS Code default to Shift+F12 but F12 is
+			// not universally-reliable in terminals, so alt+u is the
+			// portable surface. Mnemonic: "usages".
+			return m.findReferencesAtCursor()
 		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
@@ -1860,6 +1869,47 @@ func (m model) triggerRename() (tea.Model, tea.Cmd) {
 	m.pendingRename = pendingRename{path: p.Path(), row: row, col: col}
 	m.status = "asking gopls if rename is available…"
 	return m, lookup.PrepareRenameCmd(m.lsp, p.Path(), row, col)
+}
+
+// findReferencesAtCursor is the alt+u handler. Resolves the identifier
+// under the cursor via the same character-class walk gopls uses (no LSP
+// call needed just to know what we're hovering), opens the multibuffer
+// overlay with a "references to X" title, and fires the async
+// findrefs.FindReferencesCmd. Errors come back through the standard
+// multibuffer.FragmentsMsg pathway; empty results land as a Fragments
+// slice of length zero, which the pane renders as "no fragments — press
+// esc to close" — accurate UX for "the LSP returned no hits."
+//
+// Early exits:
+//   - no active buffer: status hint, no overlay opened
+//   - no LSP client attached yet: status hint, no overlay opened
+//   - cursor not on an identifier: status hint, no overlay opened
+func (m model) findReferencesAtCursor() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
+		m.status = "open a file first (ctrl+p)"
+		return m, nil
+	}
+	if m.lsp == nil {
+		m.status = "references: no language server attached"
+		return m, nil
+	}
+	row := p.CursorRow()
+	col := p.CursorCol()
+	sym := findrefs.Symbol(p.Contents(), row, col)
+	if sym == "" {
+		m.status = "references: no identifier under cursor"
+		return m, nil
+	}
+	m.overlay = overlayMultibuffer
+	m.multibufPane = m.multibufPane.
+		WithSize(m.width-4, m.height-4).
+		Reset("references to " + sym).
+		Focus()
+	if ap := m.bufs.Active(); ap != nil {
+		*ap = ap.Blur()
+	}
+	return m, findrefs.FindReferencesCmd(m.lsp, p.Path(), row, col, findrefs.DefaultContextLines, nil)
 }
 
 // handlePrepareRenameMsg arms the rename prompt when the server says the

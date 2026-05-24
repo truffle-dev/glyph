@@ -6,6 +6,80 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-05-24
+
+Find references via LSP in `nook`. Place the cursor on an identifier,
+press Alt+U, and every workspace site that mentions the symbol opens in
+the same multibuffer overlay the diff loader uses. Each hit ships with
+three lines of context above and below; hits that fall close together
+on the same file merge into one continuous fragment so a method called
+on lines 7 and 9 reads as a single 4-12 strip rather than two
+overlapping ones. The pane title carries the symbol you searched for
+("references to ParseConfig"), and the existing Enter-jumps-Esc-closes
+contract carries straight through from the diff loader.
+
+The request goes through the gopls client over the standard
+`textDocument/references` channel with `IncludeDeclaration: true`, so
+the declaration site and every call site are visible from one keystroke.
+A 3-second timeout matches the hover and definition wedges already in
+the LSP package; results are sliced into multibuffer.Fragments by a
+pure `BuildFragments(locs, contextLines, reader)` computation so the
+loader is fully unit-testable against an in-memory file reader.
+
+Hit rows are painted with the multibuffer.Added marker so the diff
+pane's highlight color the user already recognizes for "+" lines now
+also marks "this is the line that referenced your symbol." Context rows
+carry multibuffer.Context. Files that fail to read (permissions, race,
+deletion mid-search) produce a single-line placeholder fragment with
+the error text so the user still sees the hit and Enter still routes to
+the editor, where the real error will surface in a more useful place.
+
+Symbol extraction is Go-style identifier matching: `[A-Za-z_]
+[A-Za-z0-9_]*` with all-digit spans rejected, so the cursor parked on a
+numeric literal returns "no identifier under cursor" instead of an
+empty multibuffer. The cursor can sit anywhere within or at the right
+edge of the identifier and still resolve, matching how editors place
+the caret after the last keystroke. No LSP attached, no buffer open,
+or no identifier under the cursor all surface as status-bar hints
+rather than opening a hollow overlay.
+
+Why Alt+U. Cursor and VS Code default to Shift+F12, but F12 is not
+universally-reliable across terminals (alt-screen + function-key
+encoding varies by emulator). Alt+u is the portable surface and the
+mnemonic is "usages." The binding sits next to the other alt-prefixed
+LSP keys (alt+i hover, alt+y inlay hints, alt+enter code actions) so
+muscle memory clusters cleanly.
+
+### Added
+
+- `cmd/nook/internal/findrefs`: pure-Go references-to-fragments loader.
+  `Symbol(source, row, col)` extracts the identifier at a 0-indexed
+  position; `BuildFragments(locs, contextLines, reader)` groups
+  locations by file, slices a configurable context window around each
+  hit, merges overlapping or touching windows, marks hit rows with
+  `multibuffer.Added`, and emits a sorted `[]multibuffer.Fragment`.
+- `findrefs.FindReferencesCmd(client, path, row, col, contextLines,
+  reader)` returns a `tea.Cmd` that resolves to a
+  `multibuffer.FragmentsMsg{Source: "references"}` carrying the
+  fragments (or an error wrapped in the same message). `ErrNoClient`
+  fires when the language server is not yet attached.
+- `findrefs.OSReader` is the default file reader; tests inject
+  map-backed readers via the `Reader` callback type.
+- `findrefs.DefaultContextLines` is `3` to mirror `git diff
+  --unified=3` — the same window the multibuffer pane already shows
+  for diff fragments.
+- `lsp.Client.References(ctx, path, row, col)` wires
+  `textDocument/references` with `IncludeDeclaration: true` over the
+  existing gopls connection; converts results into the package's
+  internal `Location` shape.
+- Host wiring: `Alt+U` calls `findReferencesAtCursor`, which extracts
+  the identifier under the cursor, opens the multibuffer overlay with
+  title `"references to <symbol>"`, and dispatches the LSP query. No
+  identifier, no buffer, or no LSP each emit a status-bar hint rather
+  than opening a hollow overlay.
+- Help overlay entry under "Language server": `alt+u` → "Find
+  references to identifier under cursor."
+
 ## [0.21.0] — 2026-05-24
 
 GitLens-style inline blame for `nook`'s editor pane. Open any file under
