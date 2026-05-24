@@ -22,6 +22,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -117,6 +118,11 @@ type Pane struct {
 	// save). Painted as the leading character of the marker column so it
 	// composes with the diagnostic sigil to its right.
 	lineMarkers map[int]gitgutter.Marker
+
+	// inlayHints maps 0-based row to the inlay hints rendered on that row.
+	// The host updates it via SetInlayHints whenever the LSP responds with
+	// a fresh batch for the open file. nil disables hint rendering.
+	inlayHints map[int][]inlayhint.Hint
 
 	// Syntax-highlight cache. spans is the result of the last highlight pass
 	// over the buffer; bufVer is a monotonically-increasing counter bumped by
@@ -396,6 +402,22 @@ func (p Pane) LineMarkerAt(row int) gitgutter.Marker {
 		return gitgutter.None
 	}
 	return p.lineMarkers[row]
+}
+
+// SetInlayHints replaces the per-row inlay hint map. nil clears it. The map
+// is keyed by 0-based row; each entry is the slice of hints rendered on
+// that row in document order.
+func (p Pane) SetInlayHints(rows map[int][]inlayhint.Hint) Pane {
+	p.inlayHints = rows
+	return p
+}
+
+// InlayHintsAt returns the inlay hints rendered on a 0-based row, or nil.
+func (p Pane) InlayHintsAt(row int) []inlayhint.Hint {
+	if p.inlayHints == nil {
+		return nil
+	}
+	return p.inlayHints[row]
 }
 
 // InsertText inserts s at the cursor, advancing the cursor. Newlines split the
@@ -1178,6 +1200,7 @@ func (p Pane) View() string {
 		raw := p.buf.Lines[i]
 		spans := p.spans.Spans(i)
 		marks, activeIdx := p.matchesForRow(i)
+		hints := p.InlayHintsAt(i)
 		var line string
 		cols, hasCursors := cursorsByRow[i]
 		if hasCursors {
@@ -1189,9 +1212,9 @@ func (p Pane) View() string {
 					ghost = p.ghostText
 				}
 			}
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, cols, primaryCol, ghost, contentWidth, t, true)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, cols, primaryCol, ghost, hints, contentWidth, t, true)
 		} else {
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", contentWidth, t, false)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", hints, contentWidth, t, false)
 		}
 		rows = append(rows, gut+marker+" "+line)
 	}
@@ -1361,9 +1384,13 @@ func (p Pane) matchesForRow(row int) ([]Range, int) {
 // each gets a cursor cell. primaryCol is the byte col of the primary cursor on
 // this row (or -1 if not on this row) — used to anchor ghost-text rendering.
 // drawCursor disables all cursor cells when false (rows without any cursor).
-func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCols []int, primaryCol int, ghost string, width int, t theme.Theme, drawCursor bool) string {
+// hints is the inlay-hint slice for the row; each renders as dim italic text
+// at its display column, between the rune at that column and the rune to its
+// left. Hints anchored at or past end-of-line render after the last rune.
+func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool) string {
 	cur := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary)
 	muted := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true)
+	hintStyle := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true).Italic(true)
 	// matchBG is the dim highlight applied to every match on the row;
 	// matchActiveBG is the stronger highlight on the currently-selected match.
 	matchBG := lipgloss.NewStyle().Background(t.SurfaceStrong)
@@ -1459,13 +1486,67 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	}
 
 	ghostRunes := []rune(ghost)
-	// Width budget: visible content + (1 if any cursor at EOL with no ghost) + (1 if ellipsis).
+
+	// Translate each hint to a display column, pad it, pre-render the styled
+	// label. Hints are decorative; they're the first thing dropped if width
+	// is tight. Sort ascending by display column to keep the iteration order
+	// stable and make "drop from the back" mean "drop rightmost first."
+	type displayHint struct {
+		col      int
+		rendered string
+		runes    int
+	}
+	var hintItems []displayHint
+	hintCellsTotal := 0
+	for _, h := range hints {
+		var dc int
+		switch {
+		case h.Col < 0:
+			dc = 0
+		case h.Col >= len(raw):
+			dc = len(expanded)
+		default:
+			dc = rawToExpStart[h.Col]
+		}
+		text := h.Label
+		if h.PaddingLeft {
+			text = " " + text
+		}
+		if h.PaddingRight {
+			text = text + " "
+		}
+		rr := []rune(text)
+		if len(rr) == 0 {
+			continue
+		}
+		hintItems = append(hintItems, displayHint{
+			col:      dc,
+			rendered: hintStyle.Render(text),
+			runes:    len(rr),
+		})
+		hintCellsTotal += len(rr)
+	}
+	sort.SliceStable(hintItems, func(i, j int) bool {
+		return hintItems[i].col < hintItems[j].col
+	})
+
+	// Width budget: visible content + hint cells + (1 if any cursor at EOL with
+	// no ghost) + (1 if ellipsis).
 	endCursor := drawCursor && cursorAtEnd && len(ghostRunes) == 0
-	totalCells := len(expanded) + len(ghostRunes)
+	totalCells := len(expanded) + len(ghostRunes) + hintCellsTotal
 	if endCursor {
 		totalCells++
 	}
 	clipped := false
+	if width > 0 && totalCells > width {
+		// Hints are decorative — drop them from the back first.
+		for len(hintItems) > 0 && totalCells > width {
+			last := hintItems[len(hintItems)-1]
+			hintCellsTotal -= last.runes
+			totalCells -= last.runes
+			hintItems = hintItems[:len(hintItems)-1]
+		}
+	}
 	if width > 0 && totalCells > width {
 		clipped = true
 		// Reserve 1 col for ellipsis (and 1 for endCursor if drawn).
@@ -1488,6 +1569,20 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 				ghostRunes = ghostRunes[:remain]
 			}
 		}
+		// Hints anchored past the clipped expanded boundary are now invisible.
+		keep := hintItems[:0]
+		for _, hi := range hintItems {
+			if hi.col <= len(expanded) {
+				keep = append(keep, hi)
+			}
+		}
+		hintItems = keep
+	}
+
+	// Group kept hints by display column for O(1) lookup in the emit loop.
+	dispHintsByCol := make(map[int][]displayHint, len(hintItems))
+	for _, hi := range hintItems {
+		dispHintsByCol[hi.col] = append(dispHintsByCol[hi.col], hi)
 	}
 
 	// Emit. Batch contiguous runes of the same (kind, matchKind) pair into one
@@ -1526,10 +1621,25 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		}
 		b.WriteString(st.Render(string(buf)))
 	}
+	emitHintsAt := func(col int) {
+		hs := dispHintsByCol[col]
+		if len(hs) == 0 {
+			return
+		}
+		for _, hi := range hs {
+			b.WriteString(hi.rendered)
+		}
+		delete(dispHintsByCol, col)
+	}
 	var run []rune
 	var runKind highlight.Kind
 	var runMatch matchKind
 	for i, r := range expanded {
+		if _, hasHint := dispHintsByCol[i]; hasHint {
+			flush(run, runKind, runMatch)
+			run = nil
+			emitHintsAt(i)
+		}
 		if drawCursor && dispCursorSet[i] {
 			flush(run, runKind, runMatch)
 			run = nil
@@ -1550,6 +1660,9 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		run = append(run, r)
 	}
 	flush(run, runKind, runMatch)
+	// EOL hints (anchored at or past the last rune) render before ghost-text
+	// and the end-cursor cell so they sit naturally after the line content.
+	emitHintsAt(len(expanded))
 	// Ghost text rendered next; first rune cursor-styled if the PRIMARY cursor
 	// is at EOL (no rune under it), else all muted. Extra cursors do not anchor
 	// ghost text.

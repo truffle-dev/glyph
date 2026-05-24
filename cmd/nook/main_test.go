@@ -20,6 +20,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/filetree"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/lookup"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/multibuffer"
@@ -1517,5 +1518,115 @@ func TestMultibufferOverlayRoutesKeys(t *testing.T) {
 	}
 	if _, ok := cmd().(multibuffer.CancelMsg); !ok {
 		t.Errorf("Esc on multibuffer overlay produced %T, want CancelMsg", cmd())
+	}
+}
+
+// TestInlayHintsDefaultOn confirms the host boots with hints enabled. Users
+// who want to suppress them invoke alt+y; the default is the configured-on
+// behavior gopls power-users expect.
+func TestInlayHintsDefaultOn(t *testing.T) {
+	m := newModel(t.TempDir())
+	if !m.inlayHintsOn {
+		t.Fatal("inlay hints should default to on")
+	}
+}
+
+// TestApplyInlayHintsRoutesToPane verifies that an InlayHintMsg for the
+// active buffer lands as a row→hint-slice map on the editor pane.
+func TestApplyInlayHintsRoutesToPane(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.bufs.OpenOrSwitch(path)
+	m.lspVersions[path] = 3
+
+	hints := map[int][]inlayhint.Hint{
+		2: {{Row: 2, Col: 9, Label: ": int", Kind: inlayhint.KindType}},
+	}
+	updated, _ := m.Update(lookup.InlayHintMsg{Path: path, Version: 3, Hints: hints})
+	mm := updated.(model)
+	pa := mm.bufs.Active()
+	got := pa.InlayHintsAt(2)
+	if len(got) != 1 || got[0].Label != ": int" {
+		t.Fatalf("InlayHintsAt(2) = %#v, want one hint with label ': int'", got)
+	}
+}
+
+// TestInlayHintsStaleVersionDiscarded confirms that a response carrying a
+// version older than what the host already advanced past gets dropped.
+// gopls answering for didChange v3 after the user typed up to v5 should
+// leave the pane's hints alone.
+func TestInlayHintsStaleVersionDiscarded(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.bufs.OpenOrSwitch(path)
+	m.lspVersions[path] = 5
+
+	hints := map[int][]inlayhint.Hint{0: {{Row: 0, Col: 0, Label: "stale"}}}
+	updated, _ := m.Update(lookup.InlayHintMsg{Path: path, Version: 3, Hints: hints})
+	mm := updated.(model)
+	pa := mm.bufs.Active()
+	if got := pa.InlayHintsAt(0); len(got) != 0 {
+		t.Fatalf("stale-version response should not apply; got %d hints", len(got))
+	}
+}
+
+// TestAltYTogglesInlayHints walks through the toggle: off clears every
+// pane's hints, on flips the bit back. The refresh cmd is nil here because
+// no LSP client is wired up in the test harness; that's the intended
+// behavior — the toggle survives a missing language server.
+func TestAltYTogglesInlayHints(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.bufs.OpenOrSwitch(path)
+	pa := m.bufs.Active()
+	*pa = pa.SetInlayHints(map[int][]inlayhint.Hint{
+		0: {{Row: 0, Col: 0, Label: "before"}},
+	})
+
+	// Alt+y off.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}, Alt: true})
+	mm := updated.(model)
+	if mm.inlayHintsOn {
+		t.Fatal("alt+y should toggle inlayHintsOn off")
+	}
+	if got := mm.bufs.Active().InlayHintsAt(0); len(got) != 0 {
+		t.Fatalf("alt+y off should clear hints; got %d", len(got))
+	}
+
+	// Alt+y back on.
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}, Alt: true})
+	mm = updated.(model)
+	if !mm.inlayHintsOn {
+		t.Fatal("second alt+y should toggle inlayHintsOn back on")
+	}
+}
+
+// TestInlayHintCmdNilWhenDisabled confirms the refresh helper is a no-op
+// when the toggle is off, even with an active buffer and an LSP version
+// recorded. Saves an unnecessary RPC on every save.
+func TestInlayHintCmdNilWhenDisabled(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	m.inlayHintsOn = false
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.bufs.OpenOrSwitch(path)
+	m.lspVersions[path] = 1
+	if cmd := m.refreshInlayHintsCmd(); cmd != nil {
+		t.Fatal("refreshInlayHintsCmd should be nil when hints are disabled")
 	}
 }

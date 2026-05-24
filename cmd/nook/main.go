@@ -19,6 +19,7 @@
 //	ctrl+`     terminal pane
 //	ctrl+s     save current buffer
 //	alt+i      LSP hover info for symbol under cursor
+//	alt+y      toggle gopls inlay hints (type annotations, parameter names)
 //	ctrl+]     LSP go to definition
 //	ctrl+space LSP completion popup (↑/↓ to navigate, enter to accept)
 //	alt+enter  LSP code actions at the cursor
@@ -192,6 +193,11 @@ type model struct {
 	// files into one scrollable surface). Alt+m loads working-tree-vs-HEAD
 	// diff fragments; Enter on any row jumps to that file+line.
 	multibufPane multibuffer.Pane
+
+	// inlayHintsOn drives whether gopls inlay hints are rendered. Alt+y
+	// toggles. Default true. When false the host suppresses hint requests
+	// and clears any stale hints from the active editor pane.
+	inlayHintsOn bool
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -261,6 +267,7 @@ func newModel(root string) model {
 		caPopup:      codeaction.New(),
 		renamePrompt: rename.New(),
 		multibufPane: multibuffer.NewPane(t, root),
+		inlayHintsOn: true,
 	}
 }
 
@@ -320,6 +327,62 @@ func (m model) applyLineMarkers(msg gitgutter.MarkersMsg) model {
 		return m
 	}
 	*p = p.SetLineMarkers(msg.Markers)
+	return m
+}
+
+// refreshInlayHintsCmd requests a fresh inlay-hint batch for the active
+// buffer's path. Returns nil when hints are disabled, no LSP is wired up,
+// no active buffer, or no path. The request covers the whole file (start
+// line 0 to endLine == line count); gopls returns hints in document
+// order which the host stashes keyed by row.
+func (m model) refreshInlayHintsCmd() tea.Cmd {
+	if !m.inlayHintsOn || m.lsp == nil {
+		return nil
+	}
+	p := m.bufs.Active()
+	if p == nil {
+		return nil
+	}
+	path := p.Path()
+	if path == "" {
+		return nil
+	}
+	version := m.lspVersions[path]
+	return lookup.InlayHintCmd(m.lsp, path, version, 0, p.LineCount()+1)
+}
+
+// applyInlayHints locates the pane whose path matches msg and applies the
+// hint map. Late responses for a stale version (the buffer changed after
+// the request was issued) or for a path no longer open are dropped.
+func (m model) applyInlayHints(msg lookup.InlayHintMsg) model {
+	if msg.Err != nil || msg.Path == "" {
+		return m
+	}
+	idx := m.bufs.Find(msg.Path)
+	if idx < 0 {
+		return m
+	}
+	p := m.bufs.At(idx)
+	if p == nil {
+		return m
+	}
+	if msg.Version != 0 && m.lspVersions[msg.Path] != msg.Version {
+		return m
+	}
+	*p = p.SetInlayHints(msg.Hints)
+	return m
+}
+
+// clearInlayHints wipes inlay hints from every open buffer. Called when
+// the user toggles hints off via alt+y.
+func (m model) clearInlayHints() model {
+	for i := 0; i < m.bufs.Count(); i++ {
+		p := m.bufs.At(i)
+		if p == nil {
+			continue
+		}
+		*p = p.SetInlayHints(nil)
+	}
 	return m
 }
 
@@ -386,7 +449,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.treePane.Reveal(full)
 		}
 		m = m.applyDiagnosticsToActive()
-		return m, tea.Batch(m.ensureLSPForFile(full), m.refreshGutterCmd())
+		return m, tea.Batch(m.ensureLSPForFile(full), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
 
 	case picker.CancelMsg:
 		m.overlay = overlayNone
@@ -401,10 +464,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = "saved " + msg.Path
 		}
-		return m, tea.Batch(m.refreshGitCmd(), gitgutter.MarkerCmd(m.root, msg.Path))
+		return m, tea.Batch(m.refreshGitCmd(), gitgutter.MarkerCmd(m.root, msg.Path), m.refreshInlayHintsCmd())
 
 	case gitgutter.MarkersMsg:
 		m = m.applyLineMarkers(msg)
+		return m, nil
+
+	case lookup.InlayHintMsg:
+		m = m.applyInlayHints(msg)
 		return m, nil
 
 	case editor.CancelMsg:
@@ -435,7 +502,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.treePane.Reveal(msg.Path)
 		}
 		m = m.applyDiagnosticsToActive()
-		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd())
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
 
 	case search.CancelMsg:
 		m.overlay = overlayNone
@@ -648,7 +715,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.applyDiagnosticsToActive()
 		m.status = fmt.Sprintf("jumped to %s:%d:%d", filepath.Base(loc.Path), loc.Line+1, loc.Col+1)
-		return m, tea.Batch(m.ensureLSPForFile(loc.Path), m.refreshGutterCmd())
+		return m, tea.Batch(m.ensureLSPForFile(loc.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
 
 	case lookup.CompletionMsg:
 		// Discard late responses for a stale request: the user moved
@@ -692,7 +759,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.resize()
 		m = m.applyDiagnosticsToActive()
-		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd())
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
 
 	case multibuffer.FragmentsMsg:
 		m.multibufPane = m.multibufPane.SetFragments(msg.Fragments, msg.Err)
@@ -716,7 +783,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.status = fmt.Sprintf("opened %s:%d", rel, msg.Line)
 		}
-		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd())
+		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd())
 
 	case multibuffer.CancelMsg:
 		m.multibufPane = m.multibufPane.Blur()
@@ -981,6 +1048,18 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.overlay = overlayMultibuffer
 			m.multibufPane = m.multibufPane.WithSize(m.width-4, m.height-4).Reset("uncommitted changes").Focus()
 			return m, multibuffer.LoadDiffCmd(m.root, "HEAD")
+		case 'y':
+			// Alt+y toggles gopls inlay hints (type annotations + parameter
+			// names) for every open buffer. Hints are visual-only; the
+			// underlying buffer never changes. Default is on.
+			m.inlayHintsOn = !m.inlayHintsOn
+			if m.inlayHintsOn {
+				m.status = "inlay hints: on"
+				return m, m.refreshInlayHintsCmd()
+			}
+			m = m.clearInlayHints()
+			m.status = "inlay hints: off"
+			return m, nil
 		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.

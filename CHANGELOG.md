@@ -6,6 +6,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-05-24
+
+Inlay hints for `nook`. When gopls is attached and the cursor lands on
+a Go file, type annotations and parameter names appear as faint italic
+glyphs woven into the source: `x := 42` reads `x := 42`*` : int`*,
+`f(name, count)` reads `f(`*`name=`*`name, `*`count=`*`count)`. The
+hints are decorative — they never change the file on disk and the
+underlying bytes the editor saves match exactly what was typed.
+
+`alt+y` toggles the layer on and off (default: on). Stale responses
+(typed past the request) are discarded by comparing the LSP didChange
+version the request carried; toggling off clears existing hints
+without firing a request, so a wedged language server can't strand
+glyphs on screen.
+
+### Added
+
+- `cmd/nook/internal/inlayhint` — new package built around
+  `Hint{Row, Col, Label, Kind, PaddingLeft, PaddingRight}` plus
+  `Kind` enum (`KindType`, `KindParameter`). `ByRow(hints)`
+  collates a `[]Hint` into the `map[int][]Hint` shape the editor
+  consumes. Unit tests cover empty input, multi-row binning, and
+  in-row stable sort by column.
+- `lsp.Client.InlayHint(ctx, path, startLine, endLine)` — drives
+  `textDocument/inlayHint` via raw `jsonrpc2.Conn.Call`
+  (`go.lsp.dev/protocol@v0.12.0` doesn't export the type yet).
+  Returns `[]inlayhint.Hint`. Initialization now passes the gopls
+  `hints` configuration (parameterNames, assignVariableTypes,
+  constantValues, rangeVariableTypes, compositeLiteralTypes,
+  compositeLiteralFields, functionTypeParameters) so the server
+  actually emits hints instead of returning empty results.
+- `lookup.InlayHintCmd(client, path, version, startLine, endLine)`
+  — mirrors the HoverCmd shape. 2s timeout; nil-client and error
+  paths still return a message so the host can surface a stale
+  marker without panicking.
+- `editor.Pane.SetInlayHints(map[int][]inlayhint.Hint)` and
+  `InlayHintsAt(row int)` — pane-local store. `renderHighlightedRow`
+  now threads hints through, mapping raw byte columns to expanded
+  display columns (so a hint anchored at `x := 42` lands after the
+  `2`, not in the middle of a tab expansion). Hints are decorative;
+  when the row's width budget is tight, hints drop from the back
+  first before any source glyph is trimmed.
+- Host wiring in `cmd/nook/main.go`: `inlayHintsOn bool` (defaults
+  true), `refreshInlayHintsCmd` and `clearInlayHints` helpers,
+  `applyInlayHints` with stale-version discard, `lookup.InlayHintMsg`
+  routing in `Update`. Refresh triggers on picker open, save, search
+  jump, definition jump-land, and multibuffer open. `alt+y` toggles
+  the layer with status-bar feedback.
+- `cmd/nook/internal/help` — new "Toggle gopls inlay hints" entry
+  in the Language server section.
+
 ## [0.13.0] — 2026-05-24
 
 Multibuffer view for `nook`. Zed's signature surface: every hunk in

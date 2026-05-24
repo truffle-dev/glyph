@@ -8,6 +8,7 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
@@ -167,6 +169,21 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 		},
 		WorkspaceFolders: []protocol.WorkspaceFolder{
 			{URI: string(rootURI), Name: "root"},
+		},
+		// gopls reads inlay-hint preferences from initializationOptions. The
+		// protocol library doesn't ship InlayHint capability bits yet (the
+		// types pre-date LSP 3.17), so we drive the feature entirely via
+		// gopls's own config keys and raw textDocument/inlayHint calls.
+		InitializationOptions: map[string]any{
+			"hints": map[string]bool{
+				"parameterNames":         true,
+				"assignVariableTypes":    true,
+				"constantValues":         true,
+				"rangeVariableTypes":     true,
+				"compositeLiteralTypes":  true,
+				"compositeLiteralFields": true,
+				"functionTypeParameters": true,
+			},
 		},
 	})
 	if err != nil {
@@ -458,6 +475,103 @@ func (c *Client) Definition(ctx context.Context, path string, line, col int) ([]
 		})
 	}
 	return out, nil
+}
+
+// InlayHint asks the server for the inlay hints inside the given line range
+// of the open document. startLine is inclusive, endLine is exclusive (the
+// LSP range semantics with character=0 on each end). Returns an empty slice
+// (not nil) when the server resolves nothing — callers can iterate without
+// nil-checking.
+//
+// The protocol library at v0.12.0 does not expose InlayHint types, so we
+// drive the call via the raw jsonrpc2.Conn and decode the wire JSON
+// ourselves. Label may arrive as a string or as an InlayHintLabelPart[];
+// we collapse both shapes into a single Label string.
+func (c *Client) InlayHint(ctx context.Context, path string, startLine, endLine int) ([]inlayhint.Hint, error) {
+	if c == nil || c.conn == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	params := map[string]any{
+		"textDocument": map[string]any{"uri": string(uri.File(path))},
+		"range": map[string]any{
+			"start": map[string]any{"line": startLine, "character": 0},
+			"end":   map[string]any{"line": endLine, "character": 0},
+		},
+	}
+	var raw []rawInlayHint
+	if _, err := c.conn.Call(ctx, "textDocument/inlayHint", params, &raw); err != nil {
+		return nil, fmt.Errorf("lsp: inlayHint: %w", err)
+	}
+	return decodeInlayHints(raw), nil
+}
+
+// rawInlayHint is the on-the-wire shape of an LSP 3.17 InlayHint. We keep
+// it private to this file; callers see the host-friendly inlayhint.Hint.
+type rawInlayHint struct {
+	Position     rawPosition     `json:"position"`
+	Label        json.RawMessage `json:"label"`
+	Kind         int             `json:"kind,omitempty"`
+	PaddingLeft  bool            `json:"paddingLeft,omitempty"`
+	PaddingRight bool            `json:"paddingRight,omitempty"`
+}
+
+type rawPosition struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+type rawLabelPart struct {
+	Value string `json:"value"`
+}
+
+// decodeInlayHints flattens the wire form into the host shape. Label may be
+// a JSON string or an array of InlayHintLabelPart objects; we concatenate
+// the Value fields of the parts in document order when given the array
+// form. Hints with an empty resolved label are dropped — they're useless
+// to render and gopls never emits them, but a defensive guard costs nothing.
+func decodeInlayHints(raw []rawInlayHint) []inlayhint.Hint {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]inlayhint.Hint, 0, len(raw))
+	for _, r := range raw {
+		label := decodeInlayLabel(r.Label)
+		if label == "" {
+			continue
+		}
+		out = append(out, inlayhint.Hint{
+			Row:          r.Position.Line,
+			Col:          r.Position.Character,
+			Label:        label,
+			Kind:         inlayhint.Kind(r.Kind),
+			PaddingLeft:  r.PaddingLeft,
+			PaddingRight: r.PaddingRight,
+		})
+	}
+	return out
+}
+
+func decodeInlayLabel(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// LSP 3.17 says label is `string | InlayHintLabelPart[]`. Try string first.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []rawLabelPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(p.Value)
+	}
+	return b.String()
 }
 
 // Formatting asks the server to whole-file-format the open document and

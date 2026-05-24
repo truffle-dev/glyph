@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 )
 
@@ -224,5 +225,31 @@ func RenameCmd(client *nooklsp.Client, path string, row, col int, newName string
 		defer cancel()
 		edit, err := client.Rename(ctx, path, row, col, newName)
 		return RenameMsg{Path: path, NewName: newName, Edit: edit, Err: err}
+	}
+}
+
+// InlayHintMsg carries a batch of inlay hints for a single file back to the
+// host. Path is the file the request was pinned to; Version echoes the LSP
+// didChange version at request time so a stale response (the user typed
+// after the request was sent) can be discarded. Hints is keyed by row.
+type InlayHintMsg = inlayhint.HintsMsg
+
+// InlayHintCmd returns a tea.Cmd that calls client.InlayHint over a line
+// range and wraps the result in InlayHintMsg. startLine is inclusive,
+// endLine is exclusive (LSP semantics; pass the row past the last visible
+// line). nil-client returns a message carrying errNoClient so the host can
+// trigger fetches unconditionally and degrade gracefully.
+func InlayHintCmd(client *nooklsp.Client, path string, version int32, startLine, endLine int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return InlayHintMsg{Path: path, Version: version, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		hints, err := client.InlayHint(ctx, path, startLine, endLine)
+		if err != nil {
+			return InlayHintMsg{Path: path, Version: version, Err: err}
+		}
+		return InlayHintMsg{Path: path, Version: version, Hints: inlayhint.ByRow(hints)}
 	}
 }
