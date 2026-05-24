@@ -6,6 +6,60 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-24
+
+Language-server intelligence inside `nook`. Hover info, go-to-definition,
+and a completion popup wire the existing `nook/internal/lsp` client into
+keystrokes you can demo against any Go workspace gopls knows about.
+
+### Added
+
+- `cmd/nook/internal/lookup` — async `tea.Cmd` factories for hover,
+  definition, and completion lookups. Each carries the request inputs in
+  its response message so a late answer past a moved cursor gets
+  discarded. nil-client returns a typed message with `errNoClient`
+  instead of panicking, so the keys can be bound unconditionally.
+- `cmd/nook/internal/hover` — rounded-border overlay component for the
+  symbol info `lsp.Client.Hover` returns. Hard-wraps and clamps long doc
+  blocks to a third of the screen height; renders empty for empty input
+  so the host can drop it into the View pipeline unconditionally.
+- `cmd/nook/internal/complete` — popup menu component for completion
+  results. Owns selection state, viewport scrolling, and a `WordPrefix`
+  helper for the identifier the host needs to delete before inserting.
+- `lsp.Client.Hover`, `lsp.Client.Definition`, and `lsp.Client.Completion`
+  with friendly Go-native return types (`HoverInfo`, `[]Location`,
+  `[]CompletionItem`) so the editor never imports the LSP protocol
+  package.
+- `Hover`, `definitionProvider`, and `completionItem` client capabilities
+  on initialize so gopls knows what we accept (markdown docs, link
+  support off, plaintext+markdown hover, snippets off).
+
+### New keys
+
+- `alt+i` — hover info for the symbol under the cursor.
+- `ctrl+]` — go to definition (opens the target file in a new buffer
+  when it lives outside the current one).
+- `ctrl+space` — completion popup. `↑/↓` navigate, `Enter` accepts, `Esc`
+  dismisses, any other key dismisses and falls through to the editor.
+
+### Changed
+
+- Help overlay (`?`) gains a "Language server" section listing the three
+  new keys.
+- Status bar surfaces concise feedback for each LSP action ("no hover
+  info", "jumped to file:line:col", "no completions", "inserted Println",
+  etc.) so users know what gopls answered without leaving the buffer.
+
+### Notes
+
+- Hover and definition queries time out after 2s. gopls answers in
+  sub-second on a warm workspace; the cap mostly catches a frozen server
+  or a stdio deadlock.
+- The completion popup is currently centered (modal float). A future
+  release will anchor it next to the cursor; the popup-component API is
+  already cursor-agnostic so the host can switch position without
+  changing the component.
+
 ## [0.5.0] — 2026-05-24
 
 Syntax highlighting in `nook`. Go, TypeScript, JavaScript, Python, Rust, and
