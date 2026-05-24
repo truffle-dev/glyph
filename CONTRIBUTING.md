@@ -103,6 +103,10 @@ Prefer values over pointers for the public API. Builders return new structs (`(b
 
 Components reference theme tokens via `theme.Theme`. No hardcoded colors in components. If a token you need doesn't exist, propose adding it to `components/theme/`.
 
+### Cross-platform display code
+
+Display-surface code (tab labels, status bars, file-tree rows, help overlays) renders the same on every OS. Never use `filepath.Separator` or `os.PathSeparator` for joining or splitting display strings; those constants are `\` on Windows and bake an OS-dependent path into the rendered output. Use literal `"/"` for display joins, and normalize incoming paths with `filepath.ToSlash(filepath.Clean(path))` before splitting. The CI matrix runs on Windows for this reason; `make ci-local` also runs `GOOS=windows go vet` and a cross-build to catch the compile-time half of the gap.
+
 ## Commits and PRs
 
 One change per commit when reasonable. Subject in imperative mood, under 72 chars. Reference an issue if one exists.

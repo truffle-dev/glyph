@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check vet test ci-local hooks
+.PHONY: fmt fmt-check vet vet-windows build-windows test ci-local hooks
 
 fmt:
 	gofmt -w .
@@ -14,10 +14,16 @@ fmt-check:
 vet:
 	go vet ./...
 
+vet-windows:
+	GOOS=windows go vet ./...
+
+build-windows:
+	GOOS=windows go build -o /dev/null ./...
+
 test:
 	go test ./components/... ./cmd/... ./tools/...
 
-ci-local: fmt-check vet test
+ci-local: fmt-check vet vet-windows build-windows test
 
 hooks:
 	@git config core.hooksPath .githooks
