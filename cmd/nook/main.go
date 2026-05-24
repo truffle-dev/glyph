@@ -48,10 +48,12 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/git"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/help"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/term"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/welcome"
 )
 
 // overlay is the modal layer currently above the workspace.
@@ -62,6 +64,7 @@ const (
 	overlayFilePicker
 	overlayProjectSearch
 	overlayInlineEdit
+	overlayHelp
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -142,10 +145,10 @@ func main() {
 func newModel(root string) model {
 	t := theme.Default
 	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
-	status := "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+k ai edit • ctrl+l composer • tab ghost • ctrl+s save • ctrl+q quit"
-	if aiClient == nil {
-		status = "ctrl+p file • ctrl+f search • ctrl+g git • ctrl+s save • ctrl+q quit  (install claude CLI for AI)"
-	}
+	// The welcome card carries the full keymap; the status bar just nudges
+	// new users toward the help overlay. Once a file is open, callers
+	// overwrite m.status with feedback for whatever they just did.
+	status := "press ? for keymap"
 	return model{
 		theme:       t,
 		root:        root,
@@ -232,7 +235,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items[i] = picker.Item{Title: f, Value: f}
 		}
 		m.picker = m.picker.WithItems(items)
-		m.status = fmt.Sprintf("loaded %d files", len(msg.files))
+		// Only overwrite the prompt status while the welcome card is
+		// showing — once a file is open, "loaded N files" would clobber
+		// useful per-action feedback.
+		if m.editor.Path() == "" {
+			m.status = "press ? for keymap"
+		}
 		return m, nil
 
 	case picker.SelectMsg:
@@ -471,6 +479,21 @@ func (m model) applyComposerEdit(e composer.Edit) (tea.Model, tea.Cmd) {
 }
 
 func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Help overlay swallows its own keys: ? or esc to dismiss, everything
+	// else ignored so an accidental ctrl+f doesn't open search underneath
+	// the help card.
+	if m.overlay == overlayHelp {
+		if km.Type == tea.KeyEsc {
+			m.overlay = overlayNone
+			return m, nil
+		}
+		if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '?' {
+			m.overlay = overlayNone
+			return m, nil
+		}
+		return m, nil
+	}
+
 	// Global keys
 	switch km.Type {
 	case tea.KeyCtrlQ:
@@ -502,6 +525,13 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
 	if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '`' {
 		return m.toggleTerm()
+	}
+	// ? opens the help overlay. We only honor it when no file is open or
+	// the editor isn't actively absorbing keystrokes — otherwise the user's
+	// typing a question mark into their source file and that wins.
+	if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '?' && m.editor.Path() == "" {
+		m.overlay = overlayHelp
+		return m, nil
 	}
 
 	// Overlay routing
@@ -841,17 +871,8 @@ func (m model) resize() model {
 func (m model) View() string {
 	t := m.theme
 
-	// status bar — append a diag count when the open file has any diagnostics.
-	statusText := m.status
-	if errs, warns := m.diagCounts(); errs > 0 || warns > 0 {
-		statusText = fmt.Sprintf("%s   ●%dE %dW", statusText, errs, warns)
-	}
-	statusBar := lipgloss.NewStyle().
-		Background(t.Surface).
-		Foreground(t.TextMuted).
-		Width(m.width).
-		Padding(0, 1).
-		Render(statusText)
+	// status bar — richer than the bare keymap. Format: <hint> · <project> · <position> · <diag>
+	statusBar := m.renderStatusBar()
 
 	// modal overlay
 	if m.overlay == overlayFilePicker {
@@ -864,8 +885,12 @@ func (m model) View() string {
 		float := centerOverlay(m.width, m.height-1, m.editPane.View())
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}
+	if m.overlay == overlayHelp {
+		float := centerOverlay(m.width, m.height-1, help.View(t, m.width))
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
 
-	left := m.editor.View()
+	left := m.renderMainColumn()
 	if m.right == rightNone {
 		return lipgloss.JoinVertical(lipgloss.Left, left, statusBar)
 	}
@@ -889,6 +914,99 @@ func (m model) View() string {
 	_ = sep
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, bar, right)
 	return lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
+}
+
+// renderMainColumn returns the editor pane, OR the welcome card when no
+// file has been opened yet. The welcome card replaces the empty editor's
+// tilde-fill so first-run users see a usable surface instead of a blank
+// vim-style buffer.
+func (m model) renderMainColumn() string {
+	if m.shouldShowWelcome() {
+		w, h := m.editorSize()
+		return welcome.View(m.theme, m.welcomeInfo(), w, h)
+	}
+	return m.editor.View()
+}
+
+// shouldShowWelcome is true when no file is open and the editor buffer
+// is still pristine. Once the user opens any file, even if they close it
+// later, we drop back to the regular editor view (the path stays set).
+func (m model) shouldShowWelcome() bool {
+	return m.editor.Path() == ""
+}
+
+// editorSize returns the dimensions allocated to the editor pane. The
+// welcome card needs to know this so it can self-clamp.
+func (m model) editorSize() (int, int) {
+	leftW := m.width
+	if m.right != rightNone {
+		rightW := m.width / 3
+		if rightW < 40 {
+			rightW = 40
+		}
+		if rightW > m.width-40 {
+			rightW = m.width - 40
+		}
+		leftW = m.width - rightW - 1
+	}
+	bodyH := m.height - 2
+	return leftW, bodyH
+}
+
+// welcomeInfo gathers the everything-the-welcome-card-needs bundle.
+// Capability probes (claude CLI, gopls) are cheap (LookPath stat) and
+// fine to call every View; if that ever shows up in profiles, cache them
+// at startup time.
+func (m model) welcomeInfo() welcome.Info {
+	return welcome.Info{
+		Root:      m.root,
+		FileCount: len(m.files),
+		AI:        welcome.ProbeAI(m.aiClient != nil),
+		LSP:       welcome.ProbeLSP(),
+	}
+}
+
+// renderStatusBar builds the bottom-of-screen status line. Layout:
+//
+//	<status hint> · <project name> · <pos | dirty> · <diag>
+//
+// The project segment grounds the user in where they are; the pos+dirty
+// segment tells them which line they're on and whether they've saved;
+// the diag segment surfaces LSP error/warning counts when present.
+func (m model) renderStatusBar() string {
+	t := m.theme
+	muted := lipgloss.NewStyle().Foreground(t.TextMuted)
+	dirty := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true)
+
+	parts := []string{m.status}
+
+	if name := filepath.Base(m.root); name != "" && name != "." && name != "/" {
+		parts = append(parts, muted.Render(name))
+	}
+
+	if m.editor.Path() != "" {
+		pos := fmt.Sprintf("L%d:%d", m.editor.CursorRow()+1, m.editor.CursorCol()+1)
+		seg := muted.Render(pos)
+		if m.editor.Dirty() {
+			seg += " " + dirty.Render("●")
+		}
+		parts = append(parts, seg)
+	}
+
+	if errs, warns := m.diagCounts(); errs > 0 || warns > 0 {
+		parts = append(parts, muted.Render(fmt.Sprintf("●%dE %dW", errs, warns)))
+	}
+
+	sep := dim.Render("  ·  ")
+	statusText := strings.Join(parts, sep)
+
+	return lipgloss.NewStyle().
+		Background(t.Surface).
+		Foreground(t.TextMuted).
+		Width(m.width).
+		Padding(0, 1).
+		Render(statusText)
 }
 
 func centerOverlay(w, h int, body string) string {

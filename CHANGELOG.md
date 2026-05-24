@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-24
+
+First-run UX for `nook`. Opening `nook .` on a fresh checkout used to land on a
+blank editor with tilde-fill — accurate for someone who already knows the
+keymap, hostile for a brand-new user. This release replaces that surface with a
+welcome card and adds a discoverable full keymap overlay.
+
+### Added
+
+- `cmd/nook/internal/welcome` — centered first-run card with the `nook`
+  wordmark, project name, file count, runtime status for AI and LSP
+  (green dot = ready, install hint when not), and the canonical quick-start
+  keys. Rendered automatically whenever no file is open.
+- `cmd/nook/internal/help` — full keymap overlay grouped by job (Files,
+  Editing, AI wedges, Panes, Global). Bound to `?` (only when no file is
+  open so it doesn't shadow typing) and dismissed by `?` or `esc`.
+- Richer status bar. Now shows hint · project · `L<row>:<col>` · dirty
+  marker · LSP `nE nW` summary, separated by faint dot bullets so the
+  segments group at a glance.
+- `docs/nook/visuals/welcome.cast` and `welcome.gif` capturing the full
+  welcome → keymap → open → edit → save flow.
+
 ## [0.3.0] — 2026-05-24
 
 First release of `nook`, a terminal-native AI IDE built from glyph primitives

@@ -4,9 +4,17 @@ A terminal-native AI IDE built from glyph components. Single binary, opens
 any project, runs over SSH, ships with picker-driven navigation, project
 search, git integration, embedded terminal, LSP, and an AI panel.
 
+![nook first-run welcome](visuals/welcome.gif)
+
+The clip above is what you land on when you run `nook .` for the first time:
+a welcome card with the project name, file count, live AI/LSP status, and the
+quick-start keys. `?` opens the full keymap overlay; Ctrl+P opens the picker
+and drops you in the editor. See `visuals/record-welcome-cast.py` for the
+exact PTY tour.
+
 ![nook ghost-text tour](visuals/tour.gif)
 
-The clip above is the ghost-text wedge: Ctrl+P to find a file, type a prefix
+The second clip is the ghost-text wedge: Ctrl+P to find a file, type a prefix
 in the editor, idle past the debounce, Tab to accept the proposal. Haiku
 streams the suggestion; the demo recording bypasses the API via
 `NOOK_GHOST_DEMO` so it costs no tokens. See `visuals/record-cast.py` for the
