@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/aihistory"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -87,6 +89,19 @@ type Pane struct {
 	statusOn string // banner message ("apply…", "error: …")
 
 	cancel context.CancelFunc
+
+	// activePath is the absolute path of the file the host considers
+	// "in focus" when the composer was opened. It scopes the per-file
+	// conversation buffer: a follow-up Ctrl+L on the same file sees
+	// the prior turn, switching files starts a fresh transcript.
+	activePath string
+	// history is a pointer to the host's shared transcript store.
+	// nil disables history entirely (used by tests and any caller
+	// that doesn't want continuity).
+	history *aihistory.Store
+	// histCount caches Count(activePath) so View() doesn't take the
+	// store lock on every render.
+	histCount int
 }
 
 // NewPane builds an empty composer.
@@ -105,6 +120,37 @@ func (p Pane) WithContext(c Context) Pane {
 	p.ctx = c
 	return p
 }
+
+// WithHistory binds a per-file transcript store. The pane records each
+// successful streaming round-trip and replays prior turns into the
+// prompt on the next round for continuity. nil disables history.
+func (p Pane) WithHistory(h *aihistory.Store) Pane {
+	p.history = h
+	p.histCount = 0
+	if h != nil {
+		p.histCount = h.Count(p.activePath)
+	}
+	return p
+}
+
+// WithActivePath scopes the conversation to a single file. Switching
+// files between Ctrl+L invocations starts a fresh transcript.
+func (p Pane) WithActivePath(path string) Pane {
+	p.activePath = path
+	if p.history != nil {
+		p.histCount = p.history.Count(path)
+	} else {
+		p.histCount = 0
+	}
+	return p
+}
+
+// HistoryCount reports the count cached at the last bind/refresh. Used
+// by the host to surface "N prior turns" in the status line.
+func (p Pane) HistoryCount() int { return p.histCount }
+
+// ActivePath reports the path currently scoping history.
+func (p Pane) ActivePath() string { return p.activePath }
 
 // WithSize updates layout dimensions.
 func (p Pane) WithSize(w, h int) Pane {
@@ -170,6 +216,18 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 		p.edits = finalizeEdits(p.edits)
 		p.state = StateReview
 		p.cursor = 0
+		// Record this round into the per-file transcript. We log the
+		// raw response (not the parsed Edits) because a follow-up
+		// turn may need to see the original block markers and any
+		// commentary the parser dropped.
+		if p.history != nil && p.activePath != "" && strings.TrimSpace(p.prompt) != "" {
+			p.history.Append(p.activePath, aihistory.Turn{
+				Instruction: p.prompt,
+				Response:    p.buffer,
+				At:          time.Now(),
+			})
+			p.histCount = p.history.Count(p.activePath)
+		}
 		return p, nil
 	}
 	return p, nil
@@ -178,6 +236,11 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 func (p Pane) handleKey(m tea.KeyMsg) (Pane, tea.Cmd) {
 	switch p.state {
 	case StateComposing:
+		// Alt+h clears the per-file transcript before any other key
+		// handling so it can fire from an empty prompt or mid-edit.
+		if m.Alt && len(m.Runes) == 1 && (m.Runes[0] == 'h' || m.Runes[0] == 'H') {
+			return p.clearHistory(), nil
+		}
 		switch m.Type {
 		case tea.KeyEsc:
 			return p, emit(CancelMsg{})
@@ -279,13 +342,32 @@ func (p Pane) startStream() (Pane, tea.Cmd) {
 	p.buffer = ""
 	p.edits = nil
 
+	var prior []aihistory.Turn
+	if p.history != nil {
+		prior = p.history.Turns(p.activePath)
+	}
 	req := ai.Request{
 		Tier:   ai.Smart,
 		System: systemPrompt,
-		User:   buildUserPrompt(p.ctx, p.prompt),
+		User:   buildUserPrompt(p.ctx, p.prompt, prior),
 	}
 	deltas, done := p.client.Stream(ctx, req)
 	return p, pumpStreamCmd(deltas, done)
+}
+
+func (p Pane) clearHistory() Pane {
+	if p.history == nil || p.activePath == "" {
+		p.statusOn = "no per-file history"
+		return p
+	}
+	n := p.history.Clear(p.activePath)
+	p.histCount = 0
+	if n == 0 {
+		p.statusOn = "no per-file history"
+	} else {
+		p.statusOn = fmt.Sprintf("cleared %d prior turn(s) for %s", n, filepath.Base(p.activePath))
+	}
+	return p
 }
 
 func pumpStreamCmd(deltas <-chan string, done <-chan error) tea.Cmd {
@@ -328,6 +410,10 @@ func (p Pane) View() string {
 		if p.ctx.OpenPath != "" {
 			body.WriteString("\n")
 			body.WriteString(mutedStyle.Render("open: " + filepath.Base(p.ctx.OpenPath)))
+		}
+		if p.histCount > 0 {
+			body.WriteString("\n")
+			body.WriteString(mutedStyle.Render(fmt.Sprintf("history: %d prior turn(s) on this file (alt+h clear)", p.histCount)))
 		}
 		body.WriteString("\n\n")
 		body.WriteString(mutedStyle.Render("enter submit • esc cancel"))
@@ -544,17 +630,17 @@ When asked to make changes:
 - If you need to create a new file, use the same format.
 - After all edit blocks, stop. Do not add a summary.`
 
-func buildUserPrompt(ctx Context, instruction string) string {
+func buildUserPrompt(ctx Context, instruction string, prior []aihistory.Turn) string {
 	var b strings.Builder
 	if ctx.OpenPath != "" {
 		fmt.Fprintf(&b, "Currently open: %s\n\n", ctx.OpenPath)
 		fmt.Fprintf(&b, "Contents:\n```\n%s\n```\n\n", ctx.OpenContents)
 	}
 	if len(ctx.Files) > 0 {
-		const cap = 64
+		const filesCap = 64
 		files := ctx.Files
-		if len(files) > cap {
-			files = files[:cap]
+		if len(files) > filesCap {
+			files = files[:filesCap]
 		}
 		b.WriteString("Workspace files (truncated):\n")
 		for _, f := range files {
@@ -563,6 +649,20 @@ func buildUserPrompt(ctx Context, instruction string) string {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
+	}
+	if len(prior) > 0 {
+		// Cap the number of prior turns folded in. The store also
+		// caps storage, but the user may have a lower-cap store and
+		// a separate prompt budget; this gives us a second knob.
+		const turnsCap = 6
+		turns := prior
+		if len(turns) > turnsCap {
+			turns = turns[len(turns)-turnsCap:]
+		}
+		b.WriteString("Prior turns on this file (oldest first):\n")
+		for i, t := range turns {
+			fmt.Fprintf(&b, "--- Turn %d ---\nUser: %s\nAssistant:\n%s\n\n", i+1, t.Instruction, t.Response)
+		}
 	}
 	b.WriteString("Instruction: ")
 	b.WriteString(instruction)

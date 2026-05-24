@@ -58,6 +58,7 @@ import (
 	"github.com/truffle-dev/glyph/components/theme"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/aihistory"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/bufman"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/codeaction"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
@@ -141,7 +142,8 @@ type model struct {
 	diffTitle string
 	status    string
 
-	aiClient *ai.Client
+	aiClient  *ai.Client
+	aiHistory *aihistory.Store // per-file composer transcript
 
 	// LSP wiring. lsp is lazily started on the first .go file open. Diagnostics
 	// are tracked per absolute path; lspVersions feeds incrementing didChange
@@ -318,6 +320,7 @@ func newModel(root string) model {
 
 	t, themeOK := resolveTheme(cfg.Editor.Theme)
 	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
+	aiHistory := aihistory.NewStore()
 	snipLib := snippets.LoadDefaults()
 	if home, err := os.UserHomeDir(); err == nil {
 		// Best-effort overlay; missing dir is not an error.
@@ -345,11 +348,12 @@ func newModel(root string) model {
 		picker:       picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
 		search:       search.NewPane(t, root),
 		editPane:     edit.NewPane(t, aiClient),
-		composer:     composer.NewPane(t, aiClient),
+		composer:     composer.NewPane(t, aiClient).WithHistory(aiHistory),
 		ghost:        ghost.NewManager(aiClient),
 		right:        rightNone,
 		status:       status,
 		aiClient:     aiClient,
+		aiHistory:    aiHistory,
 		lspVersions:  map[string]int32{},
 		diagnostics:  map[string][]protocol.Diagnostic{},
 		finder:       finder.New(t),
@@ -2244,11 +2248,13 @@ func (m model) toggleComposer() (tea.Model, tea.Cmd) {
 		Root:  m.root,
 		Files: m.files,
 	}
+	var activePath string
 	if p := m.bufs.Active(); p != nil && p.Path() != "" {
 		ctx.OpenPath = p.Path()
 		ctx.OpenContents = p.Contents()
+		activePath = p.Path()
 	}
-	m.composer = m.composer.WithContext(ctx).Focus()
+	m.composer = m.composer.WithContext(ctx).WithActivePath(activePath).Focus()
 	m.right = rightComposer
 	m = m.resize()
 	return m, nil

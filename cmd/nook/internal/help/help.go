@@ -99,6 +99,7 @@ func Default() []Section {
 		{Name: "AI wedges", Bindings: []Binding{
 			{"ctrl+k", "Inline edit on current line (Haiku 4.5)"},
 			{"ctrl+l", "Multi-file composer (Sonnet 4.6)"},
+			{"alt+h", "Clear composer history for the current file"},
 			{"tab", "Accept ghost-text suggestion"},
 			{"esc", "Dismiss ghost text"},
 		}},

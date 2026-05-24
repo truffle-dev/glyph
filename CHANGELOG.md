@@ -6,6 +6,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-05-24
+
+Per-file conversation history for `nook`'s Ctrl+L composer. Every
+finished composer turn is now appended to an in-memory store keyed by
+the active file's absolute path, and the next time the composer opens
+on that same file, the prior instructions and responses are folded
+into the system prompt as "Prior turns on this file (oldest first):"
+context. The model treats the new instruction as a follow-up on the
+established thread instead of a cold ask, so "now wire them together"
+or "rename the helper you just added" lands without re-pasting the
+earlier exchange.
+
+Each path keeps the eight most recent turns (the store cap) and the
+prompt header replays the six most recent (the budget cap) — two
+knobs so storage and prompt size can diverge if either needs to grow
+or shrink later. When the composer opens, the pane header shows
+"N prior turn(s) on this file (alt+h clear)" only when N > 0, so the
+empty case is silent. Alt+H clears the history for the current file
+and reports "cleared N turn(s)" or "no per-file history" in the
+composer's status line.
+
+History scope is the file: switch buffers and the composer rescopes
+to the new path's transcript; if the new path has no history, the
+header line disappears. Empty paths and error-terminated streams are
+no-ops — history only records on clean completion.
+
+### Added
+
+- `cmd/nook/internal/aihistory`: thread-safe `Store` keyed by file
+  path with configurable per-path cap (`DefaultMaxPerPath = 8`),
+  `Append`, `Turns` (defensive copy), `Count`, `Clear`, `ClearAll`.
+- `composer.Pane.WithHistory` and `WithActivePath` setters that
+  refresh the cached count without taking the store lock on every
+  `View()`.
+- `buildUserPrompt` prepends a "Prior turns" section (cap 6) when
+  the store has matching transcripts.
+- `streamDoneMsg` success handler records `{Instruction, Response, At}`
+  on the active path; error or empty prompt skips the write.
+- `Alt+H` keybinding in `StateComposing` clears the active path's
+  history and surfaces the result in `statusOn`.
+- Help overlay entry under "AI wedges" listing `alt+h` →
+  "Clear composer history for the current file."
+
 ## [0.19.0] — 2026-05-24
 
 Tasks for `nook`. Alt+T pops a picker over `.nook/tasks.toml` (a VSCode
