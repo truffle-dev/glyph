@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -481,9 +482,12 @@ func Parse(diff []byte, root string) ([]Fragment, error) {
 		if len(body) == 0 {
 			continue
 		}
+		// Diff paths are POSIX. Use `path` (not `path/filepath`) so the
+		// joined absolute stays POSIX on Windows; filepath.Join inserts
+		// backslashes and filepath.IsAbs("/x") is false without a drive.
 		abs := newPath
-		if !filepath.IsAbs(abs) && root != "" {
-			abs = filepath.Join(root, newPath)
+		if !path.IsAbs(abs) && root != "" {
+			abs = path.Join(filepath.ToSlash(root), newPath)
 		}
 		frags = append(frags, Fragment{
 			Path:      abs,
@@ -550,15 +554,23 @@ func buildRows(frags []Fragment) []row {
 	return rows
 }
 
-func relativize(path, root string) string {
+func relativize(p, root string) string {
 	if root == "" {
-		return path
+		return p
 	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return path
+	// Fragment paths are POSIX (see Parse); normalize root to slashes so the
+	// prefix trim stays consistent on Windows where filepath.Rel disagrees.
+	r := strings.TrimRight(filepath.ToSlash(root), "/")
+	if r == "" {
+		return p
 	}
-	return rel
+	if p == r {
+		return "."
+	}
+	if strings.HasPrefix(p, r+"/") {
+		return p[len(r)+1:]
+	}
+	return p
 }
 
 func truncate(s string, w int) string {
