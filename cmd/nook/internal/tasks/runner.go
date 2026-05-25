@@ -63,6 +63,9 @@ type Runner struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 
+	stdoutPipe io.ReadCloser
+	stderrPipe io.ReadCloser
+
 	mu       sync.Mutex
 	done     chan struct{}
 	exit     ExitMsg
@@ -126,13 +129,15 @@ func Start(parent context.Context, root string, t Task) (*Runner, error) {
 	}
 
 	r := &Runner{
-		id:        newRunID(),
-		task:      t,
-		cmd:       cmd,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		lines:     make(chan LineMsg, 256),
-		startedAt: time.Now(),
+		id:         newRunID(),
+		task:       t,
+		cmd:        cmd,
+		cancel:     cancel,
+		stdoutPipe: stdout,
+		stderrPipe: stderr,
+		done:       make(chan struct{}),
+		lines:      make(chan LineMsg, 256),
+		startedAt:  time.Now(),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -141,10 +146,22 @@ func Start(parent context.Context, root string, t Task) (*Runner, error) {
 		return nil, err
 	}
 
-	go r.pumpReader(stdout, StreamStdout)
-	go r.pumpReader(stderr, StreamStderr)
+	// StdoutPipe contract: Wait closes the pipe, so it is incorrect
+	// to call Wait before all reads complete. Hold reader goroutines
+	// in a WaitGroup and drain them first; only then reap.
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go func() {
+		defer readers.Done()
+		r.pumpReader(stdout, StreamStdout)
+	}()
+	go func() {
+		defer readers.Done()
+		r.pumpReader(stderr, StreamStderr)
+	}()
 
 	go func() {
+		readers.Wait()
 		err := cmd.Wait()
 		r.mu.Lock()
 		r.exit = ExitMsg{
@@ -154,8 +171,6 @@ func Start(parent context.Context, root string, t Task) (*Runner, error) {
 			Duration: time.Since(r.startedAt),
 		}
 		r.mu.Unlock()
-		// Give the reader goroutines a moment to finish flushing
-		// any final buffered lines before we close the channel.
 		close(r.lines)
 		close(r.done)
 	}()
@@ -192,6 +207,12 @@ func (r *Runner) StartedAt() time.Time { return r.startedAt }
 // later calls are no-ops once the process has exited.
 func (r *Runner) Kill() {
 	r.cancel()
+	// SIGKILL hits the direct child only; a shell wrapper's
+	// grandchildren survive and keep the write end of the pipe open,
+	// which would block the reader goroutines forever. Close the read
+	// ends ourselves so the readers unblock and we can reap.
+	_ = r.stdoutPipe.Close()
+	_ = r.stderrPipe.Close()
 }
 
 // Done returns a channel closed when the process exits and its

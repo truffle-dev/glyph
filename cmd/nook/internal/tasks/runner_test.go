@@ -129,7 +129,7 @@ func TestEnvOverridesAreVisibleToChild(t *testing.T) {
 	r, err := Start(context.Background(), t.TempDir(), Task{
 		Name:    "env",
 		Command: "sh",
-		Args:    []string{"-c", "printf %s\\\\n \"$NOOK_TASK_TEST_VAR\""},
+		Args:    []string{"-c", "echo \"$NOOK_TASK_TEST_VAR\""},
 		Env:     map[string]string{"NOOK_TASK_TEST_VAR": "from-task"},
 	})
 	if err != nil {
