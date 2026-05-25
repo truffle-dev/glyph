@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/semtok"
@@ -306,6 +307,39 @@ func ResolveCompletionCmd(client *nooklsp.Client, item nooklsp.CompletionItem) t
 		defer cancel()
 		resolved, err := client.ResolveCompletion(ctx, item)
 		return ResolveCompletionMsg{ReqLabel: item.Label, Item: resolved, Err: err}
+	}
+}
+
+// DocumentHighlightMsg carries the result of a textDocument/documentHighlight
+// request back to the host. Path/Row/Col echo the cursor at request time so
+// stale responses (the user moved on) can be discarded by comparing them.
+// PaneVer is the editor's buffer-revision counter at request issue so the
+// editor can drop overlays for already-edited buffer states. Highlights is
+// empty when the cursor is over whitespace or the server resolves nothing.
+type DocumentHighlightMsg struct {
+	Path       string
+	Row        int
+	Col        int
+	PaneVer    int
+	Highlights []dochi.Highlight
+	Err        error
+}
+
+// DocumentHighlightCmd returns a tea.Cmd that calls client.DocumentHighlight
+// and wraps the result in DocumentHighlightMsg. paneVer is the value the host
+// read from editor.Pane.BufVer() before firing the cmd; the editor uses it to
+// discard overlays for already-edited buffer states. nil-client returns
+// errNoClient so the host can wire the cursor-settle Cmd unconditionally and
+// degrade silently when no LSP is attached.
+func DocumentHighlightCmd(client *nooklsp.Client, path string, row, col, paneVer int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return DocumentHighlightMsg{Path: path, Row: row, Col: col, PaneVer: paneVer, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		hi, err := client.DocumentHighlight(ctx, path, row, col)
+		return DocumentHighlightMsg{Path: path, Row: row, Col: col, PaneVer: paneVer, Highlights: hi, Err: err}
 	}
 }
 

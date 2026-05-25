@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/clip"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
@@ -184,6 +185,16 @@ type Pane struct {
 	searchMatches []Range
 	searchCurrent int
 
+	// docHighlights is the latest LSP textDocument/documentHighlight response
+	// folded into per-row spans. Each entry is rendered with a subtle
+	// background (less prominent than searchMatches) so that "every
+	// occurrence of the identifier under my cursor" is visible without
+	// drowning out an active find/replace. dochiBufVer pins the response
+	// to the bufVer it was minted for so a typed-while-pending change
+	// dismisses the stale overlay automatically.
+	docHighlights map[int][]dochi.Span
+	dochiBufVer   int
+
 	// extras are additional editing cursors beyond the primary (p.row, p.col).
 	// Editing operations apply at the primary AND at every extra; movement
 	// keys collapse extras to the primary. See applyAtAllCursors.
@@ -305,6 +316,41 @@ func (p Pane) SearchMatches() []Range { return p.searchMatches }
 
 // SearchCurrent returns the active match index.
 func (p Pane) SearchCurrent() int { return p.searchCurrent }
+
+// SetDocumentHighlights stores the LSP textDocument/documentHighlight
+// response for the pane's current buffer. paneVer should be the
+// p.bufVer the request was minted against; if it doesn't match the
+// current bufVer the call is a no-op so a typed-while-pending edit
+// never lights up stale positions. The host calls this from the
+// DocumentHighlightMsg handler after a cursor-settle debounce.
+func (p Pane) SetDocumentHighlights(hi []dochi.Highlight, paneVer int) Pane {
+	if paneVer != p.bufVer {
+		return p
+	}
+	if len(hi) == 0 {
+		p.docHighlights = nil
+		p.dochiBufVer = paneVer
+		return p
+	}
+	p.docHighlights = dochi.LineSpans(hi)
+	p.dochiBufVer = paneVer
+	return p
+}
+
+// ClearDocumentHighlights drops the current document-highlight overlay.
+// Called when the cursor moves before a refresh fires, when the LSP
+// returns an error, or when the buffer mutates.
+func (p Pane) ClearDocumentHighlights() Pane {
+	p.docHighlights = nil
+	return p
+}
+
+// DocumentHighlightsVisible reports whether at least one row has a
+// painted document-highlight span. Test helper and a fast path for the
+// render loop.
+func (p Pane) DocumentHighlightsVisible() bool {
+	return len(p.docHighlights) > 0
+}
 
 // WithHighlighter attaches a syntax Highlighter. Passing nil disables
 // highlighting (existing tests rely on the no-highlighter path emitting plain
@@ -2011,6 +2057,10 @@ func (p Pane) View() string {
 			}
 		}
 		var line string
+		var dochiSpans []dochi.Span
+		if p.docHighlights != nil {
+			dochiSpans = p.docHighlights[i]
+		}
 		cols, hasCursors := cursorsByRow[i]
 		if hasCursors {
 			primaryCol := -1
@@ -2021,9 +2071,9 @@ func (p Pane) View() string {
 					ghost = p.ghostText
 				}
 			}
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail)
 		} else {
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail)
 		}
 		if p.blameVisible && i == p.row {
 			if entry, ok := p.BlameAt(i); ok {
@@ -2225,7 +2275,11 @@ func (p Pane) matchesForRow(row int) ([]Range, int) {
 // active selection on this row; -1/-1 means no selection on this row. selTail
 // is true when the selection extends past EOL on this row (mid-rows of a
 // multi-line selection); a trailing space is painted to make the wrap visible.
-func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int, selStart, selEnd int, selTail bool) string {
+// dochiSpans is the slice of document-highlight bands on this row (LSP
+// textDocument/documentHighlight). Each rune inside a span gets a subtle
+// SurfaceStrong background painted UNDER the syntax color; matches and
+// selection still win when both apply (see flush precedence chain).
+func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, dochiSpans []dochi.Span, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int, selStart, selEnd int, selTail bool) string {
 	if tabWidth <= 0 {
 		tabWidth = 4
 	}
@@ -2256,12 +2310,16 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	// and the cursor map cleanly into expanded coords. expandedRunes holds
 	// the runes we'll emit; runeKind[i] is the Kind backing expandedRunes[i];
 	// runeMatch[i] tags whether the rune is inside a finder match (and which);
-	// runeSel[i] flags whether the rune sits inside the active selection.
+	// runeSel[i] flags whether the rune sits inside the active selection;
+	// runeDocHi[i] flags whether the rune sits inside an LSP document-
+	// highlight span (the cursor-settle "every occurrence" overlay).
 	hasSel := selStart >= 0 && selEnd > selStart
+	hasDochi := len(dochiSpans) > 0
 	var expanded []rune
 	var runeKind []highlight.Kind
 	var runeMatch []matchKind
 	var runeSel []bool
+	var runeDocHi []bool
 	rawToExpStart := make([]int, len(raw)+1) // raw byte offset -> first expanded rune idx
 	for i := 0; i < len(raw); i++ {
 		rawToExpStart[i] = len(expanded)
@@ -2291,12 +2349,14 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 			}
 		}
 		sel := hasSel && i >= selStart && i < selEnd
+		dh := hasDochi && dochi.Covers(dochiSpans, i, len(raw))
 		if c == '\t' {
 			for k := 0; k < tabWidth; k++ {
 				expanded = append(expanded, ' ')
 				runeKind = append(runeKind, highlight.KindPlain)
 				runeMatch = append(runeMatch, mk)
 				runeSel = append(runeSel, sel)
+				runeDocHi = append(runeDocHi, dh)
 			}
 			continue
 		}
@@ -2307,6 +2367,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		runeKind = append(runeKind, kind)
 		runeMatch = append(runeMatch, mk)
 		runeSel = append(runeSel, sel)
+		runeDocHi = append(runeDocHi, dh)
 	}
 	rawToExpStart[len(raw)] = len(expanded)
 
@@ -2418,6 +2479,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 			runeKind = runeKind[:budget]
 			runeMatch = runeMatch[:budget]
 			runeSel = runeSel[:budget]
+			runeDocHi = runeDocHi[:budget]
 			ghostRunes = nil
 		} else {
 			remain := budget - len(expanded)
@@ -2441,15 +2503,19 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		dispHintsByCol[hi.col] = append(dispHintsByCol[hi.col], hi)
 	}
 
-	// Emit. Batch contiguous runes of the same (kind, matchKind, sel) tuple
-	// into one Style.Render call — per-rune emission inflates ANSI overhead
-	// and breaks substring asserts in tests because each rune gets
-	// surrounded by escape codes. The cursor cell breaks the run and is
-	// emitted separately. Selection takes precedence over the inactive
-	// match band but yields to the active search match (so a Ctrl+F hit
-	// stays salient while the user grows the selection toward it).
+	// Emit. Batch contiguous runes of the same (kind, matchKind, sel, dochi)
+	// tuple into one Style.Render call — per-rune emission inflates ANSI
+	// overhead and breaks substring asserts in tests because each rune
+	// gets surrounded by escape codes. The cursor cell breaks the run and
+	// is emitted separately. Precedence chain (strongest first):
+	//   matchActive > selection > matchOther > dochi > plain
+	// Selection takes precedence over the inactive match band but yields
+	// to the active search match (so a Ctrl+F hit stays salient while the
+	// user grows the selection toward it). Document highlights paint a
+	// subtle SurfaceStrong band, lower than the search overlays so a
+	// hovered identifier never out-shouts the user's active query.
 	var b strings.Builder
-	flush := func(buf []rune, k highlight.Kind, m matchKind, sel bool) {
+	flush := func(buf []rune, k highlight.Kind, m matchKind, sel bool, dh bool) {
 		if len(buf) == 0 {
 			return
 		}
@@ -2466,6 +2532,21 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 			// Layer syntax color over the match background. lipgloss styles
 			// merge cleanly when applied via Background + Foreground in one
 			// pass; pick the foreground from the syntax palette.
+			st, ok := palette[k]
+			if !ok || k == highlight.KindPlain {
+				b.WriteString(matchBG.Render(string(buf)))
+				return
+			}
+			b.WriteString(st.Background(matchBG.GetBackground()).Render(string(buf)))
+			return
+		}
+		if dh {
+			// Document highlight: same SurfaceStrong band the muted match
+			// state uses. The two overlays don't visually conflict in
+			// practice because search highlights arbitrary text and dochi
+			// only lights up identifiers; match wins the precedence above
+			// regardless. Layer syntax color over the band so keyword/
+			// string colors remain legible on the painted cells.
 			st, ok := palette[k]
 			if !ok || k == highlight.KindPlain {
 				b.WriteString(matchBG.Render(string(buf)))
@@ -2499,14 +2580,15 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	var runKind highlight.Kind
 	var runMatch matchKind
 	var runSel bool
+	var runDocHi bool
 	for i, r := range expanded {
 		if _, hasHint := dispHintsByCol[i]; hasHint {
-			flush(run, runKind, runMatch, runSel)
+			flush(run, runKind, runMatch, runSel, runDocHi)
 			run = nil
 			emitHintsAt(i)
 		}
 		if drawCursor && dispCursorSet[i] {
-			flush(run, runKind, runMatch, runSel)
+			flush(run, runKind, runMatch, runSel, runDocHi)
 			run = nil
 			b.WriteString(cur.Render(string(r)))
 			continue
@@ -2520,16 +2602,21 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		if i < len(runeSel) {
 			sel = runeSel[i]
 		}
-		if len(run) > 0 && (k != runKind || m != runMatch || sel != runSel) {
-			flush(run, runKind, runMatch, runSel)
+		var dh bool
+		if i < len(runeDocHi) {
+			dh = runeDocHi[i]
+		}
+		if len(run) > 0 && (k != runKind || m != runMatch || sel != runSel || dh != runDocHi) {
+			flush(run, runKind, runMatch, runSel, runDocHi)
 			run = run[:0]
 		}
 		runKind = k
 		runMatch = m
 		runSel = sel
+		runDocHi = dh
 		run = append(run, r)
 	}
-	flush(run, runKind, runMatch, runSel)
+	flush(run, runKind, runMatch, runSel, runDocHi)
 	// EOL hints (anchored at or past the last rune) render before ghost-text
 	// and the end-cursor cell so they sit naturally after the line content.
 	emitHintsAt(len(expanded))

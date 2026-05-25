@@ -355,6 +355,15 @@ type model struct {
 	// walks forward through entries previously revisited via Back. The
 	// list never grows beyond navhistory.DefaultCap (100) entries.
 	navHistory *navhistory.History
+
+	// dochiGen is the cursor-settle generation counter for the LSP
+	// document-highlight overlay. Every key event routed to the editor
+	// bumps it and schedules a dochiSettleMsg via tea.Tick; only the
+	// tick whose gen matches dochiGen at fire time issues the actual
+	// textDocument/documentHighlight request. This is the standard
+	// debounce shape used by the ghost manager — a counter is cheaper
+	// than canceling in-flight Cmds and reads cleanly under test.
+	dochiGen int
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -787,6 +796,88 @@ func (m model) applyInlayHints(msg lookup.InlayHintMsg) model {
 	return m
 }
 
+// dochiSettleDelay is the cursor-settle debounce window for LSP
+// textDocument/documentHighlight. ~250ms is short enough to feel
+// instant on a quick "settle to read" but long enough that a held
+// arrow-key sweep across a file doesn't issue dozens of requests.
+const dochiSettleDelay = 250 * time.Millisecond
+
+// dochiSettleMsg fires after dochiSettleDelay of quiet. gen is the
+// dochiGen value at the time the tick was scheduled; the handler
+// drops the message when newer activity has bumped dochiGen further,
+// so only the most recent settle survives to issue the LSP request.
+type dochiSettleMsg struct {
+	gen int
+}
+
+// scheduleDochiSettle bumps the cursor-settle generation and returns
+// a tea.Tick that will re-enter Update with a dochiSettleMsg after
+// the debounce window. Called after every key event that could move
+// the cursor or mutate the buffer (which invalidates the previous
+// highlight set either way).
+func (m *model) scheduleDochiSettle() tea.Cmd {
+	m.dochiGen++
+	gen := m.dochiGen
+	return tea.Tick(dochiSettleDelay, func(time.Time) tea.Msg {
+		return dochiSettleMsg{gen: gen}
+	})
+}
+
+// refreshDocumentHighlightsCmd issues a textDocument/documentHighlight
+// request for the active buffer's current cursor. Returns nil when no
+// LSP is running, no active path, or no buffer. The paneVer is pinned
+// at request time so the editor can drop a stale response if the user
+// typed in between.
+func (m model) refreshDocumentHighlightsCmd() tea.Cmd {
+	if m.lsp == nil {
+		return nil
+	}
+	p := m.bufs.Active()
+	if p == nil {
+		return nil
+	}
+	path := p.Path()
+	if path == "" {
+		return nil
+	}
+	return lookup.DocumentHighlightCmd(m.lsp, path, p.CursorRow(), p.CursorCol(), p.BufVer())
+}
+
+// applyDocumentHighlights routes a documentHighlight response to the
+// pane whose path matches and hands the response to the editor's
+// staleness-checked SetDocumentHighlights accessor. Errors are
+// swallowed silently — when the server can't resolve anything (cursor
+// over whitespace, file not yet indexed) the overlay simply stays empty.
+func (m model) applyDocumentHighlights(msg lookup.DocumentHighlightMsg) model {
+	if msg.Err != nil || msg.Path == "" {
+		return m
+	}
+	idx := m.bufs.Find(msg.Path)
+	if idx < 0 {
+		return m
+	}
+	p := m.bufs.At(idx)
+	if p == nil {
+		return m
+	}
+	*p = p.SetDocumentHighlights(msg.Highlights, msg.PaneVer)
+	return m
+}
+
+// clearAllDocumentHighlights drops the overlay from every open pane.
+// Called when the LSP detaches or when the active buffer changes path
+// — the prior pane's highlights are stale relative to the new view.
+func (m model) clearAllDocumentHighlights() model {
+	for i := 0; i < m.bufs.Count(); i++ {
+		p := m.bufs.At(i)
+		if p == nil {
+			continue
+		}
+		*p = p.ClearDocumentHighlights()
+	}
+	return m
+}
+
 // clearInlayHints wipes inlay hints from every open buffer. Called when
 // the user toggles hints off via alt+y.
 func (m model) clearInlayHints() model {
@@ -956,6 +1047,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case lookup.InlayHintMsg:
 		m = m.applyInlayHints(msg)
+		return m, nil
+
+	case lookup.DocumentHighlightMsg:
+		m = m.applyDocumentHighlights(msg)
+		return m, nil
+
+	case dochiSettleMsg:
+		// Drop stale settles. Only the most recent generation issues
+		// the actual textDocument/documentHighlight request.
+		if msg.gen != m.dochiGen {
+			return m, nil
+		}
+		if cmd := m.refreshDocumentHighlightsCmd(); cmd != nil {
+			return m, cmd
+		}
 		return m, nil
 
 	case inlineblame.BlameMsg:
@@ -2132,6 +2238,18 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cmds := []tea.Cmd{}
 	if cmd != nil {
 		cmds = append(cmds, cmd)
+	}
+	// Every key event routed to the editor invalidates the current
+	// document-highlight overlay (the cursor may have moved off the
+	// previously-highlighted identifier) and arms a fresh settle tick.
+	// The clear is unconditional so the band never lags behind the
+	// cursor; the new fetch runs only if the LSP is wired (the
+	// schedule helper is cheap when no server is attached).
+	*p = p.ClearDocumentHighlights()
+	if m.lsp != nil && p.Path() != "" {
+		if settleCmd := m.scheduleDochiSettle(); settleCmd != nil {
+			cmds = append(cmds, settleCmd)
+		}
 	}
 	// If the keypress mutated the buffer and gopls is running for a Go file,
 	// publish a didChange so diagnostics stay live as the user types. Chain

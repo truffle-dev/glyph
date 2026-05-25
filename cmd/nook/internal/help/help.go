@@ -155,6 +155,7 @@ func Default() []Section {
 			{"alt+enter", "Code actions (quickfix / refactor) at the cursor"},
 			{"f2", "Rename symbol under cursor (workspace-wide)"},
 			{"alt+y", "Toggle gopls inlay hints (type annotations, parameter names)"},
+			{"(settle)", "Document highlights light up every occurrence of the identifier under the cursor"},
 			{"alt+u", "Find references to identifier under cursor"},
 			{"ctrl+t", "Workspace symbol search (functions, types, vars)"},
 			{"ctrl+\\", "File outline (document symbols in current file)"},

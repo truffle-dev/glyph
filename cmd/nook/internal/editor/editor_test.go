@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
@@ -1109,5 +1110,84 @@ func TestDeleteRangeRemovesBytes(t *testing.T) {
 	}
 	if p.CursorCol() != 3 {
 		t.Fatalf("CursorCol = %d, want 3 (was 6, removed 3)", p.CursorCol())
+	}
+}
+
+// TestSetDocumentHighlightsPaintsBandsOnRow drives the cursor-settle
+// overlay end-to-end: feed three `foo` occurrences across one row,
+// hand the pane the equivalent dochi.Highlight slice at the current
+// bufVer, and confirm the painted output carries ANSI styling. This
+// is the minimum end-to-end signal that the new render path works.
+func TestSetDocumentHighlightsPaintsBandsOnRow(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 8).Focus()
+	p, _ = p.Update(runeMsg("foo bar foo baz foo"))
+	hi := []dochi.Highlight{
+		{StartLine: 0, StartCol: 0, EndLine: 0, EndCol: 3, Kind: dochi.KindRead},
+		{StartLine: 0, StartCol: 8, EndLine: 0, EndCol: 11, Kind: dochi.KindRead},
+		{StartLine: 0, StartCol: 16, EndLine: 0, EndCol: 19, Kind: dochi.KindWrite},
+	}
+	p = p.SetDocumentHighlights(hi, p.BufVer())
+	if !p.DocumentHighlightsVisible() {
+		t.Fatal("DocumentHighlightsVisible should be true after a successful SetDocumentHighlights")
+	}
+	out := p.View()
+	if !strings.Contains(plain(out), "foo bar foo baz foo") {
+		t.Fatalf("dochi render dropped content: %q", plain(out))
+	}
+	if plain(out) == out {
+		t.Fatal("expected ANSI styling, got plain text")
+	}
+}
+
+// TestSetDocumentHighlightsStaleVerNoOps is the load-bearing guard
+// against typed-while-pending lag. If the host typed in between the
+// LSP request and its response, paneVer != p.bufVer and the call must
+// drop on the floor so stale positions never paint.
+func TestSetDocumentHighlightsStaleVerNoOps(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 4).Focus()
+	p, _ = p.Update(runeMsg("alpha"))
+	staleVer := p.BufVer() - 1
+	p = p.SetDocumentHighlights([]dochi.Highlight{
+		{StartLine: 0, StartCol: 0, EndLine: 0, EndCol: 5},
+	}, staleVer)
+	if p.DocumentHighlightsVisible() {
+		t.Fatal("stale paneVer should be silently dropped")
+	}
+}
+
+// TestClearDocumentHighlightsRemovesOverlay covers the cursor-moved
+// teardown path. Without this clear the band stays painted while the
+// user navigates to a sibling identifier.
+func TestClearDocumentHighlightsRemovesOverlay(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 4).Focus()
+	p, _ = p.Update(runeMsg("alpha"))
+	p = p.SetDocumentHighlights([]dochi.Highlight{
+		{StartLine: 0, StartCol: 0, EndLine: 0, EndCol: 5},
+	}, p.BufVer())
+	if !p.DocumentHighlightsVisible() {
+		t.Fatal("SetDocumentHighlights should report visible")
+	}
+	p = p.ClearDocumentHighlights()
+	if p.DocumentHighlightsVisible() {
+		t.Fatal("after ClearDocumentHighlights, visible should be false")
+	}
+}
+
+// TestSetDocumentHighlightsEmptyResetsOverlay covers the LSP-returned-
+// no-results case. An empty highlight slice should NOT leave the prior
+// overlay painted — when the server reports no occurrences (cursor
+// moved off an identifier into whitespace) the band must clear.
+func TestSetDocumentHighlightsEmptyResetsOverlay(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 4).Focus()
+	p, _ = p.Update(runeMsg("alpha"))
+	p = p.SetDocumentHighlights([]dochi.Highlight{
+		{StartLine: 0, StartCol: 0, EndLine: 0, EndCol: 5},
+	}, p.BufVer())
+	if !p.DocumentHighlightsVisible() {
+		t.Fatal("baseline should report visible")
+	}
+	p = p.SetDocumentHighlights(nil, p.BufVer())
+	if p.DocumentHighlightsVisible() {
+		t.Fatal("empty highlight set should clear the overlay")
 	}
 }

@@ -6,6 +6,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-05-25
+
+LSP document highlights. When the cursor settles for a quarter second
+over an identifier in a Go file, `nook` now asks gopls for every
+occurrence of that identifier in the current buffer and paints each
+one with a subtle background band. Move the cursor to a variable named
+`config` and every other `config` on screen lights up — readers, writers,
+and uses alike. It's the same comprehension aid VS Code, Zed, and IDEA
+have called "highlight occurrences" for two decades, and it's the
+fastest way to answer "where else is this used in this file?" without
+a full Find References roundtrip.
+
+The implementation:
+
+- `cmd/nook/internal/dochi` is a new package that turns LSP
+  `DocumentHighlight` responses into a `map[int][]Span` keyed on row
+  so the editor's per-row render loop has an O(spans) lookup. Multi-
+  line highlights are flattened at line boundaries; an `End == -1`
+  sentinel signals "extend to row length."
+- `lsp.Client.DocumentHighlight` advertises the capability during
+  initialize and forwards the typed `textDocument/documentHighlight`
+  call through the go.lsp.dev protocol package.
+- `lookup.DocumentHighlightCmd` issues the request and stamps each
+  response with the `paneVer` it was minted for.
+- `editor.Pane.SetDocumentHighlights(hi, paneVer)` is the staleness
+  gate — a response that arrives after the user typed is silently
+  dropped, so the band never lags behind the cursor.
+- The renderer threads a `runeDocHi []bool` parallel slice through
+  the existing row-emit loop and adds one stage to the precedence
+  chain (matchActive > selection > matchOther > dochi > plain), so
+  search and selection still win when both apply.
+- The host model debounces cursor-settle with a `dochiSettleMsg` /
+  `dochiGen` counter pair — every key event clears the overlay and
+  arms a fresh 250ms tick, and only the most recent tick to fire
+  issues the LSP request.
+
+The overlay is decorative and degrades silently when the server
+resolves nothing, which is the right shape for a comprehension aid:
+if it can't tell you anything useful, it gets out of the way.
+
 ## [0.35.0] — 2026-05-25
 
 Lightning startup. Before this release, opening `nook` against a large

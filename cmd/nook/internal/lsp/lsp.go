@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/semtok"
 	"go.lsp.dev/jsonrpc2"
@@ -157,6 +158,9 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 				},
 				Definition: &protocol.DefinitionTextDocumentClientCapabilities{
 					LinkSupport: false,
+				},
+				DocumentHighlight: &protocol.DocumentHighlightClientCapabilities{
+					DynamicRegistration: false,
 				},
 				Formatting: &protocol.DocumentFormattingClientCapabilities{
 					DynamicRegistration: false,
@@ -791,6 +795,37 @@ func (c *Client) References(ctx context.Context, path string, line, col int) ([]
 			Path: uri.URI(l.URI).Filename(),
 			Line: int(l.Range.Start.Line),
 			Col:  int(l.Range.Start.Character),
+		})
+	}
+	return out, nil
+}
+
+// DocumentHighlight asks the server for every occurrence of the symbol at
+// (path, line, col) within the same document. Returns [] (not nil) when the
+// server resolves nothing — the editor uses len()==0 as the "clear the
+// overlay" signal. nil-client returns an init error so the host can fire
+// the cursor-settle Cmd unconditionally and degrade silently.
+func (c *Client) DocumentHighlight(ctx context.Context, path string, line, col int) ([]dochi.Highlight, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	res, err := c.server.DocumentHighlight(ctx, &protocol.DocumentHighlightParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+			Position:     protocol.Position{Line: uint32(line), Character: uint32(col)},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: documentHighlight: %w", err)
+	}
+	out := make([]dochi.Highlight, 0, len(res))
+	for _, h := range res {
+		out = append(out, dochi.Highlight{
+			StartLine: int(h.Range.Start.Line),
+			StartCol:  int(h.Range.Start.Character),
+			EndLine:   int(h.Range.End.Line),
+			EndCol:    int(h.Range.End.Character),
+			Kind:      dochi.Kind(h.Kind),
 		})
 	}
 	return out, nil

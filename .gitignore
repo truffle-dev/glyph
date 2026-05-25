@@ -33,6 +33,7 @@ Thumbs.db
 
 # nook local build artifact (built into the package directory by hand).
 /cmd/nook/nookbin
+/nook
 
 # Visual recordings. Source-of-truth lives in visuals/tapes/.
 # Casts are intermediate (regenerate locally via visuals/render-cast.sh);
