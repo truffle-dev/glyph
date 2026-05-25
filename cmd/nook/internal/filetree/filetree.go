@@ -30,25 +30,67 @@ type OpenMsg struct{ Path string }
 
 // Pane is nook's file-tree side pane.
 type Pane struct {
-	model   glyphtree.Model
-	root    string
-	width   int
-	height  int
-	theme   theme.Theme
-	focused bool
+	model         glyphtree.Model
+	root          string
+	width         int
+	height        int
+	theme         theme.Theme
+	focused       bool
+	built         bool
+	pendingReveal string
 }
 
-// New builds a pane rooted at root. The tree is walked eagerly at
-// construction; call Refresh to re-walk after file-system changes.
+// New constructs a pane rooted at root. Construction is constant-time
+// and does NOT walk the file system — that work happens asynchronously
+// via BuildTreeCmd so first paint is never gated on the walk. View()
+// renders a "Scanning…" placeholder until SetNode lands. This was the
+// last sync FS call in nook's startup path; lightning-fast startup is
+// a load-bearing property and must be preserved going forward.
 func New(t theme.Theme, root string) Pane {
-	node := BuildTree(root)
-	m := glyphtree.New(node).WithTitle("")
 	return Pane{
-		model: m,
+		model: glyphtree.New(glyphtree.Node{Name: filepath.Base(root)}).WithTitle(""),
 		root:  root,
 		theme: t,
 	}
 }
+
+// BuildTreeMsg carries the result of an async tree walk.
+type BuildTreeMsg struct {
+	Root string
+	Node glyphtree.Node
+}
+
+// BuildTreeCmd walks root in a goroutine and returns a BuildTreeMsg the
+// host model can hand to Pane.SetNode. Safe to fire multiple times — the
+// handler ignores results whose Root no longer matches the pane's root.
+func BuildTreeCmd(root string) tea.Cmd {
+	return func() tea.Msg {
+		return BuildTreeMsg{Root: root, Node: BuildTree(root)}
+	}
+}
+
+// SetNode replaces the pane's tree with a freshly walked node and
+// replays any reveal target that came in while the walk was pending.
+// Caller should match msg.Root against the pane's root before calling
+// to discard stale walks (e.g. after a project-root change).
+func (p *Pane) SetNode(node glyphtree.Node) {
+	cur := ""
+	if p.built {
+		cur = p.model.Selected()
+	}
+	p.model = glyphtree.New(node).WithTitle("")
+	p.built = true
+	if p.pendingReveal != "" {
+		p.revealLocked(p.pendingReveal)
+		p.pendingReveal = ""
+	} else if cur != "" {
+		p.model.SetCursor(cur)
+	}
+}
+
+// Built reports whether SetNode has landed at least once. Callers can
+// use this to decide whether to show the pane's view or skip allocation.
+func (p Pane) Built() bool { return p.built }
 
 // SetSize sets the width and height the pane may draw within.
 func (p *Pane) SetSize(w, h int) {
@@ -66,19 +108,32 @@ func (p *Pane) Blur() { p.focused = false }
 // Focused reports the pane's focus state.
 func (p Pane) Focused() bool { return p.focused }
 
-// Refresh re-walks the file system and rebuilds the tree, preserving
-// expanded directories and the current cursor path when possible.
-func (p *Pane) Refresh() {
-	cur := p.model.Selected()
-	node := BuildTree(p.root)
-	p.model = glyphtree.New(node).WithTitle("")
-	p.model.SetCursor(cur)
+// RefreshCmd returns a tea.Cmd that re-walks the file system off the
+// UI thread and produces a BuildTreeMsg the host can hand back to
+// SetNode. The previous synchronous Refresh blocked first paint on a
+// home-directory launch (nook ~/.zshrc walks all of ~/repos and
+// ~/Downloads); the async form preserves the snappy "Scanning…"
+// placeholder behavior used at startup.
+func (p *Pane) RefreshCmd() tea.Cmd {
+	return BuildTreeCmd(p.root)
 }
 
 // Reveal expands the directories on the path to file and moves the
-// cursor onto it. path must be slash-separated relative to root, or
-// the function is a no-op.
+// cursor onto it. When the tree has not finished its initial walk yet,
+// the reveal target is queued and replayed once SetNode lands. path
+// must be slash-separated relative to root, or the function is a no-op.
 func (p *Pane) Reveal(absPath string) {
+	if !p.built {
+		p.pendingReveal = absPath
+		return
+	}
+	p.revealLocked(absPath)
+}
+
+// revealLocked performs the actual expand + cursor move. Callers must
+// ensure the tree has been built before invoking it (SetNode + Reveal
+// both check p.built before calling in).
+func (p *Pane) revealLocked(absPath string) {
 	rel, err := filepath.Rel(p.root, absPath)
 	if err != nil {
 		return
@@ -134,7 +189,9 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 
 // View renders the pane inside a rounded border. When width or height
 // is too small the function returns an empty string; the host should
-// not allocate space for the pane in that case.
+// not allocate space for the pane in that case. Until the first
+// BuildTreeMsg lands the pane renders a "Scanning…" placeholder so
+// first paint is never gated on the file-system walk.
 func (p Pane) View() string {
 	if p.width < 12 || p.height < 4 {
 		return ""
@@ -150,7 +207,14 @@ func (p Pane) View() string {
 	header := lipgloss.NewStyle().
 		Foreground(p.theme.TextMuted).
 		Render(filepath.Base(p.root))
-	body := p.model.View()
+	var body string
+	if !p.built {
+		body = lipgloss.NewStyle().
+			Foreground(p.theme.TextMuted).
+			Render("Scanning…")
+	} else {
+		body = p.model.View()
+	}
 	return border.Render(header + "\n" + body)
 }
 

@@ -5,12 +5,30 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	glyphtree "github.com/truffle-dev/glyph/components/file-tree"
 	"github.com/truffle-dev/glyph/components/theme"
 )
+
+// timeNow / timeSince are thin shims so the startup-budget test reads
+// cleanly without forcing the test to know about time.Time semantics.
+func timeNow() time.Time          { return time.Now() }
+func timeSince(t time.Time) int64 { return time.Since(t).Nanoseconds() }
+
+// newBuiltPane constructs a pane and synchronously walks + binds the
+// tree so pane-level tests can drive the underlying glyph file-tree
+// model immediately. Mirrors what Init() + BuildTreeCmd + the
+// BuildTreeMsg handler do at runtime.
+func newBuiltPane(t *testing.T, root string) Pane {
+	t.Helper()
+	p := New(theme.Default, root)
+	p.SetSize(40, 20)
+	p.SetNode(BuildTree(root))
+	return p
+}
 
 // makeFixture lays out a deterministic project layout under t.TempDir
 // so the builder tests have a known shape to assert against.
@@ -106,8 +124,7 @@ func TestBuildTree_RecursesIntoSubdirs(t *testing.T) {
 
 func TestPane_RevealExpandsAncestorsAndCursors(t *testing.T) {
 	root := makeFixture(t)
-	p := New(theme.Default, root)
-	p.SetSize(40, 20)
+	p := newBuiltPane(t, root)
 
 	abs := filepath.Join(root, "internal", "sub", "deeper.go")
 	p.Reveal(abs)
@@ -119,8 +136,7 @@ func TestPane_RevealExpandsAncestorsAndCursors(t *testing.T) {
 
 func TestPane_BlurredIgnoresKeys(t *testing.T) {
 	root := makeFixture(t)
-	p := New(theme.Default, root)
-	p.SetSize(40, 20)
+	p := newBuiltPane(t, root)
 
 	before := p.model.Selected()
 	p2, _ := p.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -132,8 +148,7 @@ func TestPane_BlurredIgnoresKeys(t *testing.T) {
 
 func TestPane_FocusedRoutesKeysToTree(t *testing.T) {
 	root := makeFixture(t)
-	p := New(theme.Default, root)
-	p.SetSize(40, 20)
+	p := newBuiltPane(t, root)
 	p.Focus()
 
 	// Down should advance the cursor at least one row (the fixture has
@@ -147,8 +162,7 @@ func TestPane_FocusedRoutesKeysToTree(t *testing.T) {
 
 func TestPane_EnterOnFileLifesIntoOpenMsg(t *testing.T) {
 	root := makeFixture(t)
-	p := New(theme.Default, root)
-	p.SetSize(40, 20)
+	p := newBuiltPane(t, root)
 	p.Focus()
 	p.model.SetCursor("a.go")
 
@@ -172,8 +186,7 @@ func TestPane_EnterOnFileLifesIntoOpenMsg(t *testing.T) {
 
 func TestPane_EnterOnDirectoryStaysInPane(t *testing.T) {
 	root := makeFixture(t)
-	p := New(theme.Default, root)
-	p.SetSize(40, 20)
+	p := newBuiltPane(t, root)
 	p.Focus()
 	p.model.SetCursor("internal")
 
@@ -187,23 +200,29 @@ func TestPane_EnterOnDirectoryStaysInPane(t *testing.T) {
 	}
 }
 
-func TestPane_RefreshPreservesCursor(t *testing.T) {
+func TestPane_RefreshCmdPreservesCursor(t *testing.T) {
 	root := makeFixture(t)
-	p := New(theme.Default, root)
-	p.SetSize(40, 20)
+	p := newBuiltPane(t, root)
 	p.model.SetCursor("a.go")
 
 	if err := os.WriteFile(filepath.Join(root, "newfile.go"), []byte(""), 0o644); err != nil {
 		t.Fatalf("write newfile.go: %v", err)
 	}
-	p.Refresh()
+	cmd := p.RefreshCmd()
+	if cmd == nil {
+		t.Fatal("RefreshCmd returned nil")
+	}
+	msg, ok := cmd().(BuildTreeMsg)
+	if !ok {
+		t.Fatalf("RefreshCmd produced %T; want BuildTreeMsg", cmd())
+	}
+	p.SetNode(msg.Node)
 
 	if got := p.model.Selected(); got != "a.go" {
 		t.Errorf("Refresh moved cursor from %q to %q", "a.go", got)
 	}
-	tree := BuildTree(root)
 	found := false
-	for _, c := range tree.Children {
+	for _, c := range msg.Node.Children {
 		if c.Name == "newfile.go" {
 			found = true
 			break
@@ -216,8 +235,7 @@ func TestPane_RefreshPreservesCursor(t *testing.T) {
 
 func TestPane_ViewIncludesProjectName(t *testing.T) {
 	root := makeFixture(t)
-	p := New(theme.Default, root)
-	p.SetSize(30, 12)
+	p := newBuiltPane(t, root)
 
 	out := stripANSI(p.View())
 	if !strings.Contains(out, filepath.Base(root)) {
@@ -232,6 +250,47 @@ func TestPane_ViewEmptyWhenTooSmall(t *testing.T) {
 
 	if p.View() != "" {
 		t.Errorf("View should be empty when pane is too small; got %q", p.View())
+	}
+}
+
+// TestPane_StartupIsConstantTime asserts that New() returns in well
+// under the cost of a recursive file-system walk. This is the
+// load-bearing property the whole refactor exists to enforce: the
+// first paint must never block on the tree walk. Budget is generous
+// (10ms) to avoid false positives on shared-CI machines.
+func TestPane_StartupIsConstantTime(t *testing.T) {
+	root := makeFixture(t)
+	t0 := timeNow()
+	p := New(theme.Default, root)
+	p.SetSize(40, 20)
+	dt := timeSince(t0)
+	if dt > 10_000_000 { // 10ms
+		t.Errorf("New + SetSize took %dns; expected <10ms (it must not walk the FS)", dt)
+	}
+	if p.Built() {
+		t.Error("pane is reporting Built() before SetNode landed")
+	}
+	if !strings.Contains(stripANSI(p.View()), "Scanning") {
+		t.Error("pre-built pane should render a Scanning… placeholder")
+	}
+}
+
+// TestPane_PendingRevealReplaysAfterBuild covers the dotfile-edit
+// race: caller asks for a Reveal before BuildTreeMsg lands; SetNode
+// must replay it once the tree is bound.
+func TestPane_PendingRevealReplaysAfterBuild(t *testing.T) {
+	root := makeFixture(t)
+	p := New(theme.Default, root)
+	p.SetSize(40, 20)
+
+	abs := filepath.Join(root, "internal", "sub", "deeper.go")
+	p.Reveal(abs)
+	if p.Selected() != "" {
+		t.Errorf("pre-built Reveal moved the cursor; got Selected=%q", p.Selected())
+	}
+	p.SetNode(BuildTree(root))
+	if got := p.Selected(); got != abs {
+		t.Errorf("pending reveal didn't replay; Selected=%q want %q", got, abs)
 	}
 }
 

@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-05-25
+
+Lightning startup. Before this release, opening `nook` against a large
+directory (the worst case being `nook ~/.zshrc`, where the project root
+resolves to `$HOME` and the walker descends into every `~/repos/*` and
+`~/Downloads`) blocked the first paint on a synchronous recursive
+file-system walk. On a machine with a deep home directory that meant
+~1 second of blank terminal before the editor drew anything. Anywhere
+else, the gap was smaller but always present.
+
+The file-tree pane now constructs in constant time and walks the file
+system in a goroutine. `filetree.New` returns a pane that reports
+`Built() == false` and renders a `Scanning…` placeholder; `Init`
+batches `filetree.BuildTreeCmd(root)` alongside the existing file-list
+and git-status commands. When the resulting `BuildTreeMsg` lands, the
+host calls `Pane.SetNode(node)` which binds the tree. A `Reveal` issued
+before the tree is built is queued on `pendingReveal` and replayed by
+the next `SetNode`. The `BuildTreeMsg` handler discards stale walks
+whose root no longer matches (forward-proofing future re-root paths).
+
+`Pane.Refresh` was synchronous; it's now `Pane.RefreshCmd()` returning
+a `tea.Cmd` so the open-tree path in `toggleTree` no longer blocks on
+the walk either.
+
+A new regression test (`TestStartupNotGatedOnTreeWalk`) measures
+`newModel($HOME) + Init()` end-to-end with a 200ms budget. On this
+machine the actual wall-clock is ~300µs — three orders of magnitude
+below the pre-refactor cost. The test fails loudly if anyone wires
+synchronous file-system work back into the startup path.
+
 ## [0.34.0] — 2026-05-25
 
 Project-wide find/replace in `nook`. The Alt+F search pane already

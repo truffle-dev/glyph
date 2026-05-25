@@ -633,7 +633,11 @@ func (m model) reloadConfig() model {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadFilesCmd(), m.refreshGitCmd()}
+	// filetree.BuildTreeCmd walks the file system in a goroutine; the
+	// first paint is no longer gated on the walk (which can take >1s
+	// for home-directory launches like `nook ~/.zshrc`). The pane
+	// renders a "Scanning…" placeholder until the BuildTreeMsg lands.
+	cmds := []tea.Cmd{m.loadFilesCmd(), m.refreshGitCmd(), filetree.BuildTreeCmd(m.root)}
 	// If files were pre-opened from the CLI, fire the same auxiliary
 	// commands the picker/filetree open paths run so a single-file
 	// launch (`nook foo.go`) gets LSP attach, gutter, inlay hints, and
@@ -1312,6 +1316,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case outlineRequestMsg:
 		return m.handleOutlineRequestMsg(msg)
+
+	case filetree.BuildTreeMsg:
+		// Discard stale walks: if the project root changed between
+		// kick-off and arrival (re-root happens via toggleTree refresh
+		// or future re-root paths), drop the result and let the new
+		// walk land.
+		if msg.Root != m.root {
+			return m, nil
+		}
+		m.treePane.SetNode(msg.Node)
+		return m, nil
 
 	case filetree.OpenMsg:
 		_, action := m.bufs.OpenOrSwitch(msg.Path)
@@ -3658,14 +3673,14 @@ func (m model) toggleTree() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.showTree = true
-	m.treePane.Refresh()
+	refreshCmd := m.treePane.RefreshCmd()
 	if p := m.bufs.Active(); p != nil && p.Path() != "" {
 		m.treePane.Reveal(p.Path())
 	}
 	m.treePane.Focus()
 	m = m.resize()
 	m.status = "file tree open"
-	return m, nil
+	return m, refreshCmd
 }
 
 func (m model) termPumpCmd(ch <-chan []byte) tea.Cmd {
