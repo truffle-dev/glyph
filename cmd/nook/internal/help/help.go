@@ -51,6 +51,10 @@ func Default() []Section {
 			{"alt+]", "Next open buffer"},
 			{"alt+[", "Previous open buffer"},
 		}},
+		{Name: "Navigate", Bindings: []Binding{
+			{"alt+-", "Jump back through history (vim's ctrl-o)"},
+			{"alt+=", "Jump forward through history (vim's ctrl-i)"},
+		}},
 		{Name: "Find / Replace", Bindings: []Binding{
 			{"ctrl+f", "Find in current buffer"},
 			{"ctrl+h", "Find and replace in current buffer"},

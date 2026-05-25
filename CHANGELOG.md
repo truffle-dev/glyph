@@ -6,6 +6,52 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-05-25
+
+Navigation history (vim-style jump list) lands in `nook`. Every
+cross-file or significant in-file jump now records the cursor's
+from-position into a bounded ring buffer; `Alt+-` walks back through
+those positions like vim's `Ctrl-O`, and `Alt+=` walks forward like
+`Ctrl-I`. After three jumps `a → b → c → d`, pressing `Alt+-` three
+times retraces `d → c → b → a`; pressing `Alt+=` walks the other way.
+
+A new package, `cmd/nook/internal/navhistory`, owns the data structure:
+an `Entry{Path, Row, Col}` triple, a `History` with an `idx` cursor in
+`[0, len(entries)]`, and three Push rules evaluated in order
+(predecessor-match collapses duplicate pushes onto the same position;
+forward-match advances `idx` without rewriting; otherwise truncate the
+forward tail and append). Capacity defaults to 100 entries and the
+oldest is evicted on overflow. Sixteen tests cover the zero value, the
+empty-path no-op, single and multi-push back/forward sequences, the
+vim-style truncate-on-fresh-push, both duplicate-collapse paths,
+capacity eviction, position readouts, current-entry accessor,
+`CanBack`/`CanForward` boundaries, `Reset`, default capacity for
+zero/negative inputs, snapshot-is-copy semantics, and a realistic
+multi-file jump scenario (`main.go → pkg/util.go → pkg/types.go`, two
+backs, fresh push to `pkg/log.go`).
+
+The host wires push points at every existing jump site: project search
+results (`search.OpenMsg`), LSP go-to-definition (`lookup.DefinitionMsg`),
+multibuffer row selection (`multibuffer.OpenAtMsg`, which covers
+workspace symbol search via `Ctrl+T`, find-references via `Alt+u`, and
+the uncommitted-changes multibuf via `Alt+m`), the workspace
+diagnostics panel (`diagnostics.OpenAtMsg`), and outline jumps
+(`outline.JumpMsg`). Each site calls `pushNavCurrent` immediately
+before the cursor moves, so the from-position is the one Alt+- returns
+to. Two new helper methods, `navJumpBack` and `navJumpForward`, open
+the entry's buffer (re-using `bufman.OpenOrSwitch` so it works
+cross-file), call `JumpTo` with 1-based row/col, refresh the file tree
+reveal, and trigger LSP/gutter/inlay/blame refreshes the same way every
+other jump path does.
+
+The status bar gains a `nav N/M` segment that surfaces only while the
+user is walking the list (suppressed at past-end where `pos == total`),
+and the `?` help overlay grows a "Navigate" section with both bindings.
+Status hints on each jump call out direction and remaining list
+position: `jump 2/3 ← util.go:5:1`. The push-point set is conservative
+in the same way vim's is — opening a file from the file tree doesn't
+add to the list, only explicit jumps do.
+
 ## [0.31.0] — 2026-05-25
 
 LSP semantic tokens land in `nook`. The editor now overlays the language

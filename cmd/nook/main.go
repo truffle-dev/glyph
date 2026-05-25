@@ -97,6 +97,7 @@ import (
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/mdpreview"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/multibuffer"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/navhistory"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/outline"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
@@ -347,6 +348,13 @@ type model struct {
 	dapThreadID   int
 	dapPausedPath string
 	dapPausedRow  int
+
+	// navHistory is the vim-style jump list. Each cross-file or
+	// significant in-file jump records the cursor's from-position before
+	// the jump fires. Alt+- walks back through prior positions; Alt+=
+	// walks forward through entries previously revisited via Back. The
+	// list never grows beyond navhistory.DefaultCap (100) entries.
+	navHistory *navhistory.History
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -559,6 +567,7 @@ func newModel(root string, opens ...string) model {
 		sigPane:        signature.New(),
 		docPane:        completedoc.New(),
 		bpStore:        breakpoints.New(),
+		navHistory:     navhistory.New(0),
 	}
 
 	// Pre-open any files the user passed on the CLI. After OpenOrSwitch
@@ -965,6 +974,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case search.OpenMsg:
+		m.pushNavCurrent()
 		m.bufs.OpenOrSwitch(msg.Path)
 		if p := m.bufs.Active(); p != nil {
 			*p = p.JumpTo(msg.Line, msg.Col).Focus()
@@ -1213,6 +1223,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// one; multi-location results are interface methods and we
 		// can build a chooser later.
 		loc := msg.Locations[0]
+		m.pushNavCurrent()
 		m.bufs.OpenOrSwitch(loc.Path)
 		if p := m.bufs.Active(); p != nil {
 			*p = p.JumpTo(loc.Line, loc.Col).Focus()
@@ -1293,6 +1304,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case multibuffer.OpenAtMsg:
+		m.pushNavCurrent()
 		_, action := m.bufs.OpenOrSwitch(msg.Path)
 		if p := m.bufs.Active(); p != nil {
 			// editor.JumpTo takes 1-based line numbers; OpenAtMsg.Line is
@@ -1321,6 +1333,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case diagnostics.OpenAtMsg:
+		m.pushNavCurrent()
 		_, action := m.bufs.OpenOrSwitch(msg.Path)
 		if p := m.bufs.Active(); p != nil {
 			// editor.JumpTo takes 1-based row/col; OpenAtMsg carries
@@ -1806,6 +1819,18 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// alt the type is KeyRunes and km.Alt is true.
 	if km.Alt && km.Type == tea.KeyRunes && len(km.Runes) == 1 {
 		switch km.Runes[0] {
+		case '-':
+			// Alt+- walks back one step in the jump list (vim's Ctrl-O).
+			// Each push point captures the cursor's from-position before
+			// a jump, so Back returns the user to where they triggered
+			// the most-recent jump from. Subsequent Backs walk further
+			// into the past.
+			return m.navJumpBack()
+		case '=':
+			// Alt+= walks forward through the jump list (vim's Ctrl-I).
+			// Only meaningful after at least one Alt+-; returns to the
+			// next-newer pushed position.
+			return m.navJumpForward()
 		case ']':
 			m.bufs.Next()
 			m.sigPane = m.sigPane.Close()
@@ -2774,6 +2799,7 @@ func (m model) routeOutline(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "outline: target file no longer active"
 			return m, nil
 		}
+		m.pushNavCurrent()
 		*ap = ap.JumpTo(v.Row+1, v.Col+1).Focus()
 		m.status = "outline: jumped to " + filepath.Base(v.Path)
 		return m, nil
@@ -4016,6 +4042,12 @@ func (m model) renderStatusBar() string {
 		parts = append(parts, seg)
 	}
 
+	if m.navHistory != nil {
+		if pos, total := m.navHistory.Position(); total > 0 && pos != total {
+			parts = append(parts, muted.Render(fmt.Sprintf("nav %d/%d", pos, total)))
+		}
+	}
+
 	if errs, warns := m.diagCounts(); errs > 0 || warns > 0 {
 		parts = append(parts, muted.Render(fmt.Sprintf("●%dE %dW", errs, warns)))
 	}
@@ -4066,6 +4098,77 @@ func (m model) activePath() string {
 		return p.Path()
 	}
 	return ""
+}
+
+// pushNavCurrent records the active buffer's cursor position into the
+// jump list. Called immediately before any cross-file or significant
+// in-file jump fires, so Alt+- can walk back to where the user came from.
+// A no-op when no buffer is active.
+func (m *model) pushNavCurrent() {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
+		return
+	}
+	m.navHistory.Push(navhistory.Entry{
+		Path: p.Path(),
+		Row:  p.CursorRow(),
+		Col:  p.CursorCol(),
+	})
+}
+
+// jumpToNavEntry switches to the entry's buffer and moves the cursor.
+// Used by Alt+- (Back) and Alt+= (Forward). Returns whether the jump
+// succeeded — false when the path can no longer be opened.
+func (m *model) jumpToNavEntry(e navhistory.Entry) bool {
+	if e.Path == "" {
+		return false
+	}
+	m.bufs.OpenOrSwitch(e.Path)
+	p := m.bufs.Active()
+	if p == nil {
+		return false
+	}
+	*p = p.JumpTo(e.Row+1, e.Col+1).Focus()
+	if m.showTree {
+		m.treePane.Reveal(e.Path)
+	}
+	return true
+}
+
+// navJumpBack walks one step back through the jump list.
+func (m model) navJumpBack() (tea.Model, tea.Cmd) {
+	e, ok := m.navHistory.Back()
+	if !ok {
+		m.status = "jump list: at oldest entry"
+		return m, nil
+	}
+	if !m.jumpToNavEntry(e) {
+		m.status = "jump list: target no longer reachable"
+		return m, nil
+	}
+	m = m.resize()
+	m = m.applyDiagnosticsToActive()
+	pos, total := m.navHistory.Position()
+	m.status = fmt.Sprintf("jump %d/%d ← %s:%d:%d", pos, total, filepath.Base(e.Path), e.Row+1, e.Col+1)
+	return m, tea.Batch(m.ensureLSPForFile(e.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
+}
+
+// navJumpForward walks one step forward through the jump list.
+func (m model) navJumpForward() (tea.Model, tea.Cmd) {
+	e, ok := m.navHistory.Forward()
+	if !ok {
+		m.status = "jump list: at newest entry"
+		return m, nil
+	}
+	if !m.jumpToNavEntry(e) {
+		m.status = "jump list: target no longer reachable"
+		return m, nil
+	}
+	m = m.resize()
+	m = m.applyDiagnosticsToActive()
+	pos, total := m.navHistory.Position()
+	m.status = fmt.Sprintf("jump %d/%d → %s:%d:%d", pos, total, filepath.Base(e.Path), e.Row+1, e.Col+1)
+	return m, tea.Batch(m.ensureLSPForFile(e.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
 }
 
 func centerOverlay(w, h int, body string) string {
