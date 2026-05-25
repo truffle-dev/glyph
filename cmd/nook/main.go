@@ -2063,8 +2063,11 @@ func (m model) triggerCompletion() (tea.Model, tea.Cmd) {
 
 // acceptCompletion inserts the highlighted item's InsertText at the
 // cursor, first deleting the word-prefix the user already typed so the
-// resulting buffer reads correctly. Selecting an item is a buffer edit
-// — we send a didChange to the language server if it's running.
+// resulting buffer reads correctly. When the server marked the item as a
+// snippet (InsertTextFormat == 2), the body is parsed through the nook
+// snippet engine and the editor enters snippet mode so Tab/Shift+Tab walk
+// the placeholders. Selecting an item is a buffer edit — we send a
+// didChange to the language server if it's running.
 func (m model) acceptCompletion() (tea.Model, tea.Cmd) {
 	item, ok := m.completePopup.Selected()
 	m.dismissCompletion()
@@ -2076,17 +2079,42 @@ func (m model) acceptCompletion() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	pl := len(complete.WordPrefix(p.LinePrefix()))
-	if pl > 0 {
-		row := p.CursorRow()
-		col := p.CursorCol()
-		line := p.Line(row)
-		if col-pl >= 0 && col <= len(line) {
-			newLine := line[:col-pl] + line[col:]
-			*p = p.SetLine(row, newLine).JumpTo(row, col-pl)
+	row := p.CursorRow()
+	col := p.CursorCol()
+	if item.InsertTextFormat == nooklsp.InsertTextFormatSnippet {
+		vars := snippets.DefaultVariables()
+		if path := p.Path(); path != "" {
+			base := filepath.Base(path)
+			vars.Filename = base
+			vars.FilenameBase = strings.TrimSuffix(base, filepath.Ext(base))
 		}
+		exp, err := snippets.Expand(item.InsertText, vars)
+		if err != nil {
+			m.status = "completion: " + err.Error()
+			return m, nil
+		}
+		prefixStart := col - pl
+		if prefixStart < 0 {
+			prefixStart = 0
+		}
+		*p = p.ExpandSnippet(prefixStart, exp)
+		if p.InSnippetMode() {
+			m.status = "inserted " + item.Label + " — Tab to advance, Esc to exit"
+		} else {
+			m.status = "inserted " + item.Label
+		}
+	} else {
+		if pl > 0 {
+			line := p.Line(row)
+			if col-pl >= 0 && col <= len(line) {
+				newLine := line[:col-pl] + line[col:]
+				// JumpTo is 1-based; row/col are 0-based.
+				*p = p.SetLine(row, newLine).JumpTo(row+1, col-pl+1)
+			}
+		}
+		*p = p.InsertText(item.InsertText)
+		m.status = "inserted " + item.Label
 	}
-	*p = p.InsertText(item.InsertText)
-	m.status = "inserted " + item.Label
 	var cmd tea.Cmd
 	if m.lsp != nil && isGoFile(p.Path()) {
 		v := m.lspVersions[p.Path()] + 1

@@ -128,7 +128,7 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 				},
 				Completion: &protocol.CompletionTextDocumentClientCapabilities{
 					CompletionItem: &protocol.CompletionTextDocumentClientCapabilitiesItem{
-						SnippetSupport:          false,
+						SnippetSupport:          true,
 						CommitCharactersSupport: false,
 						DocumentationFormat:     []protocol.MarkupKind{protocol.PlainText, protocol.Markdown},
 						ResolveSupport: &protocol.CompletionTextDocumentClientCapabilitiesItemResolveSupport{
@@ -335,14 +335,24 @@ const (
 // Completion when the server returns it, or later via ResolveCompletion when
 // the popup's selection lands on this item. Data is the opaque server token
 // LSP requires we round-trip through completionItem/resolve verbatim.
+// InsertTextFormat names whether InsertText is a literal string (1) or a
+// VSCode-format snippet template (2). Zero means the server didn't say,
+// which by spec means plain text.
 type CompletionItem struct {
-	Label         string
-	InsertText    string
-	Detail        string
-	Documentation string
-	Kind          CompletionKind
-	Data          json.RawMessage
+	Label            string
+	InsertText       string
+	Detail           string
+	Documentation    string
+	Kind             CompletionKind
+	Data             json.RawMessage
+	InsertTextFormat int
 }
+
+// InsertTextFormat constants mirror the LSP enum.
+const (
+	InsertTextFormatPlainText = 1
+	InsertTextFormatSnippet   = 2
+)
 
 // HoverInfo carries the textual content of a hover response. Empty Contents
 // means the server returned nothing (e.g. cursor on a comment).
@@ -480,12 +490,13 @@ func (c *Client) Completion(ctx context.Context, path string, line, col int) ([]
 	out := make([]CompletionItem, 0, len(res.Items))
 	for _, it := range res.Items {
 		ci := CompletionItem{
-			Label:         it.Label,
-			InsertText:    it.InsertText,
-			Detail:        it.Detail,
-			Documentation: marshalAndDecodeDoc(it.Documentation),
-			Kind:          completionKindOf(it.Kind),
-			Data:          marshalRaw(it.Data),
+			Label:            it.Label,
+			InsertText:       it.InsertText,
+			Detail:           it.Detail,
+			Documentation:    marshalAndDecodeDoc(it.Documentation),
+			Kind:             completionKindOf(it.Kind),
+			Data:             marshalRaw(it.Data),
+			InsertTextFormat: int(it.InsertTextFormat),
 		}
 		if ci.InsertText == "" {
 			ci.InsertText = it.Label
@@ -518,6 +529,9 @@ func (c *Client) ResolveCompletion(ctx context.Context, item CompletionItem) (Co
 	}
 	if len(item.Data) > 0 {
 		req["data"] = item.Data
+	}
+	if item.InsertTextFormat != 0 {
+		req["insertTextFormat"] = item.InsertTextFormat
 	}
 	var raw json.RawMessage
 	if _, err := c.conn.Call(ctx, "completionItem/resolve", req, &raw); err != nil {
@@ -563,12 +577,13 @@ func decodeResolvedCompletion(raw json.RawMessage, orig CompletionItem) Completi
 		return orig
 	}
 	var got struct {
-		Label         string                      `json:"label"`
-		InsertText    string                      `json:"insertText,omitempty"`
-		Detail        string                      `json:"detail,omitempty"`
-		Documentation json.RawMessage             `json:"documentation,omitempty"`
-		Kind          protocol.CompletionItemKind `json:"kind,omitempty"`
-		Data          json.RawMessage             `json:"data,omitempty"`
+		Label            string                      `json:"label"`
+		InsertText       string                      `json:"insertText,omitempty"`
+		Detail           string                      `json:"detail,omitempty"`
+		Documentation    json.RawMessage             `json:"documentation,omitempty"`
+		Kind             protocol.CompletionItemKind `json:"kind,omitempty"`
+		Data             json.RawMessage             `json:"data,omitempty"`
+		InsertTextFormat int                         `json:"insertTextFormat,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &got); err != nil {
 		return orig
@@ -593,6 +608,9 @@ func decodeResolvedCompletion(raw json.RawMessage, orig CompletionItem) Completi
 	}
 	if len(got.Data) > 0 {
 		merged.Data = got.Data
+	}
+	if got.InsertTextFormat != 0 {
+		merged.InsertTextFormat = got.InsertTextFormat
 	}
 	return merged
 }

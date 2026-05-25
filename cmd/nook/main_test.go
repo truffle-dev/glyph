@@ -1962,3 +1962,103 @@ inlay_hints = false
 		t.Fatalf("disabled-hint reload did not clear active buffer hints; got %d", len(got))
 	}
 }
+
+// TestAcceptCompletionSnippetEntersSnippetMode confirms that when the
+// server marks a completion item as a snippet (InsertTextFormat == 2),
+// acceptCompletion routes the body through the nook snippet engine and
+// the editor enters snippet mode at the first tabstop.
+func TestAcceptCompletionSnippetEntersSnippetMode(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+
+	// Type a prefix the popup is filtering on. Position the cursor at the end
+	// of "Pri" so WordPrefix returns "Pri" and prefixStart deletes it.
+	p := m.bufs.Active()
+	*p = p.JumpTo(2, 13) // "func Foo() {}" — append at end of "Foo" line
+	*p = p.InsertText("Pri")
+	row := p.CursorRow()
+	col := p.CursorCol()
+	if col < 3 {
+		t.Fatalf("setup: expected col >= 3, got %d at row %d", col, row)
+	}
+
+	m.completePopup = m.completePopup.WithItems([]nooklsp.CompletionItem{
+		{
+			Label:            "Printf",
+			InsertText:       "Printf(${1:format}, ${2:args})",
+			Kind:             nooklsp.CompletionKindFunction,
+			InsertTextFormat: nooklsp.InsertTextFormatSnippet,
+		},
+	}, 3)
+	m.overlay = overlayCompletion
+
+	updated, _ := m.acceptCompletion()
+	mm := updated.(model)
+	if mm.overlay == overlayCompletion {
+		t.Errorf("acceptCompletion should dismiss the popup")
+	}
+	pp := mm.bufs.Active()
+	if pp == nil {
+		t.Fatalf("no active buffer after acceptCompletion")
+	}
+	if !pp.InSnippetMode() {
+		t.Fatalf("editor should be in snippet mode after accepting a snippet completion")
+	}
+	ts, ok := pp.CurrentSnippetTabstop()
+	if !ok {
+		t.Fatalf("no current tabstop after acceptCompletion")
+	}
+	if ts.Index != 1 {
+		t.Errorf("first tabstop should be index 1, got %d", ts.Index)
+	}
+	if !strings.Contains(pp.Line(row), "Printf(format, args)") {
+		t.Errorf("snippet body not expanded into buffer: %q", pp.Line(row))
+	}
+	if !strings.Contains(mm.status, "inserted Printf") {
+		t.Errorf("status should report inserted, got %q", mm.status)
+	}
+}
+
+// TestAcceptCompletionPlainTextStillWorks confirms the existing
+// plain-insert branch is untouched by the snippet wiring.
+func TestAcceptCompletionPlainTextStillWorks(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m = openBufferForTest(t, m, "a.go")
+
+	p := m.bufs.Active()
+	*p = p.JumpTo(2, 13)
+	*p = p.InsertText("Pri")
+	row := p.CursorRow()
+
+	m.completePopup = m.completePopup.WithItems([]nooklsp.CompletionItem{
+		{
+			Label:            "Println",
+			InsertText:       "Println",
+			Kind:             nooklsp.CompletionKindFunction,
+			InsertTextFormat: nooklsp.InsertTextFormatPlainText,
+		},
+	}, 3)
+	m.overlay = overlayCompletion
+
+	updated, _ := m.acceptCompletion()
+	mm := updated.(model)
+	pp := mm.bufs.Active()
+	if pp.InSnippetMode() {
+		t.Errorf("plain-text accept should not enter snippet mode")
+	}
+	if !strings.Contains(pp.Line(row), "Println") {
+		t.Errorf("plain insert not visible: row=%d line=%q contents=%q", row, pp.Line(row), pp.Contents())
+	}
+	// The "Pri" prefix should have been replaced, not appended.
+	if strings.Contains(pp.Line(row), "PriPrintln") {
+		t.Errorf("prefix was not consumed: %q", pp.Line(row))
+	}
+}

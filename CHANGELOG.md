@@ -6,6 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-05-25
+
+LSP snippet completions land in `nook`. When a language server returns
+a completion item with `insertTextFormat: 2` (the Snippet format), the
+body parses through `snippets.Expand` and the editor enters snippet
+mode at the first tabstop. `Tab` and `Shift+Tab` walk placeholders,
+`Esc` exits. Bridges the v0.18.0 snippet engine to the v0.6.0 LSP
+completion accept path.
+
+The `Completion()` client capability now advertises
+`completionItem.snippetSupport: true`, so servers like gopls, rust-
+analyzer, and pyright actually send snippet-format completions instead
+of plain text. The `CompletionItem` type carries an `InsertTextFormat`
+field that round-trips through `completionItem/resolve` so the snippet
+flag is preserved when the documentation side panel re-fetches a
+highlighted item.
+
+The accept-path now dispatches on `InsertTextFormat`. Plain-text items
+take the original delete-prefix-then-insert path; snippet items take
+`editor.Pane.ExpandSnippet(prefixStart, exp)` which performs the
+range delete and insert atomically and sets up the placeholder ring.
+A status-bar hint reads `inserted <label> — Tab to advance, Esc to
+exit` so the snippet mode is legible to a user who didn't know they
+just triggered one.
+
+Also fixes a latent off-by-one in the plain-text branch of
+`acceptCompletion`: `editor.Pane.JumpTo` is 1-based, but the prefix-
+rewind path was passing 0-based row/col. The bug had been live since
+v0.6.0 but only surfaced once the snippet tests exercised the
+surrounding code. Cross-referenced the other JumpTo call sites in
+main.go (lines 1134, 2398, 2775) to confirm they were already
+1-based-correct.
+
 ## [0.28.0] — 2026-05-25
 
 `nook` now opens single files from the CLI. Three shapes work:

@@ -1304,6 +1304,36 @@ func TestDecodeResolvedCompletionUpdatesKindAndData(t *testing.T) {
 	}
 }
 
+// TestDecodeResolvedCompletionPreservesInsertTextFormat: when the server
+// only resolves documentation and doesn't echo back insertTextFormat, the
+// original item's format (snippet) must survive.
+func TestDecodeResolvedCompletionPreservesInsertTextFormat(t *testing.T) {
+	t.Parallel()
+	orig := CompletionItem{Label: "Foo", InsertText: "Foo($1)", InsertTextFormat: InsertTextFormatSnippet}
+	raw := json.RawMessage(`{"label":"Foo","documentation":"prose"}`)
+	got := decodeResolvedCompletion(raw, orig)
+	if got.InsertTextFormat != InsertTextFormatSnippet {
+		t.Errorf("insertTextFormat lost: %d", got.InsertTextFormat)
+	}
+}
+
+// TestDecodeResolvedCompletionUpdatesInsertTextFormat: when the server
+// returns a different insertTextFormat (e.g. resolves a placeholder
+// snippet body and switches the format), the merged item must reflect
+// the server's new value.
+func TestDecodeResolvedCompletionUpdatesInsertTextFormat(t *testing.T) {
+	t.Parallel()
+	orig := CompletionItem{Label: "Foo", InsertText: "Foo", InsertTextFormat: InsertTextFormatPlainText}
+	raw := json.RawMessage(`{"label":"Foo","insertText":"Foo($1)","insertTextFormat":2}`)
+	got := decodeResolvedCompletion(raw, orig)
+	if got.InsertTextFormat != InsertTextFormatSnippet {
+		t.Errorf("insertTextFormat should be snippet (2): %d", got.InsertTextFormat)
+	}
+	if got.InsertText != "Foo($1)" {
+		t.Errorf("insertText should update: %q", got.InsertText)
+	}
+}
+
 // TestMarshalAndDecodeDocStringForm covers the interface{} path through
 // when the typed protocol package gives us a plain Go string for the
 // Documentation field. The marshal/re-decode round-trip should land
