@@ -105,3 +105,29 @@ func TestCompletionCmdNilClient(t *testing.T) {
 		t.Errorf("Items should be empty on nil client, got %d", len(msg.Items))
 	}
 }
+
+// TestResolveCompletionCmdNilClient confirms a resolve call against a nil
+// client returns ResolveCompletionMsg{Err: errNoClient} carrying the
+// original item, so the host's "drop stale response by label" path stays
+// consistent when LSP is offline.
+func TestResolveCompletionCmdNilClient(t *testing.T) {
+	t.Parallel()
+	item := nooklsp.CompletionItem{Label: "Println", Detail: "func(...)"}
+	cmd := ResolveCompletionCmd(nil, item)
+	if cmd == nil {
+		t.Fatal("ResolveCompletionCmd returned nil tea.Cmd")
+	}
+	msg, ok := cmd().(ResolveCompletionMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want ResolveCompletionMsg", cmd())
+	}
+	if msg.ReqLabel != "Println" {
+		t.Errorf("ReqLabel not echoed: %q", msg.ReqLabel)
+	}
+	if msg.Item.Label != "Println" {
+		t.Errorf("Item.Label not echoed: %+v", msg.Item)
+	}
+	if !errors.Is(msg.Err, errNoClient) {
+		t.Errorf("err = %v, want errNoClient", msg.Err)
+	}
+}

@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -270,6 +271,9 @@ func TestLookupMethodsRejectUninitialized(t *testing.T) {
 	}
 	if _, err := c.Rename(context.Background(), "x.go", 0, 0, "Foo"); err == nil {
 		t.Error("rename on uninitialized client should error")
+	}
+	if _, err := c.ResolveCompletion(context.Background(), CompletionItem{Label: "Foo"}); err == nil {
+		t.Error("resolveCompletion on uninitialized client should error")
 	}
 }
 
@@ -1192,3 +1196,211 @@ func TestDecodeSignatureHelpUtf8Identifier(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+// TestDecodeResolvedCompletionMergesDocumentation: the server responded
+// with a fully-populated item; documentation now lands on the merged
+// result even though the original was empty.
+func TestDecodeResolvedCompletionMergesDocumentation(t *testing.T) {
+	t.Parallel()
+	orig := CompletionItem{
+		Label:      "Println",
+		InsertText: "Println",
+		Detail:     "func(a ...any) (n int, err error)",
+		Kind:       CompletionKindFunction,
+	}
+	raw := json.RawMessage(`{
+		"label":"Println",
+		"documentation":{"kind":"markdown","value":"Println formats using the default formats for its operands and writes to standard output."},
+		"detail":"func(a ...any) (n int, err error)"
+	}`)
+	got := decodeResolvedCompletion(raw, orig)
+	if got.Documentation == "" {
+		t.Fatalf("documentation not merged in: %+v", got)
+	}
+	if !strings.Contains(got.Documentation, "Println formats") {
+		t.Errorf("documentation text wrong: %q", got.Documentation)
+	}
+	if got.Label != "Println" {
+		t.Errorf("label clobbered: %q", got.Label)
+	}
+	if got.Detail != "func(a ...any) (n int, err error)" {
+		t.Errorf("detail clobbered: %q", got.Detail)
+	}
+	if got.Kind != CompletionKindFunction {
+		t.Errorf("kind clobbered: %v", got.Kind)
+	}
+}
+
+// TestDecodeResolvedCompletionPreservesOriginal: the server returned a
+// minimal response (no fields beyond label echo) — merged result should
+// keep the original's detail/kind/insertText untouched.
+func TestDecodeResolvedCompletionPreservesOriginal(t *testing.T) {
+	t.Parallel()
+	orig := CompletionItem{
+		Label:         "Foo",
+		InsertText:    "Foo()",
+		Detail:        "func() int",
+		Documentation: "old docs",
+		Kind:          CompletionKindFunction,
+		Data:          json.RawMessage(`{"token":42}`),
+	}
+	raw := json.RawMessage(`{"label":"Foo"}`)
+	got := decodeResolvedCompletion(raw, orig)
+	if got.InsertText != "Foo()" {
+		t.Errorf("insertText: %q", got.InsertText)
+	}
+	if got.Detail != "func() int" {
+		t.Errorf("detail: %q", got.Detail)
+	}
+	if got.Documentation != "old docs" {
+		t.Errorf("documentation lost: %q", got.Documentation)
+	}
+	if got.Kind != CompletionKindFunction {
+		t.Errorf("kind lost: %v", got.Kind)
+	}
+	if string(got.Data) != `{"token":42}` {
+		t.Errorf("data lost: %s", string(got.Data))
+	}
+}
+
+// TestDecodeResolvedCompletionEmptyRaw: server returned a null response
+// (some implementations do this for items they can't resolve). The
+// original item must round-trip unchanged.
+func TestDecodeResolvedCompletionEmptyRaw(t *testing.T) {
+	t.Parallel()
+	orig := CompletionItem{Label: "X", InsertText: "X"}
+	got := decodeResolvedCompletion(nil, orig)
+	if got.Label != "X" || got.InsertText != "X" {
+		t.Errorf("empty raw should return original verbatim: %+v", got)
+	}
+}
+
+// TestDecodeResolvedCompletionStringDoc: the server returned a plain
+// string for documentation (older spec shape). Decoded text should match.
+func TestDecodeResolvedCompletionStringDoc(t *testing.T) {
+	t.Parallel()
+	orig := CompletionItem{Label: "Hello"}
+	raw := json.RawMessage(`{"label":"Hello","documentation":"Greets the user."}`)
+	got := decodeResolvedCompletion(raw, orig)
+	if got.Documentation != "Greets the user." {
+		t.Errorf("string-form doc: %q", got.Documentation)
+	}
+}
+
+// TestDecodeResolvedCompletionUpdatesKindAndData: when the server
+// includes a new Kind value AND a new opaque Data token, both should be
+// preserved on the merged item so a follow-up resolve call (if a server
+// allows chained resolves) can use them.
+func TestDecodeResolvedCompletionUpdatesKindAndData(t *testing.T) {
+	t.Parallel()
+	orig := CompletionItem{Label: "X", Kind: CompletionKindText, Data: json.RawMessage(`{"a":1}`)}
+	raw := json.RawMessage(`{"label":"X","kind":3,"data":{"a":2}}`)
+	got := decodeResolvedCompletion(raw, orig)
+	if got.Kind != CompletionKindFunction {
+		t.Errorf("kind should update to function (3): %v", got.Kind)
+	}
+	if string(got.Data) != `{"a":2}` {
+		t.Errorf("data should update to new token: %s", string(got.Data))
+	}
+}
+
+// TestMarshalAndDecodeDocStringForm covers the interface{} path through
+// when the typed protocol package gives us a plain Go string for the
+// Documentation field. The marshal/re-decode round-trip should land
+// the same string.
+func TestMarshalAndDecodeDocStringForm(t *testing.T) {
+	t.Parallel()
+	got := marshalAndDecodeDoc("plain prose")
+	if got != "plain prose" {
+		t.Errorf("string round-trip: %q", got)
+	}
+}
+
+// TestMarshalAndDecodeDocMarkupForm covers the same path for a
+// MarkupContent shape passed through map[string]interface{} (the
+// concrete type the protocol package surfaces).
+func TestMarshalAndDecodeDocMarkupForm(t *testing.T) {
+	t.Parallel()
+	got := marshalAndDecodeDoc(map[string]interface{}{
+		"kind":  "markdown",
+		"value": "**bold** docs",
+	})
+	if got != "**bold** docs" {
+		t.Errorf("markup round-trip: %q", got)
+	}
+}
+
+// TestMarshalAndDecodeDocNil returns the empty string for a nil
+// interface (the common case when servers omit documentation in the
+// initial completion list and only attach it on resolve).
+func TestMarshalAndDecodeDocNil(t *testing.T) {
+	t.Parallel()
+	if got := marshalAndDecodeDoc(nil); got != "" {
+		t.Errorf("nil doc should be empty: %q", got)
+	}
+}
+
+// TestMarshalRawPreservesShape verifies that opaque server tokens
+// survive a round trip through the marshalRaw helper.
+func TestMarshalRawPreservesShape(t *testing.T) {
+	t.Parallel()
+	got := marshalRaw(map[string]interface{}{
+		"resolveToken": "abc123",
+		"version":      2,
+	})
+	if len(got) == 0 {
+		t.Fatalf("nil result for non-nil input")
+	}
+	var roundtrip map[string]interface{}
+	if err := json.Unmarshal(got, &roundtrip); err != nil {
+		t.Fatalf("round-trip unmarshal failed: %v", err)
+	}
+	if roundtrip["resolveToken"] != "abc123" {
+		t.Errorf("token lost: %v", roundtrip["resolveToken"])
+	}
+	if v, _ := roundtrip["version"].(float64); v != 2 {
+		t.Errorf("version lost: %v", roundtrip["version"])
+	}
+}
+
+// TestMarshalRawNilInterface returns the nil RawMessage rather than
+// the JSON literal "null" so omitempty on the resolve request skips
+// the field entirely.
+func TestMarshalRawNilInterface(t *testing.T) {
+	t.Parallel()
+	if got := marshalRaw(nil); got != nil {
+		t.Errorf("nil input should produce nil RawMessage, got %q", string(got))
+	}
+}
+
+// TestCompletionKindToProtocolRoundTrip exhaustively walks each nook
+// kind through completionKindToProtocol -> completionKindOf and asserts
+// the round trip is lossless for every named kind (the implicit
+// CompletionKindText falls outside this set since it's our fallback
+// bucket, not a wire-level enum).
+func TestCompletionKindToProtocolRoundTrip(t *testing.T) {
+	t.Parallel()
+	kinds := []CompletionKind{
+		CompletionKindMethod, CompletionKindFunction, CompletionKindConstructor,
+		CompletionKindField, CompletionKindVariable, CompletionKindClass,
+		CompletionKindInterface, CompletionKindModule, CompletionKindProperty,
+		CompletionKindUnit, CompletionKindValue, CompletionKindEnum,
+		CompletionKindKeyword, CompletionKindSnippet, CompletionKindColor,
+		CompletionKindFile, CompletionKindReference, CompletionKindFolder,
+		CompletionKindEnumMember, CompletionKindConstant, CompletionKindStruct,
+		CompletionKindEvent, CompletionKindOperator, CompletionKindTypeParameter,
+	}
+	for _, k := range kinds {
+		p := completionKindToProtocol(k)
+		if p == 0 {
+			t.Errorf("kind %q lost in to-protocol mapping", k)
+			continue
+		}
+		if back := completionKindOf(p); back != k {
+			t.Errorf("round trip: %q -> %v -> %q", k, p, back)
+		}
+	}
+	if got := completionKindToProtocol(CompletionKindText); got != 0 {
+		t.Errorf("CompletionKindText should map to 0 (omitempty), got %v", got)
+	}
+}

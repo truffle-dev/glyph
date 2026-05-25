@@ -66,6 +66,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/bufman"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/codeaction"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/completedoc"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/config"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/diagnostics"
@@ -190,6 +191,13 @@ type model struct {
 	completeReqPath string
 	completeReqRow  int
 	completeReqCol  int
+
+	// LSP completion-doc side panel. Auto-fires completionItem/resolve as
+	// the user navigates the popup so the highlighted item's documentation
+	// renders beside the menu. docReqLabel pins the most recent request so
+	// a late response for an item the user has scrolled past gets dropped.
+	docPane     completedoc.Pane
+	docReqLabel string
 
 	// In-file find/replace overlay (Ctrl+F / Ctrl+H). The host owns search
 	// execution; the finder owns input state and renders the bar.
@@ -438,6 +446,7 @@ func newModel(root string) model {
 		snipLib:        snipLib,
 		tasksPane:      tasks.NewPane(t, root),
 		sigPane:        signature.New(),
+		docPane:        completedoc.New(),
 	}
 }
 
@@ -1038,6 +1047,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.completePopup = m.completePopup.WithItems(msg.Items, msg.PrefixLen)
 		m.overlay = overlayCompletion
+		return m, m.resolveSelectedCompletionCmd()
+
+	case lookup.ResolveCompletionMsg:
+		// Discard if the user has moved past the item this resolve was
+		// fired for, or if the completion popup has closed entirely.
+		if m.overlay != overlayCompletion || msg.ReqLabel != m.docReqLabel {
+			return m, nil
+		}
+		if msg.Err != nil {
+			// Resolve is best-effort: a server that doesn't support it
+			// just returns the original item back to us. Don't write to
+			// status, the popup is a hot path and noise would be worse
+			// than no docs at all.
+			return m, nil
+		}
+		m.docPane = m.docPane.Open(msg.Item)
 		return m, nil
 
 	case lookup.FormattingMsg:
@@ -1261,10 +1286,10 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch km.Type {
 		case tea.KeyUp:
 			m.completePopup = m.completePopup.MoveUp()
-			return m, nil
+			return m, m.resolveSelectedCompletionCmd()
 		case tea.KeyDown:
 			m.completePopup = m.completePopup.MoveDown()
-			return m, nil
+			return m, m.resolveSelectedCompletionCmd()
 		case tea.KeyEnter:
 			return m.acceptCompletion()
 		case tea.KeyEsc:
@@ -1952,9 +1977,28 @@ func (m *model) dismissCompletion() {
 	m.completeReqPath = ""
 	m.completeReqRow = 0
 	m.completeReqCol = 0
+	m.docPane = m.docPane.Close()
+	m.docReqLabel = ""
 	if m.overlay == overlayCompletion {
 		m.overlay = overlayNone
 	}
+}
+
+// resolveSelectedCompletionCmd fires completionItem/resolve for the
+// currently-highlighted popup item so the doc side-panel can render its
+// documentation. Updates docReqLabel to the new pin and returns nil when
+// the popup is empty or has no selection. Tea will dispatch the resulting
+// ResolveCompletionMsg back through Update where the staleness gate drops
+// late responses for items the user has already navigated past.
+func (m *model) resolveSelectedCompletionCmd() tea.Cmd {
+	item, ok := m.completePopup.Selected()
+	if !ok {
+		m.docPane = m.docPane.Close()
+		m.docReqLabel = ""
+		return nil
+	}
+	m.docReqLabel = item.Label
+	return lookup.ResolveCompletionCmd(m.lsp, item)
 }
 
 // triggerCodeActions fires a textDocument/codeAction request at the cursor
@@ -3271,6 +3315,24 @@ func (m model) View() string {
 			maxRows = 4
 		}
 		box := m.completePopup.View(t, boxW, maxRows)
+		// Stitch the doc side panel beside the menu when the server has
+		// resolved documentation for the highlighted item. Skip if the
+		// screen is too narrow to fit menu + gap + min-doc-width without
+		// crowding the editor underneath.
+		if m.docPane.IsOpen() {
+			docW := boxW
+			if docW < 36 {
+				docW = 36
+			}
+			needed := boxW + 1 + docW
+			if needed <= m.width-2 {
+				docH := maxRows + 2
+				doc := m.docPane.WithSize(docW, docH).View(t)
+				if doc != "" {
+					box = lipgloss.JoinHorizontal(lipgloss.Top, box, " ", doc)
+				}
+			}
+		}
 		float := centerOverlay(m.width, m.height-1, box)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}

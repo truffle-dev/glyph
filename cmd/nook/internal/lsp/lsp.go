@@ -131,6 +131,9 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 						SnippetSupport:          false,
 						CommitCharactersSupport: false,
 						DocumentationFormat:     []protocol.MarkupKind{protocol.PlainText, protocol.Markdown},
+						ResolveSupport: &protocol.CompletionTextDocumentClientCapabilitiesItemResolveSupport{
+							Properties: []string{"documentation", "detail"},
+						},
 					},
 					ContextSupport: true,
 				},
@@ -327,12 +330,18 @@ const (
 // CompletionItem is the host-side view of one server completion entry. Label
 // is what the popup shows; InsertText is what to type into the buffer when
 // the user accepts (falls back to Label if the server didn't send one). Detail
-// is a short type-or-source string (e.g. "func(s string) int").
+// is a short type-or-source string (e.g. "func(s string) int"). Documentation
+// is the long-form prose (often markdown) — populated either on first
+// Completion when the server returns it, or later via ResolveCompletion when
+// the popup's selection lands on this item. Data is the opaque server token
+// LSP requires we round-trip through completionItem/resolve verbatim.
 type CompletionItem struct {
-	Label      string
-	InsertText string
-	Detail     string
-	Kind       CompletionKind
+	Label         string
+	InsertText    string
+	Detail        string
+	Documentation string
+	Kind          CompletionKind
+	Data          json.RawMessage
 }
 
 // HoverInfo carries the textual content of a hover response. Empty Contents
@@ -471,10 +480,12 @@ func (c *Client) Completion(ctx context.Context, path string, line, col int) ([]
 	out := make([]CompletionItem, 0, len(res.Items))
 	for _, it := range res.Items {
 		ci := CompletionItem{
-			Label:      it.Label,
-			InsertText: it.InsertText,
-			Detail:     it.Detail,
-			Kind:       completionKindOf(it.Kind),
+			Label:         it.Label,
+			InsertText:    it.InsertText,
+			Detail:        it.Detail,
+			Documentation: marshalAndDecodeDoc(it.Documentation),
+			Kind:          completionKindOf(it.Kind),
+			Data:          marshalRaw(it.Data),
 		}
 		if ci.InsertText == "" {
 			ci.InsertText = it.Label
@@ -482,6 +493,108 @@ func (c *Client) Completion(ctx context.Context, path string, line, col int) ([]
 		out = append(out, ci)
 	}
 	return out, nil
+}
+
+// ResolveCompletion sends completionItem/resolve for one item and returns the
+// server's enriched copy. Servers use this to attach expensive-to-compute
+// documentation lazily — the popup only resolves the highlighted item rather
+// than every candidate. The original item's opaque Data field is round-tripped
+// verbatim per spec.
+func (c *Client) ResolveCompletion(ctx context.Context, item CompletionItem) (CompletionItem, error) {
+	if c == nil || c.conn == nil {
+		return CompletionItem{}, errors.New("lsp: client not initialized")
+	}
+	req := map[string]any{
+		"label": item.Label,
+	}
+	if item.InsertText != "" && item.InsertText != item.Label {
+		req["insertText"] = item.InsertText
+	}
+	if item.Detail != "" {
+		req["detail"] = item.Detail
+	}
+	if k := completionKindToProtocol(item.Kind); k != 0 {
+		req["kind"] = k
+	}
+	if len(item.Data) > 0 {
+		req["data"] = item.Data
+	}
+	var raw json.RawMessage
+	if _, err := c.conn.Call(ctx, "completionItem/resolve", req, &raw); err != nil {
+		return CompletionItem{}, fmt.Errorf("lsp: completionItem/resolve: %w", err)
+	}
+	return decodeResolvedCompletion(raw, item), nil
+}
+
+// marshalAndDecodeDoc handles the LSP CompletionItem.Documentation field,
+// which arrives via the typed package as interface{} but is either a plain
+// string or a MarkupContent struct. We marshal back to JSON to land on the
+// same RawMessage shape decodeMarkupOrString already understands.
+func marshalAndDecodeDoc(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return decodeMarkupOrString(raw)
+}
+
+// marshalRaw round-trips an arbitrary interface{} value into a RawMessage so
+// we can pass it verbatim back through completionItem/resolve. Returns nil
+// for nil input (the field stays omitempty on the resolve request).
+func marshalRaw(v interface{}) json.RawMessage {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(b)
+}
+
+// decodeResolvedCompletion folds the server's resolved item back into our
+// nook-side shape, falling back to the original item's fields when the
+// server omits anything. Some servers only return the fields they changed.
+func decodeResolvedCompletion(raw json.RawMessage, orig CompletionItem) CompletionItem {
+	if len(raw) == 0 {
+		return orig
+	}
+	var got struct {
+		Label         string                      `json:"label"`
+		InsertText    string                      `json:"insertText,omitempty"`
+		Detail        string                      `json:"detail,omitempty"`
+		Documentation json.RawMessage             `json:"documentation,omitempty"`
+		Kind          protocol.CompletionItemKind `json:"kind,omitempty"`
+		Data          json.RawMessage             `json:"data,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		return orig
+	}
+	merged := orig
+	if got.Label != "" {
+		merged.Label = got.Label
+	}
+	if got.InsertText != "" {
+		merged.InsertText = got.InsertText
+	}
+	if got.Detail != "" {
+		merged.Detail = got.Detail
+	}
+	if len(got.Documentation) > 0 {
+		if d := decodeMarkupOrString(got.Documentation); d != "" {
+			merged.Documentation = d
+		}
+	}
+	if got.Kind != 0 {
+		merged.Kind = completionKindOf(got.Kind)
+	}
+	if len(got.Data) > 0 {
+		merged.Data = got.Data
+	}
+	return merged
 }
 
 // Hover returns the textual hover content at the given 0-indexed line and
@@ -1483,6 +1596,64 @@ func completionKindOf(k protocol.CompletionItemKind) CompletionKind {
 	default:
 		return CompletionKindText
 	}
+}
+
+// completionKindToProtocol inverts completionKindOf so the resolve request
+// can carry the kind we observed on first Completion. Servers use this hint
+// to disambiguate when two items share a label. Returns 0 for the empty
+// kind, which json.Marshal omits via omitempty so the request stays small.
+func completionKindToProtocol(k CompletionKind) protocol.CompletionItemKind {
+	switch k {
+	case CompletionKindMethod:
+		return protocol.CompletionItemKindMethod
+	case CompletionKindFunction:
+		return protocol.CompletionItemKindFunction
+	case CompletionKindConstructor:
+		return protocol.CompletionItemKindConstructor
+	case CompletionKindField:
+		return protocol.CompletionItemKindField
+	case CompletionKindVariable:
+		return protocol.CompletionItemKindVariable
+	case CompletionKindClass:
+		return protocol.CompletionItemKindClass
+	case CompletionKindInterface:
+		return protocol.CompletionItemKindInterface
+	case CompletionKindModule:
+		return protocol.CompletionItemKindModule
+	case CompletionKindProperty:
+		return protocol.CompletionItemKindProperty
+	case CompletionKindUnit:
+		return protocol.CompletionItemKindUnit
+	case CompletionKindValue:
+		return protocol.CompletionItemKindValue
+	case CompletionKindEnum:
+		return protocol.CompletionItemKindEnum
+	case CompletionKindKeyword:
+		return protocol.CompletionItemKindKeyword
+	case CompletionKindSnippet:
+		return protocol.CompletionItemKindSnippet
+	case CompletionKindColor:
+		return protocol.CompletionItemKindColor
+	case CompletionKindFile:
+		return protocol.CompletionItemKindFile
+	case CompletionKindReference:
+		return protocol.CompletionItemKindReference
+	case CompletionKindFolder:
+		return protocol.CompletionItemKindFolder
+	case CompletionKindEnumMember:
+		return protocol.CompletionItemKindEnumMember
+	case CompletionKindConstant:
+		return protocol.CompletionItemKindConstant
+	case CompletionKindStruct:
+		return protocol.CompletionItemKindStruct
+	case CompletionKindEvent:
+		return protocol.CompletionItemKindEvent
+	case CompletionKindOperator:
+		return protocol.CompletionItemKindOperator
+	case CompletionKindTypeParameter:
+		return protocol.CompletionItemKindTypeParameter
+	}
+	return 0
 }
 
 // Shutdown sends shutdown+exit, waits briefly, then kills the process. Safe

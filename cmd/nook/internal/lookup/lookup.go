@@ -281,3 +281,29 @@ func SignatureHelpCmd(client *nooklsp.Client, path string, row, col int) tea.Cmd
 		return SignatureHelpMsg{Path: path, Row: row, Col: col, Info: info, Err: err}
 	}
 }
+
+// ResolveCompletionMsg carries the result of a completionItem/resolve
+// request back to the host. The original item is echoed via ReqLabel so
+// the host can drop stale responses (the user navigated past the item
+// before the server answered).
+type ResolveCompletionMsg struct {
+	ReqLabel string
+	Item     nooklsp.CompletionItem
+	Err      error
+}
+
+// ResolveCompletionCmd returns a tea.Cmd that calls client.ResolveCompletion
+// and wraps the result in ResolveCompletionMsg. nil-client returns errNoClient
+// so the host can pump resolve requests on every popup-selection-change
+// without branching on LSP readiness.
+func ResolveCompletionCmd(client *nooklsp.Client, item nooklsp.CompletionItem) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return ResolveCompletionMsg{ReqLabel: item.Label, Item: item, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		resolved, err := client.ResolveCompletion(ctx, item)
+		return ResolveCompletionMsg{ReqLabel: item.Label, Item: resolved, Err: err}
+	}
+}

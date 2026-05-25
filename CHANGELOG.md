@@ -6,6 +6,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-05-25
+
+LSP completion documentation side panel in `nook`. Open the completion
+popup (Ctrl+Space) and a small bordered pane appears to the right of the
+menu showing the highlighted item's resolved documentation. Move the
+selection with `↑` / `↓` and the side pane re-fetches via
+`completionItem/resolve`, so the docs always match the row the user is
+sitting on. Dismiss the popup (Esc, Enter to accept, or any non-nav key)
+and the doc pane closes with it.
+
+Resolve responses are pinned to the item label that was highlighted when
+the request fired. A late response that arrived after the user scrolled
+past gets dropped by the staleness gate instead of painting docs for a
+row that is no longer visible. The pane is best-effort by design: a
+server that doesn't implement resolve, or returns an item with no detail
+and no documentation, silently leaves the pane closed rather than
+writing to the status bar.
+
+The pane composes from the same theme tokens as the rest of the editor
+(rounded border with the theme `Border` color, `Surface` background) and
+sits in the same float layout as the completion popup, only rendered
+when the screen is wide enough to fit `menu + gap + min(36) doc`. Layout
+is responsive: the doc pane width matches the popup width so the two
+boxes read as one widget; height matches the popup row count plus the
+border budget.
+
+LSP documentation has two on-wire shapes — a plain string or a
+`MarkupContent { kind, value }` struct — and the client accepts either.
+The opaque `data` field that some servers (gopls, rust-analyzer) attach
+to completion items gets round-tripped through `completionItem/resolve`
+verbatim via `json.RawMessage` so the server can find its bookkeeping
+when it answers. The client advertises `completion.resolveSupport` with
+`["documentation", "detail"]` so servers know which properties they can
+defer until resolve time.
+
+The kind tag in the side panel's header matches the outline pane's
+scheme — `fn` for function, `mt` for method, `st` for struct, and
+twenty-one other two-letter tags — so the editor reads consistently
+across symbol surfaces. Detail lines that duplicate the label (some
+servers echo) are suppressed to keep the header compact. Long
+documentation gets word-wrapped to the inner width with hard-break for
+over-long tokens, and clamped at the pane's row budget with a trailing
+" …" row to signal truncation.
+
+The completedoc package is unit-tested across twenty-plus cases covering
+open/close state, size clamping, label/detail/documentation rendering,
+suppression of redundant detail, kind-tag coverage for all twenty-four
+named completion kinds, line clamping with ellipsis, paragraph wrapping
+with hard-break, and view refusal below the minimum width. The resolve
+client path is tested across documentation merging, original-field
+preservation, polymorphic shape decoding, and kind round-tripping.
+
 ## [0.26.0] — 2026-05-25
 
 LSP signature help in `nook`. Type `(` inside a function call and a
