@@ -6,6 +6,59 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-05-25
+
+Debug adapter support lands in `nook`. The editor speaks the
+[Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
+over stdio with `dlv dap`, so Go programs can be debugged from inside
+the editor with breakpoints, step-over / step-in / step-out, pause,
+and a stop marker that follows the program counter through the
+running stack.
+
+The wire client is hand-rolled (`cmd/nook/internal/dap`) over the
+Content-Length framing JSON-RPC envelope DAP shares with LSP. No
+`go-dap` dependency. The client exposes `Initialize`, `Launch`,
+`SetBreakpoints`, `ConfigurationDone`, `Continue`, `Pause`, `Next`,
+`StepIn`, `StepOut`, `StackTrace`, `Terminate`, `Disconnect`, and a
+single `Events()` channel that surfaces `stopped`, `continued`,
+`output`, `terminated`, and `exited` envelopes as typed values. A
+`NewWithStreams` constructor lets tests drive the client with a pair
+of `io.Pipe` halves and an in-process fake adapter, so the
+event-loop wiring is exercised under `go test` with no `dlv` on the
+host.
+
+Breakpoints live in `cmd/nook/internal/breakpoints`, a per-path
+`map[int]bool` behind a `sync.RWMutex`. Lines are 1-based on the
+wire and in the store, 0-based when the editor paints the gutter,
+so the model does the conversion once at the boundary and the rest
+of the code reads the natural form for its layer.
+
+Six new bindings hang off the editor:
+
+```
+F9            toggle breakpoint at cursor row
+F5            launch (when no session) / continue (when paused)
+alt+F5        terminate the running session
+F6            pause a running session
+F10           step over
+F11           step in
+alt+F11       step out
+```
+
+(`Shift+F5` is the conventional DAP terminate key but `bubbletea`
+doesn't carry `Shift+F<n>` through the input stream, so terminate
+moves to `alt+F5` and step-out moves to `alt+F11`. Documented in the
+`?` help overlay's new "Debug (Go via delve)" section.)
+
+The gutter column now resolves with a fixed precedence: the program
+counter marker `▶` wins, then the breakpoint dot `●`, then the git
+change sigil. The status bar carries a new `dbg:<state> ●N` segment
+showing the current adapter state (`launching` / `running` /
+`paused` / `terminated`) and the live breakpoint count, colored by
+state. When a `stopped` event arrives the editor jumps to the top
+stack frame, opens the file if it isn't already on a tab, and lands
+the cursor on the paused line.
+
 ## [0.29.0] — 2026-05-25
 
 LSP snippet completions land in `nook`. When a language server returns

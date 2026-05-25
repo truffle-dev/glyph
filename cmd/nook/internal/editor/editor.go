@@ -126,6 +126,21 @@ type Pane struct {
 	// composes with the diagnostic sigil to its right.
 	lineMarkers map[int]gitgutter.Marker
 
+	// breakpointRows maps 0-based row to whether a DAP breakpoint is set
+	// on that row. The host pushes a fresh map after each toggle so the
+	// gutter renders a red dot in place of the git marker. The git marker
+	// is hidden while a breakpoint is set on the same row (BPs are
+	// transient; git changes remain visible elsewhere via alt+m).
+	breakpointRows map[int]bool
+
+	// stoppedAtRow is the 0-based row where the debugger is currently
+	// paused in this file. hasStop disambiguates row 0 from "no stop
+	// active." When hasStop is true the gutter renders a yellow ▶ in
+	// place of the breakpoint and git markers so the user can see where
+	// execution is.
+	stoppedAtRow int
+	hasStop      bool
+
 	// inlayHints maps 0-based row to the inlay hints rendered on that row.
 	// The host updates it via SetInlayHints whenever the LSP responds with
 	// a fresh batch for the open file. nil disables hint rendering.
@@ -473,6 +488,44 @@ func (p Pane) LineMarkerAt(row int) gitgutter.Marker {
 		return gitgutter.None
 	}
 	return p.lineMarkers[row]
+}
+
+// SetBreakpointRows replaces the per-line breakpoint map. nil clears it.
+// The map is keyed by 0-based row; only rows present with true value
+// render a breakpoint marker.
+func (p Pane) SetBreakpointRows(rows map[int]bool) Pane {
+	p.breakpointRows = rows
+	return p
+}
+
+// IsBreakpoint reports whether a DAP breakpoint is set on a 0-based row.
+func (p Pane) IsBreakpoint(row int) bool {
+	if p.breakpointRows == nil {
+		return false
+	}
+	return p.breakpointRows[row]
+}
+
+// SetStoppedAtRow marks the 0-based row where the debugger is currently
+// paused in this file. Pass -1 to clear the indicator.
+func (p Pane) SetStoppedAtRow(row int) Pane {
+	if row < 0 {
+		p.stoppedAtRow = 0
+		p.hasStop = false
+	} else {
+		p.stoppedAtRow = row
+		p.hasStop = true
+	}
+	return p
+}
+
+// StoppedAtRow returns the 0-based row where execution is paused in this
+// file, or -1 when no stop is active.
+func (p Pane) StoppedAtRow() int {
+	if !p.hasStop {
+		return -1
+	}
+	return p.stoppedAtRow
 }
 
 // SetInlayHints replaces the per-row inlay hint map. nil clears it. The map
@@ -1407,6 +1460,8 @@ func (p Pane) View() string {
 	gitAddStyle := lipgloss.NewStyle().Foreground(t.Success)
 	gitModStyle := lipgloss.NewStyle().Foreground(t.Warning)
 	gitDelStyle := lipgloss.NewStyle().Foreground(t.Error)
+	bpStyle := lipgloss.NewStyle().Foreground(t.Error).Bold(true)
+	stopStyle := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
 	header := lipgloss.NewStyle().Foreground(t.TextMuted).Bold(true)
 	dirty := lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
 	muted := lipgloss.NewStyle().Foreground(t.TextMuted)
@@ -1456,10 +1511,12 @@ func (p Pane) View() string {
 				gut = gutterStyle.Render(num)
 			}
 		}
-		// Two-character marker column. First char carries the git-diff state
-		// (added / modified / deleted-above); second char carries the worst
-		// LSP diagnostic. Either can be empty (space + │) so the column width
-		// stays fixed regardless of which signals are active.
+		// Two-character marker column. First char carries the debugger
+		// stop arrow (▶) when execution paused here, the DAP breakpoint
+		// dot (●), or the git-diff sigil (▎/▔). Precedence is
+		// stop > breakpoint > git. Second char carries the worst LSP
+		// diagnostic. Either can be empty (space + │) so the column
+		// width stays fixed regardless of which signals are active.
 		gitChar := " "
 		switch p.LineMarkerAt(i) {
 		case gitgutter.Added:
@@ -1468,6 +1525,12 @@ func (p Pane) View() string {
 			gitChar = gitModStyle.Render("▎")
 		case gitgutter.DeletedAbove:
 			gitChar = gitDelStyle.Render("▔")
+		}
+		if p.IsBreakpoint(i) {
+			gitChar = bpStyle.Render("●")
+		}
+		if p.hasStop && p.stoppedAtRow == i {
+			gitChar = stopStyle.Render("▶")
 		}
 		diagChar := "│"
 		switch p.DiagnosticAt(i) {

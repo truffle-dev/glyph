@@ -116,6 +116,15 @@ func Default() []Section {
 			{"ctrl+c", "Kill the running task"},
 			{"esc", "Close (kills if still running)"},
 		}},
+		{Name: "Debug (Go via delve)", Bindings: []Binding{
+			{"f9", "Toggle breakpoint at the cursor row"},
+			{"f5", "Launch (or continue when paused)"},
+			{"alt+f5", "Terminate the running session"},
+			{"f6", "Pause a running session"},
+			{"f10", "Step over"},
+			{"f11", "Step in"},
+			{"alt+f11", "Step out"},
+		}},
 		{Name: "Language server", Bindings: []Binding{
 			{"alt+i", "Hover info for symbol under cursor"},
 			{"ctrl+]", "Go to definition"},

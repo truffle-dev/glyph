@@ -2062,3 +2062,87 @@ func TestAcceptCompletionPlainTextStillWorks(t *testing.T) {
 		t.Errorf("prefix was not consumed: %q", pp.Line(row))
 	}
 }
+
+func TestF9TogglesBreakpointOnActiveBuffer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc main() {\n\tprintln(1)\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(dir)
+	m.bufs.OpenOrSwitch(path)
+	if p := m.bufs.Active(); p != nil {
+		*p = p.JumpTo(4, 1) // row 4 (1-based) → cursor row 3
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyF9})
+	mm := updated.(model)
+	if !mm.bpStore.Has(path, 4) {
+		t.Fatalf("F9 did not record breakpoint at row 4 in store; rows=%v", mm.bpStore.Rows(path))
+	}
+	p := mm.bufs.Active()
+	if p == nil || !p.IsBreakpoint(3) {
+		t.Errorf("F9 did not mark row 3 on pane as breakpoint")
+	}
+	if !strings.Contains(mm.status, "breakpoint set") {
+		t.Errorf("status not updated; got %q", mm.status)
+	}
+
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyF9})
+	mm = updated.(model)
+	if mm.bpStore.Has(path, 4) {
+		t.Errorf("second F9 did not clear breakpoint")
+	}
+	p = mm.bufs.Active()
+	if p != nil && p.IsBreakpoint(3) {
+		t.Errorf("pane still shows breakpoint after clear")
+	}
+	if !strings.Contains(mm.status, "breakpoint cleared") {
+		t.Errorf("status not updated; got %q", mm.status)
+	}
+}
+
+func TestF9NoOpWhenNoBufferOpen(t *testing.T) {
+	m := newModel(t.TempDir())
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyF9})
+	mm := updated.(model)
+	if cmd != nil {
+		t.Errorf("F9 with no buffer should not return a cmd")
+	}
+	if !strings.Contains(mm.status, "no file open") {
+		t.Errorf("status: %q", mm.status)
+	}
+}
+
+func TestDebugStatusBarSegmentAppearsWithBreakpoints(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(path, []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(dir)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.bufs.OpenOrSwitch(path)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyF9})
+	mm := updated.(model)
+	bar := mm.renderStatusBar()
+	if !strings.Contains(stripANSI(bar), "dbg") {
+		t.Errorf("status bar missing dbg segment: %q", stripANSI(bar))
+	}
+}
+
+func stripANSI(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			continue
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
+}

@@ -481,6 +481,79 @@ func TestSetLineMarkers_AccessorRoundtrip(t *testing.T) {
 	}
 }
 
+func TestSetBreakpointRows_AccessorRoundtrip(t *testing.T) {
+	p := NewPane(theme.Default)
+	if p.IsBreakpoint(0) {
+		t.Errorf("unset map should report false")
+	}
+	p = p.SetBreakpointRows(map[int]bool{2: true, 7: true})
+	if !p.IsBreakpoint(2) || !p.IsBreakpoint(7) {
+		t.Errorf("expected rows 2 and 7 set")
+	}
+	if p.IsBreakpoint(3) {
+		t.Errorf("row 3 not set should report false")
+	}
+	p = p.SetBreakpointRows(nil)
+	if p.IsBreakpoint(2) {
+		t.Errorf("after clear, row 2 still reports true")
+	}
+}
+
+func TestSetStoppedAtRow(t *testing.T) {
+	p := NewPane(theme.Default)
+	if got := p.StoppedAtRow(); got != -1 {
+		t.Errorf("fresh pane StoppedAtRow = %d; want -1", got)
+	}
+	p = p.SetStoppedAtRow(5)
+	if got := p.StoppedAtRow(); got != 5 {
+		t.Errorf("after set 5, StoppedAtRow = %d", got)
+	}
+	p = p.SetStoppedAtRow(0)
+	if got := p.StoppedAtRow(); got != 0 {
+		t.Errorf("after set 0, StoppedAtRow = %d", got)
+	}
+	p = p.SetStoppedAtRow(-1)
+	if got := p.StoppedAtRow(); got != -1 {
+		t.Errorf("after clear, StoppedAtRow = %d", got)
+	}
+}
+
+func TestViewRendersBreakpointAndStopMarkers(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 6).Focus()
+	p = p.ReplaceAllFromString("alpha\nbeta\ngamma\n")
+	baseline := strings.Count(plain(p.View()), "●")
+
+	p = p.SetBreakpointRows(map[int]bool{1: true})
+	withBP := strings.Count(plain(p.View()), "●")
+	if withBP != baseline+1 {
+		t.Errorf("breakpoint dot count = %d; want baseline+1 = %d", withBP, baseline+1)
+	}
+
+	p = p.SetStoppedAtRow(1)
+	out := plain(p.View())
+	if !strings.Contains(out, "▶") {
+		t.Errorf("expected stopped arrow when paused at row 1:\n%s", out)
+	}
+	withStop := strings.Count(out, "●")
+	if withStop != baseline {
+		t.Errorf("after stop, ● count = %d; want baseline %d (BP dot hidden under arrow)", withStop, baseline)
+	}
+}
+
+func TestStopMarkerOverridesGitSigil(t *testing.T) {
+	p := NewPane(theme.Default).WithSize(60, 6).Focus()
+	p = p.ReplaceAllFromString("first\n")
+	p = p.SetLineMarkers(map[int]gitgutter.Marker{0: gitgutter.Modified})
+	p = p.SetStoppedAtRow(0)
+	out := plain(p.View())
+	if !strings.Contains(out, "▶") {
+		t.Errorf("expected stop arrow when paused:\n%s", out)
+	}
+	if strings.Contains(out, "▎") {
+		t.Errorf("git modified sigil should be hidden under stop arrow:\n%s", out)
+	}
+}
+
 func TestViewRendersGitSigils(t *testing.T) {
 	p := NewPane(theme.Default).WithSize(60, 8).Focus()
 	// Three buffer lines, one for each marker state.

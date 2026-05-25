@@ -33,6 +33,10 @@
 //	ctrl+space LSP completion popup (↑/↓ to navigate, enter to accept)
 //	alt+enter  LSP code actions at the cursor
 //	f2         LSP rename symbol under cursor
+//	f9         toggle breakpoint at cursor row
+//	f5         launch debugger / continue when paused (alt+f5 terminates)
+//	f6         pause a running debug session
+//	f10/f11    step over / step in (alt+f11 steps out)
 //	alt+,      reload ~/.config/nook/config.toml
 //	alt+p      workspace-wide diagnostics panel
 //	alt+t      task picker (.nook/tasks.toml or Go defaults)
@@ -68,12 +72,14 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/aihistory"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/airules"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/breakpoints"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/bufman"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/codeaction"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/completedoc"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/config"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/dap"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/diagnostics"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
@@ -328,6 +334,19 @@ type model struct {
 	// gutter / inlay / blame for the active one so a single-file launch
 	// behaves like opening from the picker.
 	startupFiles []string
+
+	// DAP debug session state. bpStore holds per-file breakpoints across
+	// sessions so toggling F9 stays sticky even when no debugger is
+	// attached. dapClient is non-nil only while a session is live;
+	// dapState drives the status-bar label ("" / "launching" / "running"
+	// / "paused" / "terminated"). When paused, dapPausedPath+Row pin the
+	// stop marker so we can clear it cleanly on continue / terminate.
+	bpStore       *breakpoints.Store
+	dapClient     *dap.Client
+	dapState      string
+	dapThreadID   int
+	dapPausedPath string
+	dapPausedRow  int
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -539,6 +558,7 @@ func newModel(root string, opens ...string) model {
 		tasksPane:      tasks.NewPane(t, root),
 		sigPane:        signature.New(),
 		docPane:        completedoc.New(),
+		bpStore:        breakpoints.New(),
 	}
 
 	// Pre-open any files the user passed on the CLI. After OpenOrSwitch
@@ -1338,6 +1358,94 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case dapStartedMsg:
+		if msg.err != nil {
+			m.dapState = ""
+			m.status = "debug: " + msg.err.Error()
+			return m, nil
+		}
+		m.dapClient = msg.client
+		m.dapState = "running"
+		m.status = "debug: running " + filepath.Base(msg.program)
+		return m, m.dapPumpCmd(m.dapClient.Events())
+
+	case dapPumpMsg:
+		next := m.dapPumpCmd(msg.ch)
+		switch msg.event.Kind {
+		case "stopped":
+			body := msg.event.Stopped
+			if body == nil {
+				return m, next
+			}
+			m.dapState = "paused"
+			m.dapThreadID = body.ThreadID
+			reason := body.Reason
+			if reason == "" {
+				reason = "stopped"
+			}
+			m.status = "debug: " + reason
+			return m, tea.Batch(next, m.dapStackTraceCmd(body.ThreadID))
+		case "continued":
+			m.dapState = "running"
+			m.dapPausedPath = ""
+			m.dapPausedRow = 0
+			m = m.clearAllStopMarkers()
+			m.status = "debug: running"
+			return m, next
+		case "output":
+			if msg.event.Output != nil {
+				txt := strings.TrimRight(msg.event.Output.Output, "\r\n")
+				if txt != "" {
+					m.status = "debug> " + truncateForStatus(txt)
+				}
+			}
+			return m, next
+		case "terminated", "exited":
+			m.dapState = "terminated"
+			if msg.event.Exited != nil {
+				m.status = fmt.Sprintf("debug: exited (%d)", msg.event.Exited.ExitCode)
+			} else {
+				m.status = "debug: terminated"
+			}
+			if m.dapClient != nil {
+				_ = m.dapClient.Shutdown()
+				m.dapClient = nil
+			}
+			m = m.clearAllStopMarkers()
+			return m, nil
+		}
+		return m, next
+
+	case dapStackFrameMsg:
+		if msg.err != nil || len(msg.frames) == 0 {
+			return m, nil
+		}
+		top := msg.frames[0]
+		if top.Source.Path == "" || top.Line <= 0 {
+			return m, nil
+		}
+		m = m.clearAllStopMarkers()
+		m.dapPausedPath = top.Source.Path
+		m.dapPausedRow = top.Line - 1
+		m = m.applyStopMarker(top.Source.Path, top.Line-1)
+		m = m.applyAllBreakpointMarkers()
+		if m.showTree {
+			m.treePane.Reveal(top.Source.Path)
+		}
+		m = m.applyDiagnosticsToActive()
+		rel := top.Source.Path
+		if r, err := filepath.Rel(m.root, top.Source.Path); err == nil && !strings.HasPrefix(r, "..") {
+			rel = r
+		}
+		m.status = fmt.Sprintf("debug: paused at %s:%d", rel, top.Line)
+		return m, tea.Batch(m.ensureLSPForFile(top.Source.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
+
+	case dapBreakpointsResultMsg:
+		if msg.err != nil {
+			m.status = "debug bp " + filepath.Base(msg.path) + ": " + msg.err.Error()
+		}
+		return m, nil
+
 	case errMsg:
 		m.status = "error: " + msg.err.Error()
 		return m, nil
@@ -1348,6 +1456,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// truncateForStatus clamps a single-line debug message to keep the status
+// bar single-line. Long stack traces or panic dumps would otherwise wrap
+// and break the layout.
+func truncateForStatus(s string) string {
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	const max = 80
+	if len(s) > max {
+		return s[:max-1] + "…"
+	}
+	return s
 }
 
 // applyComposerEdit writes one composer edit to disk and refreshes the editor
@@ -1549,6 +1671,80 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// identifier under the cursor, not whatever character the
 		// user happened to be over.
 		return m.triggerRename()
+	case tea.KeyF5:
+		// F5 launches a debug session when none is live, or resumes
+		// the paused thread when one is. Alt+F5 (handled further
+		// down) terminates. The VS Code default uses Shift+F5 for
+		// stop, but bubbletea doesn't surface a portable Shift+F5
+		// constant — alt+F5 is the closest unambiguous fallback.
+		if km.Alt {
+			return m.shutdownDebugSession()
+		}
+		if m.dapClient != nil && m.dapState == "paused" {
+			m.dapState = "running"
+			m = m.clearAllStopMarkers()
+			m.status = "debug: continuing"
+			return m, m.dapContinueCmd(m.dapThreadID)
+		}
+		return m.startDebugSession()
+	case tea.KeyF6:
+		// F6 pauses a running session. No-op when idle or paused.
+		if m.dapClient == nil || m.dapState != "running" {
+			return m, nil
+		}
+		cli := m.dapClient
+		tid := m.dapThreadID
+		return m, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = cli.Pause(ctx, tid)
+			return nil
+		}
+	case tea.KeyF9:
+		// F9 toggles a breakpoint on the active buffer's cursor row.
+		// The store keeps the set sticky across sessions; if a
+		// debugger is attached, the new set is pushed to the adapter
+		// immediately so the next continue honors the change.
+		p := m.bufs.Active()
+		if p == nil || p.Path() == "" {
+			m.status = "no file open for breakpoint"
+			return m, nil
+		}
+		path := p.Path()
+		row1 := p.CursorRow() + 1
+		set := m.bpStore.Toggle(path, row1)
+		m = m.applyBreakpointMarkers(path)
+		if set {
+			m.status = fmt.Sprintf("breakpoint set %s:%d", filepath.Base(path), row1)
+		} else {
+			m.status = fmt.Sprintf("breakpoint cleared %s:%d", filepath.Base(path), row1)
+		}
+		if m.dapClient != nil {
+			return m, m.dapSetBreakpointsCmd(path, m.bpStore.Rows(path))
+		}
+		return m, nil
+	case tea.KeyF10:
+		// F10 steps over the current line when paused.
+		if m.dapClient == nil || m.dapState != "paused" {
+			return m, nil
+		}
+		m.dapState = "running"
+		m = m.clearAllStopMarkers()
+		m.status = "debug: step over"
+		return m, m.dapStepCmd(m.dapThreadID, "next")
+	case tea.KeyF11:
+		// F11 steps into the call when paused. Alt+F11 steps out.
+		if m.dapClient == nil || m.dapState != "paused" {
+			return m, nil
+		}
+		m.dapState = "running"
+		m = m.clearAllStopMarkers()
+		if km.Alt {
+			m.status = "debug: step out"
+			return m, m.dapStepCmd(m.dapThreadID, "stepOut")
+		}
+		m.status = "debug: step in"
+		return m, m.dapStepCmd(m.dapThreadID, "stepIn")
 	}
 	// Alt+Enter triggers code actions at the cursor. Ctrl+. is the VS
 	// Code default but has no portable ASCII control code (only
@@ -3768,6 +3964,30 @@ func (m model) renderStatusBar() string {
 		parts = append(parts, muted.Render(fmt.Sprintf("●%dE %dW", errs, warns)))
 	}
 
+	if m.dapState != "" || (m.bpStore != nil && m.bpStore.Count() > 0) {
+		var seg strings.Builder
+		seg.WriteString("dbg")
+		if m.dapState != "" {
+			seg.WriteString(":")
+			seg.WriteString(m.dapState)
+		}
+		if m.bpStore != nil {
+			if n := m.bpStore.Count(); n > 0 {
+				seg.WriteString(fmt.Sprintf(" ●%d", n))
+			}
+		}
+		style := muted
+		switch m.dapState {
+		case "paused":
+			style = lipgloss.NewStyle().Foreground(t.Warning).Bold(true)
+		case "running", "launching":
+			style = lipgloss.NewStyle().Foreground(t.Success)
+		case "terminated":
+			style = lipgloss.NewStyle().Foreground(t.Error)
+		}
+		parts = append(parts, style.Render(seg.String()))
+	}
+
 	if chip := airules.StatusChip(m.rulesSource); chip != "" {
 		parts = append(parts, muted.Render(chip))
 	}
@@ -4022,4 +4242,283 @@ func renderDiff(t theme.Theme, title, body string, w, h int) string {
 		}
 	}
 	return header + "\n" + strings.Join(lines, "\n")
+}
+
+// DAP wiring: messages, commands, and helpers. The host owns the dap.Client
+// lifecycle, drains its event channel via dapPumpCmd, and reflects stop/
+// resume events into the editor pane's gutter (● for breakpoints, ▶ for
+// the current stop). Delve is the only supported adapter in v0.30.0.
+
+// dapPumpMsg carries one event from dap.Client.Events() plus the channel
+// itself so the Update handler can re-schedule the read for the next event.
+type dapPumpMsg struct {
+	event dap.Event
+	ch    <-chan dap.Event
+}
+
+// dapStartedMsg announces the result of spawning the adapter and finishing
+// the initialize / launch / configurationDone handshake.
+type dapStartedMsg struct {
+	client  *dap.Client
+	program string
+	err     error
+}
+
+// dapStackFrameMsg carries the top frame after a stop, used to locate the
+// editor pane to highlight.
+type dapStackFrameMsg struct {
+	frames []dap.StackFrame
+	err    error
+}
+
+// dapBreakpointsResultMsg surfaces the adapter's confirmation that a
+// setBreakpoints round-trip succeeded (or failed) for one file.
+type dapBreakpointsResultMsg struct {
+	path string
+	err  error
+}
+
+// dapPumpCmd reads one event off the client's channel and resurfaces it
+// as a tea.Msg. Re-armed on every receipt so the channel keeps flowing
+// until the adapter terminates and closes it.
+func (m model) dapPumpCmd(ch <-chan dap.Event) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return dap.Event{Kind: "terminated", Terminated: &dap.TerminatedBody{}}
+		}
+		return dapPumpMsg{event: ev, ch: ch}
+	}
+}
+
+// dapStartCmd spawns dlv, initializes, launches the program, replays the
+// host's persisted breakpoints, and signals configurationDone. The result
+// arrives as dapStartedMsg. All RPCs share a 10-second context — the launch
+// handshake is fast on a healthy machine and a hang means the adapter is
+// broken, not slow.
+func (m model) dapStartCmd(program, workDir string, snap map[string][]int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := dap.Start(ctx, dap.Options{WorkDir: workDir})
+		if err != nil {
+			return dapStartedMsg{err: err}
+		}
+		if err := client.Initialize(ctx, "nook"); err != nil {
+			_ = client.Shutdown()
+			return dapStartedMsg{err: fmt.Errorf("initialize: %w", err)}
+		}
+		if err := client.Launch(ctx, program, "debug"); err != nil {
+			_ = client.Shutdown()
+			return dapStartedMsg{err: fmt.Errorf("launch: %w", err)}
+		}
+		for path, rows := range snap {
+			lines := make([]int, len(rows))
+			copy(lines, rows)
+			if _, err := client.SetBreakpoints(ctx, dap.Source{Path: path}, lines); err != nil {
+				_ = client.Shutdown()
+				return dapStartedMsg{err: fmt.Errorf("setBreakpoints %s: %w", filepath.Base(path), err)}
+			}
+		}
+		if err := client.ConfigurationDone(ctx); err != nil {
+			_ = client.Shutdown()
+			return dapStartedMsg{err: fmt.Errorf("configurationDone: %w", err)}
+		}
+		return dapStartedMsg{client: client, program: program}
+	}
+}
+
+// dapSetBreakpointsCmd pushes the current breakpoint set for one file to
+// the adapter. Called when F9 toggles a breakpoint with a live session.
+func (m model) dapSetBreakpointsCmd(path string, rows []int) tea.Cmd {
+	cli := m.dapClient
+	if cli == nil {
+		return nil
+	}
+	lines := make([]int, len(rows))
+	copy(lines, rows)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := cli.SetBreakpoints(ctx, dap.Source{Path: path}, lines)
+		return dapBreakpointsResultMsg{path: path, err: err}
+	}
+}
+
+// dapStackTraceCmd fetches the top frame for threadID so the host can
+// open the source file and highlight the stop row. Fired on every
+// "stopped" event.
+func (m model) dapStackTraceCmd(threadID int) tea.Cmd {
+	cli := m.dapClient
+	if cli == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		frames, err := cli.StackTrace(ctx, threadID, 1)
+		return dapStackFrameMsg{frames: frames, err: err}
+	}
+}
+
+// dapContinueCmd resumes the paused thread.
+func (m model) dapContinueCmd(threadID int) tea.Cmd {
+	cli := m.dapClient
+	if cli == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = cli.Continue(ctx, threadID)
+		return nil
+	}
+}
+
+// dapStepCmd issues one of next/stepIn/stepOut on the paused thread.
+// kind is "next" / "stepIn" / "stepOut"; unknown kinds are no-ops.
+func (m model) dapStepCmd(threadID int, kind string) tea.Cmd {
+	cli := m.dapClient
+	if cli == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		switch kind {
+		case "next":
+			_ = cli.Next(ctx, threadID)
+		case "stepIn":
+			_ = cli.StepIn(ctx, threadID)
+		case "stepOut":
+			_ = cli.StepOut(ctx, threadID)
+		}
+		return nil
+	}
+}
+
+// dapTerminateCmd asks the adapter to kill the debuggee and disconnect.
+// Runs in a goroutine so the UI doesn't block on a slow adapter.
+func (m model) dapTerminateCmd() tea.Cmd {
+	cli := m.dapClient
+	if cli == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = cli.Terminate(ctx)
+		_ = cli.Disconnect(ctx, true)
+		_ = cli.Shutdown()
+		return nil
+	}
+}
+
+// applyBreakpointMarkers pushes the current breakpoint set for path onto
+// the matching editor pane. Rows are converted from 1-based (DAP / on-disk)
+// to 0-based (editor.Pane convention). Idempotent and silent when the
+// pane isn't open.
+func (m model) applyBreakpointMarkers(path string) model {
+	idx := m.bufs.Find(path)
+	if idx < 0 {
+		return m
+	}
+	p := m.bufs.At(idx)
+	if p == nil {
+		return m
+	}
+	rows1 := m.bpStore.Rows(path)
+	if len(rows1) == 0 {
+		*p = p.SetBreakpointRows(nil)
+		return m
+	}
+	rows := make(map[int]bool, len(rows1))
+	for _, r := range rows1 {
+		rows[r-1] = true
+	}
+	*p = p.SetBreakpointRows(rows)
+	return m
+}
+
+// applyAllBreakpointMarkers refreshes every open buffer's breakpoint set
+// from the store. Used after a buffer switch or after the store changes
+// behind the host's back (e.g. session start that replays the set).
+func (m model) applyAllBreakpointMarkers() model {
+	for i := 0; i < m.bufs.Count(); i++ {
+		p := m.bufs.At(i)
+		if p == nil {
+			continue
+		}
+		if path := p.Path(); path != "" {
+			m = m.applyBreakpointMarkers(path)
+		}
+	}
+	return m
+}
+
+// clearAllStopMarkers wipes the ▶ marker from every open buffer. Called
+// on continue/terminate so the old stop indicator doesn't linger.
+func (m model) clearAllStopMarkers() model {
+	for i := 0; i < m.bufs.Count(); i++ {
+		p := m.bufs.At(i)
+		if p == nil {
+			continue
+		}
+		*p = p.SetStoppedAtRow(-1)
+	}
+	return m
+}
+
+// applyStopMarker sets the ▶ marker on path at the given 0-based row.
+// If the buffer isn't open, the host opens it first so the user sees
+// where execution paused.
+func (m model) applyStopMarker(path string, row0 int) model {
+	if m.bufs.Find(path) < 0 {
+		m.bufs.OpenOrSwitch(path)
+		m = m.resize()
+	}
+	p := m.bufs.At(m.bufs.Find(path))
+	if p == nil {
+		return m
+	}
+	*p = p.SetStoppedAtRow(row0)
+	// Park the cursor on the stop row so paging up/down is intuitive.
+	*p = p.JumpTo(row0+1, 1)
+	return m
+}
+
+// startDebugSession decides what program to launch (the active file's
+// directory, or m.root) and fires dapStartCmd. Called by F5 with no live
+// session.
+func (m model) startDebugSession() (model, tea.Cmd) {
+	if m.dapClient != nil {
+		return m, nil
+	}
+	program := m.root
+	if p := m.bufs.Active(); p != nil && p.Path() != "" {
+		if isGoFile(p.Path()) {
+			program = filepath.Dir(p.Path())
+		}
+	}
+	m.dapState = "launching"
+	m.status = "debug: launching " + filepath.Base(program) + "…"
+	return m, m.dapStartCmd(program, m.root, m.bpStore.Snapshot())
+}
+
+// shutdownDebugSession tears down a live session. Returns the cleared
+// model and a fire-and-forget cmd that calls Terminate/Disconnect/Shutdown
+// on the adapter off the UI goroutine.
+func (m model) shutdownDebugSession() (model, tea.Cmd) {
+	if m.dapClient == nil {
+		return m, nil
+	}
+	cmd := m.dapTerminateCmd()
+	m.dapClient = nil
+	m.dapState = ""
+	m.dapThreadID = 0
+	m.dapPausedPath = ""
+	m.dapPausedRow = 0
+	m = m.clearAllStopMarkers()
+	m.status = "debug: terminated"
+	return m, cmd
 }
