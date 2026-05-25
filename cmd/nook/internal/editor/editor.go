@@ -25,6 +25,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlineblame"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/semtok"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -154,14 +155,26 @@ type Pane struct {
 	blame        map[int]inlineblame.Line
 	blameVisible bool
 
-	// Syntax-highlight cache. spans is the result of the last highlight pass
-	// over the buffer; bufVer is a monotonically-increasing counter bumped by
-	// any mutation; hlVer records the bufVer the cache was computed from.
-	// applyHighlight re-runs the highlighter only when bufVer != hlVer.
+	// Syntax-highlight cache. chromaSpans is the chroma layer (the floor);
+	// spans is what render reads — chromaSpans alone, or chromaSpans overlaid
+	// with semTokens when semBufVer matches the current bufVer. bufVer is a
+	// monotonically-increasing counter bumped by any mutation; hlVer records
+	// the bufVer chromaSpans was computed from. applyHighlight re-runs chroma
+	// only when bufVer != hlVer and re-applies the semantic overlay each pass.
 	highlighter highlight.Highlighter
+	chromaSpans highlight.Result
 	spans       highlight.Result
 	bufVer      int
 	hlVer       int
+
+	// Semantic-token overlay state. semTokens is the latest LSP semanticTokens
+	// response; semBufVer is the bufVer the tokens were minted for. The
+	// overlay is applied only while semBufVer == bufVer, so a stale response
+	// (the user typed during the LSP roundtrip) is harmlessly ignored. Host
+	// fetches Pane.BufVer() before firing lookup.SemanticTokensCmd and passes
+	// that value back into WithSemanticTokens when the response arrives.
+	semTokens []semtok.Token
+	semBufVer int
 
 	// searchMatches paints byte ranges with a background highlight; the host
 	// updates it from the finder overlay. searchCurrent is the index of the
@@ -1266,18 +1279,57 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 
 // applyHighlight re-runs the highlighter when the buffer version has advanced
 // past the last cached version. Called from any path that mutates the buffer.
-// Safe to call when highlighter is nil; it just returns.
+// Safe to call when highlighter is nil; it just returns. Also re-applies the
+// semantic-token overlay so a fresh chroma run plus a still-valid token batch
+// merges to the same result.
 func (p *Pane) applyHighlight() {
 	if p.highlighter == nil {
+		p.chromaSpans = highlight.Result{}
 		p.spans = highlight.Result{}
 		return
 	}
-	if p.bufVer == p.hlVer {
+	if p.bufVer != p.hlVer {
+		src := strings.Join(p.buf.Lines, "\n")
+		p.chromaSpans = p.highlighter.Highlight(p.path, src)
+		p.hlVer = p.bufVer
+	}
+	p.applyOverlay()
+}
+
+// applyOverlay refreshes p.spans from p.chromaSpans plus the semantic-token
+// overlay when the tokens are still relevant to the current buffer version.
+func (p *Pane) applyOverlay() {
+	if len(p.semTokens) > 0 && p.semBufVer == p.bufVer {
+		p.spans = highlight.MergeSemantic(p.chromaSpans, p.semTokens)
 		return
 	}
-	src := strings.Join(p.buf.Lines, "\n")
-	p.spans = p.highlighter.Highlight(p.path, src)
-	p.hlVer = p.bufVer
+	p.spans = p.chromaSpans
+}
+
+// BufVer returns the current buffer-revision counter. Hosts pass this into
+// lookup.SemanticTokensCmd so they can echo it back via WithSemanticTokens
+// and let the editor discard a stale response.
+func (p Pane) BufVer() int { return p.bufVer }
+
+// WithSemanticTokens stores an LSP semanticTokens response for later overlay
+// on top of the chroma highlight result. paneVer is the value Pane.BufVer()
+// returned at request-issue time; if the buffer has moved on, the tokens are
+// kept but won't render until a (never-arriving) matching buffer version,
+// effectively making the overlay self-clean.
+func (p Pane) WithSemanticTokens(tokens []semtok.Token, paneVer int) Pane {
+	p.semTokens = tokens
+	p.semBufVer = paneVer
+	(&p).applyOverlay()
+	return p
+}
+
+// ClearSemanticTokens drops the semantic-token overlay (e.g. when the file
+// closes or the language server detaches). Returns the updated Pane.
+func (p Pane) ClearSemanticTokens() Pane {
+	p.semTokens = nil
+	p.semBufVer = 0
+	(&p).applyOverlay()
+	return p
 }
 
 func (p *Pane) clampCol() {
@@ -2076,6 +2128,11 @@ func syntaxPalette(t theme.Theme) map[highlight.Kind]lipgloss.Style {
 		highlight.KindFunction:    lipgloss.NewStyle().Foreground(pick(t.SyntaxFunction, t.Warning)),
 		highlight.KindType:        lipgloss.NewStyle().Foreground(pick(t.SyntaxType, t.Info)),
 		highlight.KindPunctuation: lipgloss.NewStyle().Foreground(pick(t.SyntaxPunctuation, t.TextMuted)),
+		highlight.KindParameter:   lipgloss.NewStyle().Foreground(pick(t.SyntaxParameter, t.Text)),
+		highlight.KindProperty:    lipgloss.NewStyle().Foreground(pick(t.SyntaxProperty, t.Info)),
+		highlight.KindEnumMember:  lipgloss.NewStyle().Foreground(pick(t.SyntaxEnumMember, t.Warning)),
+		highlight.KindNamespace:   lipgloss.NewStyle().Foreground(pick(t.SyntaxNamespace, t.Info)),
+		highlight.KindReadonly:    lipgloss.NewStyle().Foreground(pick(t.SyntaxReadonly, t.Accent)),
 	}
 }
 

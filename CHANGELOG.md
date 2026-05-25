@@ -6,6 +6,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-05-25
+
+LSP semantic tokens land in `nook`. The editor now overlays the language
+server's `textDocument/semanticTokens/full` response on top of chroma's
+syntactic highlight, so parameters, properties, enum members, namespaces,
+and read-only declarations get their own colors instead of bleeding into
+the surrounding identifier color.
+
+A new package, `cmd/nook/internal/semtok`, decodes LSP's delta-encoded
+`uint32` 5-tuples (`[deltaLine, deltaStart, length, tokenType,
+tokenModifiers]`) into resolved tokens via the server's legend. `Decode`
+is a pure function; `semtok.Token` carries `Line`, `Col`, `Length`, the
+resolved type name, and the resolved modifier set. Eleven tests cover
+empty input, malformed length, single-token, same-line and cross-line
+delta unrolling, modifier bit flags, modifier bits beyond the legend
+range, out-of-range type indices, and a realistic Go snippet.
+
+The LSP wedge gains a `SemanticTokensFull(ctx, path)` method driven via
+the raw `jsonrpc2.Conn` (the protocol library at v0.12.0 doesn't expose
+the typed call) plus a capability advertisement at initialize: 22 token
+types and 10 modifiers, `Range: false`, `Full: true`. The server's
+legend comes back through the initialize result and is parsed into the
+`semtok.Legend` the decoder consumes.
+
+`internal/lookup` adds `SemanticTokensCmd`/`SemanticTokensMsg` carrying
+`PaneVer` (the editor's buffer-revision counter at request-issue time),
+so a response that arrives after the user has typed harmlessly drops on
+the floor at overlay-apply time. The editor stores chroma as a floor
+layer and merges semantic tokens on top, splitting or replacing the
+underlying spans as needed; the merge is also pure-functional, defined
+on `highlight.MergeSemantic(base, tokens)`. Five new theme tokens
+(`SyntaxParameter`, `SyntaxProperty`, `SyntaxEnumMember`, `SyntaxNamespace`,
+`SyntaxReadonly`) ship across all five built-in themes (Default,
+TokyoNight, CatppuccinMocha, RosePine, Light).
+
+Host wiring fires the request on `lspOpened` (initial overlay as soon
+as gopls finishes parsing) and after each `didChange` (via
+`tea.Sequence` so the change lands at gopls before the
+semanticTokens/full request goes out, avoiding a stale read). When the
+buffer advances past the request's pinned bufVer, the editor silently
+drops the overlay; the next semantic-tokens response repaints the
+correct ranges.
+
 ## [0.30.0] — 2026-05-25
 
 Debug adapter support lands in `nook`. The editor speaks the

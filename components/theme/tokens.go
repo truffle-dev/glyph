@@ -29,6 +29,12 @@ var Default = Theme{
 	SyntaxFunction:    lipgloss.Color("#dcdcaa"),
 	SyntaxType:        lipgloss.Color("#4ec9b0"),
 	SyntaxPunctuation: lipgloss.Color("#9a9aa6"),
+
+	SyntaxParameter:  lipgloss.Color("#9cdcfe"),
+	SyntaxProperty:   lipgloss.Color("#9cdcfe"),
+	SyntaxEnumMember: lipgloss.Color("#4fc1ff"),
+	SyntaxNamespace:  lipgloss.Color("#4ec9b0"),
+	SyntaxReadonly:   lipgloss.Color("#dcdcaa"),
 }
 
 // TokyoNight is the dark-blue editor theme popularized by enfocado / Tokyo
@@ -60,6 +66,12 @@ var TokyoNight = Theme{
 	SyntaxFunction:    lipgloss.Color("#7aa2f7"),
 	SyntaxType:        lipgloss.Color("#2ac3de"),
 	SyntaxPunctuation: lipgloss.Color("#a9b1d6"),
+
+	SyntaxParameter:  lipgloss.Color("#e0af68"),
+	SyntaxProperty:   lipgloss.Color("#73daca"),
+	SyntaxEnumMember: lipgloss.Color("#ff9e64"),
+	SyntaxNamespace:  lipgloss.Color("#bb9af7"),
+	SyntaxReadonly:   lipgloss.Color("#7dcfff"),
 }
 
 // CatppuccinMocha is the dark variant of the Catppuccin family. Warm, low-
@@ -91,6 +103,12 @@ var CatppuccinMocha = Theme{
 	SyntaxFunction:    lipgloss.Color("#89b4fa"),
 	SyntaxType:        lipgloss.Color("#f9e2af"),
 	SyntaxPunctuation: lipgloss.Color("#bac2de"),
+
+	SyntaxParameter:  lipgloss.Color("#fab387"),
+	SyntaxProperty:   lipgloss.Color("#74c7ec"),
+	SyntaxEnumMember: lipgloss.Color("#f5c2e7"),
+	SyntaxNamespace:  lipgloss.Color("#cba6f7"),
+	SyntaxReadonly:   lipgloss.Color("#89dceb"),
 }
 
 // RosePine is the soho-vibes dark theme. Muted pinks and teals against a deep
@@ -121,6 +139,12 @@ var RosePine = Theme{
 	SyntaxFunction:    lipgloss.Color("#9ccfd8"),
 	SyntaxType:        lipgloss.Color("#31748f"),
 	SyntaxPunctuation: lipgloss.Color("#908caa"),
+
+	SyntaxParameter:  lipgloss.Color("#f6c177"),
+	SyntaxProperty:   lipgloss.Color("#9ccfd8"),
+	SyntaxEnumMember: lipgloss.Color("#ebbcba"),
+	SyntaxNamespace:  lipgloss.Color("#c4a7e7"),
+	SyntaxReadonly:   lipgloss.Color("#31748f"),
 }
 
 // Light is the light-paper theme. Most components target Default; Light is a
@@ -151,4 +175,10 @@ var Light = Theme{
 	SyntaxFunction:    lipgloss.Color("#7a5e0c"),
 	SyntaxType:        lipgloss.Color("#0e7a6a"),
 	SyntaxPunctuation: lipgloss.Color("#7d7460"),
+
+	SyntaxParameter:  lipgloss.Color("#6a4f1a"),
+	SyntaxProperty:   lipgloss.Color("#0e6a5e"),
+	SyntaxEnumMember: lipgloss.Color("#3f6a18"),
+	SyntaxNamespace:  lipgloss.Color("#7a4090"),
+	SyntaxReadonly:   lipgloss.Color("#5e7b9a"),
 }

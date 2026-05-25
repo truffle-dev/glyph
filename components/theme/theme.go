@@ -38,4 +38,13 @@ type Theme struct {
 	SyntaxFunction    lipgloss.Color
 	SyntaxType        lipgloss.Color
 	SyntaxPunctuation lipgloss.Color
+
+	// Semantic-token slots layered on top of the chroma palette. Populated by
+	// language-server semanticTokens responses. Empty values fall back to a
+	// reasonable underlying chroma token.
+	SyntaxParameter  lipgloss.Color
+	SyntaxProperty   lipgloss.Color
+	SyntaxEnumMember lipgloss.Color
+	SyntaxNamespace  lipgloss.Color
+	SyntaxReadonly   lipgloss.Color
 }

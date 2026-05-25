@@ -17,6 +17,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/semtok"
 )
 
 // requestTimeout bounds every lookup. gopls usually answers under 200ms
@@ -305,5 +306,43 @@ func ResolveCompletionCmd(client *nooklsp.Client, item nooklsp.CompletionItem) t
 		defer cancel()
 		resolved, err := client.ResolveCompletion(ctx, item)
 		return ResolveCompletionMsg{ReqLabel: item.Label, Item: resolved, Err: err}
+	}
+}
+
+// SemanticTokensMsg carries a batch of semantic tokens for a single file
+// back to the host. Path is the file the request was pinned to; PaneVer
+// echoes the editor's buffer-revision counter at request-issue time so the
+// editor can drop a stale overlay (the user typed after the request was
+// sent). Tokens is nil when the server resolves nothing or doesn't support
+// the request.
+type SemanticTokensMsg struct {
+	Path    string
+	PaneVer int
+	Tokens  []semtok.Token
+	Err     error
+}
+
+// SemanticTokensCmd returns a tea.Cmd that calls client.SemanticTokensFull
+// and wraps the result in SemanticTokensMsg. paneVer is the value the host
+// read from editor.Pane.BufVer() before firing the cmd; the editor uses it
+// to discard overlays for already-edited buffer states. nil-client or a
+// server that didn't advertise semantic-tokens support returns the message
+// with errNoClient so the host can fire the cmd unconditionally and let the
+// downstream handler drop the result.
+func SemanticTokensCmd(client *nooklsp.Client, path string, paneVer int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return SemanticTokensMsg{Path: path, PaneVer: paneVer, Err: errNoClient}
+		}
+		if !client.SemanticTokensSupported() {
+			return SemanticTokensMsg{Path: path, PaneVer: paneVer, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		tokens, err := client.SemanticTokensFull(ctx, path)
+		if err != nil {
+			return SemanticTokensMsg{Path: path, PaneVer: paneVer, Err: err}
+		}
+		return SemanticTokensMsg{Path: path, PaneVer: paneVer, Tokens: tokens}
 	}
 }

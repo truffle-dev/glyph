@@ -711,6 +711,47 @@ func (m model) refreshInlayHintsCmd() tea.Cmd {
 	return lookup.InlayHintCmd(m.lsp, path, version, 0, p.LineCount()+1)
 }
 
+// refreshSemanticTokensCmd asks gopls for the current semanticTokens map of
+// the active buffer's file and ships the result through a SemanticTokensMsg
+// the editor overlays on top of its chroma highlight. Returns nil when no
+// LSP is wired up, no active buffer, or no path; the wedge degrades to
+// chroma-only when semantic tokens aren't available.
+func (m model) refreshSemanticTokensCmd() tea.Cmd {
+	if m.lsp == nil {
+		return nil
+	}
+	p := m.bufs.Active()
+	if p == nil {
+		return nil
+	}
+	path := p.Path()
+	if path == "" {
+		return nil
+	}
+	return lookup.SemanticTokensCmd(m.lsp, path, p.BufVer())
+}
+
+// applySemanticTokens routes a semantic-tokens response into the pane whose
+// path matches. The editor itself drops the overlay when the buffer has
+// advanced past msg.PaneVer, so the host doesn't need a per-pane version
+// table for this — it just forwards the response. Errors are swallowed
+// (chroma-only fallback is invisible).
+func (m model) applySemanticTokens(msg lookup.SemanticTokensMsg) model {
+	if msg.Err != nil || msg.Path == "" {
+		return m
+	}
+	idx := m.bufs.Find(msg.Path)
+	if idx < 0 {
+		return m
+	}
+	p := m.bufs.At(idx)
+	if p == nil {
+		return m
+	}
+	*p = p.WithSemanticTokens(msg.Tokens, msg.PaneVer)
+	return m
+}
+
 // applyInlayHints locates the pane whose path matches msg and applies the
 // hint map. Late responses for a stale version (the buffer changed after
 // the request was issued) or for a path no longer open are dropped.
@@ -1106,7 +1147,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// fire-and-forget; surface a status if the open failed
 		if msg.err != nil {
 			m.status = "lsp open " + filepath.Base(msg.path) + ": " + msg.err.Error()
+			return m, nil
 		}
+		// On a successful open, request the first semantic-token batch so the
+		// pane gets colored ranges as soon as gopls finishes parsing.
+		return m, m.refreshSemanticTokensCmd()
+
+	case lookup.SemanticTokensMsg:
+		m = m.applySemanticTokens(msg)
 		return m, nil
 
 	case lookup.HoverMsg:
@@ -2018,11 +2066,19 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 	// If the keypress mutated the buffer and gopls is running for a Go file,
-	// publish a didChange so diagnostics stay live as the user types.
+	// publish a didChange so diagnostics stay live as the user types. Chain
+	// a semanticTokens refresh after the change so the editor's overlay
+	// catches up — semantic tokens are color-only, so a small lag is
+	// invisible if a later edit lands before the response.
 	if m.lsp != nil && isGoFile(p.Path()) && isMutatingKey(km.Type) {
 		v := m.lspVersions[p.Path()] + 1
 		m.lspVersions[p.Path()] = v
-		cmds = append(cmds, m.lspChangeCmd(p.Path(), v, p.Contents()))
+		cmds = append(cmds,
+			tea.Sequence(
+				m.lspChangeCmd(p.Path(), v, p.Contents()),
+				m.refreshSemanticTokensCmd(),
+			),
+		)
 	}
 	// Signature-help trigger: '(' or ',' opens or refreshes the parameter
 	// hint overlay; ')' closes it. The closure is intentionally narrow —

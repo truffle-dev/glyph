@@ -12,10 +12,13 @@
 package highlight
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
+
+	"github.com/truffle-dev/glyph/cmd/nook/internal/semtok"
 )
 
 // Kind enumerates the semantic styles we emit. Mapping chroma's wide TokenType
@@ -32,6 +35,11 @@ const (
 	KindFunction
 	KindType
 	KindPunctuation
+	KindParameter
+	KindProperty
+	KindEnumMember
+	KindNamespace
+	KindReadonly
 )
 
 // String returns a stable name for debugging and golden tests.
@@ -51,9 +59,129 @@ func (k Kind) String() string {
 		return "type"
 	case KindPunctuation:
 		return "punct"
+	case KindParameter:
+		return "parameter"
+	case KindProperty:
+		return "property"
+	case KindEnumMember:
+		return "enum-member"
+	case KindNamespace:
+		return "namespace"
+	case KindReadonly:
+		return "readonly"
 	default:
 		return "plain"
 	}
+}
+
+// ClassifySemantic maps an LSP semantic-token type name + modifier set into
+// one of our Kind buckets. The readonly modifier wins over the base type so
+// constants render distinctly from their underlying variable kind. Unknown
+// type names resolve to KindPlain so callers don't accidentally upgrade
+// untyped runs to a bright color.
+func ClassifySemantic(typeName string, modifiers []string) Kind {
+	for _, m := range modifiers {
+		if m == "readonly" {
+			return KindReadonly
+		}
+	}
+	switch typeName {
+	case "function", "method", "macro":
+		return KindFunction
+	case "type", "class", "struct", "interface", "enum", "typeParameter":
+		return KindType
+	case "parameter":
+		return KindParameter
+	case "property", "event":
+		return KindProperty
+	case "enumMember":
+		return KindEnumMember
+	case "namespace":
+		return KindNamespace
+	case "keyword", "modifier", "operator":
+		return KindKeyword
+	case "string", "regexp":
+		return KindString
+	case "number":
+		return KindNumber
+	case "comment":
+		return KindComment
+	}
+	return KindPlain
+}
+
+// MergeSemantic overlays LSP semantic tokens on top of a chroma highlight
+// Result and returns a new Result. The chroma layer is the floor (every byte
+// has a Kind from chroma); semantic tokens add or replace the Kind for the
+// byte range they cover. Tokens that resolve to KindPlain are dropped so the
+// chroma styling shines through. Tokens with Length <= 0 or Line < 0 are
+// ignored.
+func MergeSemantic(base Result, tokens []semtok.Token) Result {
+	if len(tokens) == 0 {
+		return base
+	}
+	out := Result{Rows: make(map[int][]Span, len(base.Rows)+8)}
+	for row, spans := range base.Rows {
+		clone := make([]Span, len(spans))
+		copy(clone, spans)
+		out.Rows[row] = clone
+	}
+	for _, tok := range tokens {
+		if tok.Line < 0 || tok.Length <= 0 {
+			continue
+		}
+		kind := ClassifySemantic(tok.Type, tok.Modifiers)
+		if kind == KindPlain {
+			continue
+		}
+		out.Rows[tok.Line] = overlaySpan(out.Rows[tok.Line], Span{
+			Start: tok.Col,
+			End:   tok.Col + tok.Length,
+			Kind:  kind,
+		})
+	}
+	return out
+}
+
+// overlaySpan splices a new Span into an existing per-row span list, cutting
+// or removing the chroma-base spans it covers. The result is sorted by Start
+// and non-overlapping, matching the contract Result.Spans guarantees.
+func overlaySpan(existing []Span, s Span) []Span {
+	if s.End <= s.Start {
+		return existing
+	}
+	out := make([]Span, 0, len(existing)+2)
+	inserted := false
+	for _, e := range existing {
+		// Existing span entirely outside the new span — keep as-is.
+		if e.End <= s.Start || e.Start >= s.End {
+			out = append(out, e)
+			continue
+		}
+		// Existing span entirely inside the new span — drop it.
+		if e.Start >= s.Start && e.End <= s.End {
+			continue
+		}
+		// Existing span crosses the left boundary — truncate its right edge.
+		if e.Start < s.Start && e.End > s.Start && e.End <= s.End {
+			out = append(out, Span{Start: e.Start, End: s.Start, Kind: e.Kind})
+			continue
+		}
+		// Existing span crosses the right boundary — truncate its left edge.
+		if e.Start >= s.Start && e.Start < s.End && e.End > s.End {
+			out = append(out, Span{Start: s.End, End: e.End, Kind: e.Kind})
+			continue
+		}
+		// Existing span fully contains the new span — split into left + right.
+		if e.Start < s.Start && e.End > s.End {
+			out = append(out, Span{Start: e.Start, End: s.Start, Kind: e.Kind})
+			out = append(out, Span{Start: s.End, End: e.End, Kind: e.Kind})
+		}
+	}
+	out = append(out, s)
+	_ = inserted
+	sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
+	return out
 }
 
 // Span is a contiguous run of bytes on a single line that share a Kind.

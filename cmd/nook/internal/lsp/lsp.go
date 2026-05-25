@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/semtok"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
@@ -42,6 +43,9 @@ type Client struct {
 	cancel context.CancelFunc
 
 	handler *handler
+
+	semtokLegend    semtok.Legend
+	semtokSupported bool
 }
 
 // Options configures the language-server invocation. Zero values are safe.
@@ -112,7 +116,7 @@ func Start(ctx context.Context, opts Options) (*Client, error) {
 
 func (c *Client) initialize(ctx context.Context, rootDir string) error {
 	rootURI := uri.File(rootDir)
-	_, err := c.server.Initialize(ctx, &protocol.InitializeParams{
+	result, err := c.server.Initialize(ctx, &protocol.InitializeParams{
 		ProcessID: 0,
 		RootURI:   rootURI,
 		Capabilities: protocol.ClientCapabilities{
@@ -178,6 +182,28 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 				Rename: &protocol.RenameClientCapabilities{
 					DynamicRegistration: false,
 					PrepareSupport:      true,
+				},
+				SemanticTokens: &protocol.SemanticTokensClientCapabilities{
+					DynamicRegistration: false,
+					Requests: protocol.SemanticTokensWorkspaceClientCapabilitiesRequests{
+						Range: false,
+						Full:  true,
+					},
+					TokenTypes: []string{
+						"namespace", "type", "class", "enum", "interface",
+						"struct", "typeParameter", "parameter", "variable",
+						"property", "enumMember", "event", "function", "method",
+						"macro", "keyword", "modifier", "comment", "string",
+						"number", "regexp", "operator",
+					},
+					TokenModifiers: []string{
+						"declaration", "definition", "readonly", "static",
+						"deprecated", "abstract", "async", "modification",
+						"documentation", "defaultLibrary",
+					},
+					Formats:                 []protocol.TokenFormat{protocol.TokenFormatRelative},
+					OverlappingTokenSupport: false,
+					MultilineTokenSupport:   false,
 				},
 				DocumentSymbol: &protocol.DocumentSymbolClientCapabilities{
 					DynamicRegistration:               false,
@@ -249,7 +275,83 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 	if err := c.server.Initialized(ctx, &protocol.InitializedParams{}); err != nil {
 		return fmt.Errorf("lsp: initialized: %w", err)
 	}
+	// Decode the server's semanticTokensProvider into a Legend the editor can
+	// use to resolve type/modifier indices. The protocol library types
+	// SemanticTokensProvider as interface{}, so we roundtrip via JSON.
+	if result != nil && result.Capabilities.SemanticTokensProvider != nil {
+		c.captureSemtokLegend(result.Capabilities.SemanticTokensProvider)
+	}
 	return nil
+}
+
+// captureSemtokLegend best-effort parses the server's semanticTokensProvider
+// announcement. A missing or malformed legend leaves semtokSupported false.
+func (c *Client) captureSemtokLegend(provider interface{}) {
+	raw, err := json.Marshal(provider)
+	if err != nil {
+		return
+	}
+	var opts struct {
+		Legend struct {
+			TokenTypes     []string `json:"tokenTypes"`
+			TokenModifiers []string `json:"tokenModifiers"`
+		} `json:"legend"`
+		Full  json.RawMessage `json:"full,omitempty"`
+		Range json.RawMessage `json:"range,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &opts); err != nil {
+		return
+	}
+	if len(opts.Legend.TokenTypes) == 0 {
+		return
+	}
+	c.semtokLegend = semtok.Legend{
+		TokenTypes:     opts.Legend.TokenTypes,
+		TokenModifiers: opts.Legend.TokenModifiers,
+	}
+	c.semtokSupported = len(opts.Full) > 0 || len(opts.Range) > 0
+}
+
+// SemanticTokensSupported reports whether the server announced a usable
+// textDocument/semanticTokens/full provider at initialize time.
+func (c *Client) SemanticTokensSupported() bool {
+	if c == nil {
+		return false
+	}
+	return c.semtokSupported
+}
+
+// SemanticTokensLegend returns the legend declared by the server. Callers
+// shouldn't mutate the returned slices.
+func (c *Client) SemanticTokensLegend() semtok.Legend {
+	if c == nil {
+		return semtok.Legend{}
+	}
+	return c.semtokLegend
+}
+
+// SemanticTokensFull asks the server for the full semantic-token map of one
+// open document. The protocol library at v0.12.0 doesn't expose the request,
+// so we drive the call via the raw jsonrpc2.Conn and decode the wire shape
+// ourselves. Returns nil tokens if the server resolves nothing or doesn't
+// support the request.
+func (c *Client) SemanticTokensFull(ctx context.Context, path string) ([]semtok.Token, error) {
+	if c == nil || c.conn == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	if !c.semtokSupported {
+		return nil, nil
+	}
+	params := map[string]any{
+		"textDocument": map[string]any{"uri": string(uri.File(path))},
+	}
+	var raw struct {
+		Data []uint32 `json:"data"`
+	}
+	if _, err := c.conn.Call(ctx, "textDocument/semanticTokens/full", params, &raw); err != nil {
+		return nil, fmt.Errorf("lsp: semanticTokens/full: %w", err)
+	}
+	return semtok.Decode(raw.Data, c.semtokLegend), nil
 }
 
 // Open notifies the server that the host is now editing a document. text is
