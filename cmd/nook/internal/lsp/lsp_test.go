@@ -829,3 +829,137 @@ drain:
 		t.Errorf("none of the %d returned actions carried an edit", len(actions))
 	}
 }
+
+// TestDecodeDocumentSymbolsHierarchical exercises the modern wire shape gopls
+// emits. A function and a type live at the top level; the type owns one method
+// as a child. The decoder must preserve the tree, distill Kind through
+// mapSymbolKind, and read positions from SelectionRange (not Range).
+func TestDecodeDocumentSymbolsHierarchical(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`[
+	  {
+	    "name": "main",
+	    "detail": "func()",
+	    "kind": 12,
+	    "range":          {"start":{"line":3,"character":0}, "end":{"line":5,"character":1}},
+	    "selectionRange": {"start":{"line":3,"character":5}, "end":{"line":3,"character":9}}
+	  },
+	  {
+	    "name": "Server",
+	    "detail": "struct{...}",
+	    "kind": 23,
+	    "range":          {"start":{"line":7,"character":0}, "end":{"line":18,"character":1}},
+	    "selectionRange": {"start":{"line":7,"character":5}, "end":{"line":7,"character":11}},
+	    "children": [
+	      {
+	        "name": "Listen",
+	        "detail": "func(ctx context.Context) error",
+	        "kind": 6,
+	        "range":          {"start":{"line":12,"character":0}, "end":{"line":16,"character":1}},
+	        "selectionRange": {"start":{"line":12,"character":15},"end":{"line":12,"character":21}}
+	      }
+	    ]
+	  }
+	]`)
+	out := decodeDocumentSymbols(raw)
+	if len(out) != 2 {
+		t.Fatalf("got %d top-level symbols, want 2", len(out))
+	}
+	if out[0].Name != "main" || out[0].Kind != WorkspaceSymbolKindFunction {
+		t.Errorf("top[0] = %+v, want main/func", out[0])
+	}
+	if out[0].Line != 3 || out[0].Col != 5 {
+		t.Errorf("top[0] pos = (%d,%d), want (3,5) from selectionRange", out[0].Line, out[0].Col)
+	}
+	if out[0].EndLine != 5 {
+		t.Errorf("top[0] endLine = %d, want 5 from range.end", out[0].EndLine)
+	}
+	if out[1].Name != "Server" || out[1].Kind != WorkspaceSymbolKindStruct {
+		t.Errorf("top[1] = %+v, want Server/struct", out[1])
+	}
+	if len(out[1].Children) != 1 {
+		t.Fatalf("Server children = %d, want 1", len(out[1].Children))
+	}
+	c := out[1].Children[0]
+	if c.Name != "Listen" || c.Kind != WorkspaceSymbolKindMethod {
+		t.Errorf("Server.Listen = %+v, want Listen/method", c)
+	}
+	if c.Line != 12 || c.Col != 15 {
+		t.Errorf("Listen pos = (%d,%d), want (12,15)", c.Line, c.Col)
+	}
+}
+
+// TestDecodeDocumentSymbolsFlatFallback verifies the legacy SymbolInformation[]
+// shape (no selectionRange field) collapses into a one-level tree using
+// ContainerName for parenting.
+func TestDecodeDocumentSymbolsFlatFallback(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`[
+	  {
+	    "name": "Server",
+	    "kind": 23,
+	    "location": {"uri": "file:///x.go",
+	      "range": {"start":{"line":7,"character":5}, "end":{"line":18,"character":1}}}
+	  },
+	  {
+	    "name": "Listen",
+	    "kind": 6,
+	    "containerName": "Server",
+	    "location": {"uri": "file:///x.go",
+	      "range": {"start":{"line":12,"character":15}, "end":{"line":16,"character":1}}}
+	  },
+	  {
+	    "name": "main",
+	    "kind": 12,
+	    "location": {"uri": "file:///x.go",
+	      "range": {"start":{"line":3,"character":5}, "end":{"line":5,"character":1}}}
+	  }
+	]`)
+	out := decodeDocumentSymbols(raw)
+	if len(out) != 2 {
+		t.Fatalf("got %d roots, want 2 (Server, main)", len(out))
+	}
+	var server, mainFn *DocSymbol
+	for i := range out {
+		switch out[i].Name {
+		case "Server":
+			server = &out[i]
+		case "main":
+			mainFn = &out[i]
+		}
+	}
+	if server == nil || mainFn == nil {
+		t.Fatalf("missing root symbol: server=%v main=%v", server, mainFn)
+	}
+	if len(server.Children) != 1 || server.Children[0].Name != "Listen" {
+		t.Errorf("Server children = %+v, want [Listen]", server.Children)
+	}
+	if server.Children[0].Kind != WorkspaceSymbolKindMethod {
+		t.Errorf("Listen kind = %v, want method", server.Children[0].Kind)
+	}
+}
+
+// TestDecodeDocumentSymbolsEmpty handles both null and empty-array responses
+// the same way: nil out. gopls returns null for files with no symbols (e.g.
+// an empty .go file or a non-Go file in the workspace), and empty array for
+// some other servers.
+func TestDecodeDocumentSymbolsEmpty(t *testing.T) {
+	t.Parallel()
+	for _, raw := range [][]byte{nil, []byte("null"), []byte("[]")} {
+		out := decodeDocumentSymbols(raw)
+		if len(out) != 0 {
+			t.Errorf("decode(%q) = %d symbols, want 0", string(raw), len(out))
+		}
+	}
+}
+
+// TestDocumentSymbolRejectsUninitialized covers the nil-client guard. The
+// outline wedge binds the keystroke unconditionally; the guard lets it
+// surface "no language server attached" without panicking.
+func TestDocumentSymbolRejectsUninitialized(t *testing.T) {
+	t.Parallel()
+	c := &Client{}
+	if _, err := c.DocumentSymbol(context.Background(), "x.go"); err == nil {
+		t.Error("documentSymbol on uninitialized client should error")
+	}
+}

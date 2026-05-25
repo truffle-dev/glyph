@@ -165,6 +165,27 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 					DynamicRegistration: false,
 					PrepareSupport:      true,
 				},
+				DocumentSymbol: &protocol.DocumentSymbolClientCapabilities{
+					DynamicRegistration:               false,
+					HierarchicalDocumentSymbolSupport: true,
+					SymbolKind: &protocol.SymbolKindCapabilities{
+						ValueSet: []protocol.SymbolKind{
+							protocol.SymbolKindFile, protocol.SymbolKindModule,
+							protocol.SymbolKindNamespace, protocol.SymbolKindPackage,
+							protocol.SymbolKindClass, protocol.SymbolKindMethod,
+							protocol.SymbolKindProperty, protocol.SymbolKindField,
+							protocol.SymbolKindConstructor, protocol.SymbolKindEnum,
+							protocol.SymbolKindInterface, protocol.SymbolKindFunction,
+							protocol.SymbolKindVariable, protocol.SymbolKindConstant,
+							protocol.SymbolKindString, protocol.SymbolKindNumber,
+							protocol.SymbolKindBoolean, protocol.SymbolKindArray,
+							protocol.SymbolKindObject, protocol.SymbolKindKey,
+							protocol.SymbolKindNull, protocol.SymbolKindEnumMember,
+							protocol.SymbolKindStruct, protocol.SymbolKindEvent,
+							protocol.SymbolKindOperator, protocol.SymbolKindTypeParameter,
+						},
+					},
+				},
 			},
 			Workspace: &protocol.WorkspaceClientCapabilities{
 				Symbol: &protocol.WorkspaceSymbolClientCapabilities{
@@ -773,6 +794,197 @@ func decodeInlayLabel(raw json.RawMessage) string {
 		b.WriteString(p.Value)
 	}
 	return b.String()
+}
+
+// DocSymbol is the host-side view of a textDocument/documentSymbol result.
+// The tree mirrors the LSP hierarchical shape: each DocSymbol owns Children
+// (e.g. struct fields under their parent struct, methods under their type).
+// Name is the displayed label; Detail is the optional signature gopls returns
+// for functions/methods (e.g. "func(ctx context.Context) error"); Kind is the
+// distilled WorkspaceSymbolKind so callers reuse the same Short() label set
+// as workspace symbols and call hierarchy. Line/Col point at the symbol's
+// most interesting position (the identifier itself, via LSP's
+// SelectionRange.Start). EndLine is the last line of the symbol's full
+// enclosing range, used by the outline pane to detect which symbol contains
+// the user's cursor.
+type DocSymbol struct {
+	Name     string
+	Detail   string
+	Kind     WorkspaceSymbolKind
+	Line     int
+	Col      int
+	EndLine  int
+	EndCol   int
+	Children []DocSymbol
+}
+
+// DocumentSymbol asks the server for the symbol tree of one open document.
+// The response shape is the new hierarchical DocumentSymbol[] form (the
+// flat SymbolInformation[] fallback is also decoded so the wedge keeps
+// working against older servers). Returns an empty slice (not nil) when
+// the server resolves nothing — same convention as the workspace symbol
+// API. Errors only on RPC failure.
+//
+// The protocol library's server.DocumentSymbol returns []interface{} (the
+// union of the two shapes), so we drive the call via the raw jsonrpc2.Conn
+// and decode the wire JSON ourselves. This mirrors the InlayHint surface.
+func (c *Client) DocumentSymbol(ctx context.Context, path string) ([]DocSymbol, error) {
+	if c == nil || c.conn == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	params := map[string]any{
+		"textDocument": map[string]any{"uri": string(uri.File(path))},
+	}
+	var raw json.RawMessage
+	if _, err := c.conn.Call(ctx, "textDocument/documentSymbol", params, &raw); err != nil {
+		return nil, fmt.Errorf("lsp: documentSymbol: %w", err)
+	}
+	return decodeDocumentSymbols(raw), nil
+}
+
+// rawDocumentSymbol is the on-the-wire shape of an LSP DocumentSymbol.
+type rawDocumentSymbol struct {
+	Name           string              `json:"name"`
+	Detail         string              `json:"detail,omitempty"`
+	Kind           int                 `json:"kind"`
+	Range          rawRange            `json:"range"`
+	SelectionRange rawRange            `json:"selectionRange"`
+	Children       []rawDocumentSymbol `json:"children,omitempty"`
+}
+
+// rawSymbolInformation is the flat fallback shape some servers still emit.
+type rawSymbolInformation struct {
+	Name          string      `json:"name"`
+	Kind          int         `json:"kind"`
+	Location      rawLocation `json:"location"`
+	ContainerName string      `json:"containerName,omitempty"`
+}
+
+type rawRange struct {
+	Start rawPosition `json:"start"`
+	End   rawPosition `json:"end"`
+}
+
+type rawLocation struct {
+	URI   string   `json:"uri"`
+	Range rawRange `json:"range"`
+}
+
+// decodeDocumentSymbols normalizes the union return into a single tree.
+// If the server emitted hierarchical DocumentSymbol[] the tree is preserved
+// as-is. If it emitted flat SymbolInformation[] we synthesize a one-level
+// tree by grouping children under matching ContainerName parents (best
+// effort; unknown containers fall to top level).
+func decodeDocumentSymbols(raw json.RawMessage) []DocSymbol {
+	if len(raw) == 0 {
+		return nil
+	}
+	// Peek at the first element to distinguish the two shapes. The
+	// hierarchical DocumentSymbol carries `selectionRange`; the flat
+	// SymbolInformation carries `location`. Some servers also emit
+	// children under containerName-less roots, so we trust the on-wire
+	// field marker rather than guessing from the parse outcome.
+	if hierarchical(raw) {
+		var hier []rawDocumentSymbol
+		if err := json.Unmarshal(raw, &hier); err == nil {
+			out := make([]DocSymbol, 0, len(hier))
+			for _, r := range hier {
+				out = append(out, convertDocumentSymbol(r))
+			}
+			return out
+		}
+	}
+	var flat []rawSymbolInformation
+	if err := json.Unmarshal(raw, &flat); err != nil {
+		return nil
+	}
+	return flattenSymbolInformation(flat)
+}
+
+// hierarchical reports whether the response is the modern DocumentSymbol[]
+// shape (true) vs. the legacy flat SymbolInformation[] shape (false). The
+// marker is the presence of `selectionRange` on the first element. Returns
+// false for empty / null / unparseable input so the flat path takes over
+// and consistently returns nil.
+func hierarchical(raw json.RawMessage) bool {
+	var probe []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil || len(probe) == 0 {
+		return false
+	}
+	_, ok := probe[0]["selectionRange"]
+	return ok
+}
+
+func convertDocumentSymbol(r rawDocumentSymbol) DocSymbol {
+	out := DocSymbol{
+		Name:    r.Name,
+		Detail:  r.Detail,
+		Kind:    mapSymbolKind(protocol.SymbolKind(r.Kind)),
+		Line:    r.SelectionRange.Start.Line,
+		Col:     r.SelectionRange.Start.Character,
+		EndLine: r.Range.End.Line,
+		EndCol:  r.Range.End.Character,
+	}
+	if len(r.Children) > 0 {
+		out.Children = make([]DocSymbol, 0, len(r.Children))
+		for _, c := range r.Children {
+			out.Children = append(out.Children, convertDocumentSymbol(c))
+		}
+	}
+	return out
+}
+
+// flattenSymbolInformation converts a flat SymbolInformation[] response
+// into a one-level tree. Each symbol whose ContainerName matches another
+// symbol's Name becomes that symbol's child; uncontained symbols stay at
+// the top. This is the legacy fallback for servers that haven't adopted
+// hierarchical document symbols (LSP 3.10+). gopls always emits the
+// hierarchical form, so this path is rarely exercised in practice.
+func flattenSymbolInformation(flat []rawSymbolInformation) []DocSymbol {
+	if len(flat) == 0 {
+		return nil
+	}
+	docs := make([]DocSymbol, len(flat))
+	byName := make(map[string]int, len(flat))
+	for i, s := range flat {
+		docs[i] = DocSymbol{
+			Name:    s.Name,
+			Kind:    mapSymbolKind(protocol.SymbolKind(s.Kind)),
+			Line:    s.Location.Range.Start.Line,
+			Col:     s.Location.Range.Start.Character,
+			EndLine: s.Location.Range.End.Line,
+			EndCol:  s.Location.Range.End.Character,
+		}
+		byName[s.Name] = i
+	}
+	taken := make([]bool, len(flat))
+	for i, s := range flat {
+		if s.ContainerName == "" {
+			continue
+		}
+		p, ok := byName[s.ContainerName]
+		if !ok || p == i {
+			continue
+		}
+		taken[i] = true
+	}
+	// Attach children in original order. Reading docs[i] here is fine
+	// because we only mutate parents (indices listed in flat-but-not-self),
+	// and children are independent values.
+	for i, s := range flat {
+		if !taken[i] {
+			continue
+		}
+		p := byName[s.ContainerName]
+		docs[p].Children = append(docs[p].Children, docs[i])
+	}
+	roots := make([]DocSymbol, 0, len(flat))
+	for i := range docs {
+		if !taken[i] {
+			roots = append(roots, docs[i])
+		}
+	}
+	return roots
 }
 
 // Formatting asks the server to whole-file-format the open document and

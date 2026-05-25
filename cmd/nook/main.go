@@ -19,6 +19,7 @@
 //	ctrl+`     terminal pane
 //	ctrl+s     save current buffer
 //	ctrl+t     workspace symbol search (functions, types, vars across project)
+//	ctrl+\     file outline (document symbols in current file)
 //	alt+i      LSP hover info for symbol under cursor
 //	alt+j      expand snippet at cursor (Tab cycles tabstops, Esc exits)
 //	alt+y      toggle gopls inlay hints (type annotations, parameter names)
@@ -84,6 +85,7 @@ import (
 	nooklsp "github.com/truffle-dev/glyph/cmd/nook/internal/lsp"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/mdpreview"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/multibuffer"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/outline"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
@@ -113,6 +115,7 @@ const (
 	overlayDiagnostics
 	overlayTasks
 	overlaySymbolSearch
+	overlayOutline
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -225,6 +228,17 @@ type model struct {
 	// muscle memory).
 	symbolPrompt symbolsearch.Prompt
 	lastSymQuery string
+
+	// File outline modal (Ctrl+\). outlinePane is the modal itself.
+	// outlineCache holds previously-loaded symbol trees keyed by absolute
+	// path so reopens are instant and the user's recent jumps don't
+	// re-roundtrip the LSP. The cache is invalidated when the host saves
+	// the file (didChange notifications would also be a fine trigger but
+	// save is the simpler hook). outlineLoading prevents reopen-on-reopen
+	// races: while a request is in flight, a second Ctrl+\ is a no-op.
+	outlinePane    outline.Pane
+	outlineCache   map[string][]nooklsp.DocSymbol
+	outlineLoading map[string]bool
 
 	// Multibuffer overlay (Zed's signature: stitch hunks from multiple
 	// files into one scrollable surface). Alt+m loads working-tree-vs-HEAD
@@ -372,42 +386,45 @@ func newModel(root string) model {
 	}
 
 	return model{
-		theme:        t,
-		root:         root,
-		width:        80,
-		height:       24,
-		bufs:         bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers),
-		gitPane:      git.NewPane(t, root),
-		termPane:     term.NewPane(t, root),
-		picker:       picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
-		search:       search.NewPane(t, root),
-		editPane:     edit.NewPane(t, aiClient).WithRules(rulesText),
-		composer:     composer.NewPane(t, aiClient).WithHistory(aiHistory).WithRules(rulesText),
-		ghost:        ghostMgr,
-		right:        rightNone,
-		status:       status,
-		aiClient:     aiClient,
-		aiHistory:    aiHistory,
-		rulesSource:  rulesSrc,
-		rulesText:    rulesText,
-		lspVersions:  map[string]int32{},
-		diagnostics:  map[string][]protocol.Diagnostic{},
-		finder:       finder.New(t),
-		formatOnSave: cfg.Editor.FormatOnSave,
-		treePane:     filetree.New(t, root),
-		showTree:     false,
-		caPopup:      codeaction.New(),
-		renamePrompt: rename.New(),
-		symbolPrompt: symbolsearch.New(),
-		multibufPane: multibuffer.NewPane(t, root),
-		diagPane:     diagnostics.NewPane(t, root),
-		mdPane:       mdpreview.NewPane(t),
-		inlayHintsOn: cfg.Editor.InlayHints,
-		cfgPath:      cfgPath,
-		themeName:    cfg.Editor.Theme,
-		tabWidth:     cfg.Editor.TabWidth,
-		snipLib:      snipLib,
-		tasksPane:    tasks.NewPane(t, root),
+		theme:          t,
+		root:           root,
+		width:          80,
+		height:         24,
+		bufs:           bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers),
+		gitPane:        git.NewPane(t, root),
+		termPane:       term.NewPane(t, root),
+		picker:         picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
+		search:         search.NewPane(t, root),
+		editPane:       edit.NewPane(t, aiClient).WithRules(rulesText),
+		composer:       composer.NewPane(t, aiClient).WithHistory(aiHistory).WithRules(rulesText),
+		ghost:          ghostMgr,
+		right:          rightNone,
+		status:         status,
+		aiClient:       aiClient,
+		aiHistory:      aiHistory,
+		rulesSource:    rulesSrc,
+		rulesText:      rulesText,
+		lspVersions:    map[string]int32{},
+		diagnostics:    map[string][]protocol.Diagnostic{},
+		finder:         finder.New(t),
+		formatOnSave:   cfg.Editor.FormatOnSave,
+		treePane:       filetree.New(t, root),
+		showTree:       false,
+		caPopup:        codeaction.New(),
+		renamePrompt:   rename.New(),
+		symbolPrompt:   symbolsearch.New(),
+		outlinePane:    outline.New(t),
+		outlineCache:   map[string][]nooklsp.DocSymbol{},
+		outlineLoading: map[string]bool{},
+		multibufPane:   multibuffer.NewPane(t, root),
+		diagPane:       diagnostics.NewPane(t, root),
+		mdPane:         mdpreview.NewPane(t),
+		inlayHintsOn:   cfg.Editor.InlayHints,
+		cfgPath:        cfgPath,
+		themeName:      cfg.Editor.Theme,
+		tabWidth:       cfg.Editor.TabWidth,
+		snipLib:        snipLib,
+		tasksPane:      tasks.NewPane(t, root),
 	}
 }
 
@@ -696,6 +713,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				*p = p.ApplySave()
 			}
 			m.status = "saved " + msg.Path
+			// Invalidate the outline cache so a stale symbol tree from
+			// before the edit doesn't surface on the next Ctrl+\ press.
+			delete(m.outlineCache, msg.Path)
 			// Refresh the markdown preview when the saved file is the
 			// one currently being previewed. Updating from disk would be
 			// equivalent here, but reading from the buffer keeps the
@@ -999,6 +1019,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case lookup.RenameMsg:
 		return m.handleRenameMsg(msg)
 
+	case outlineRequestMsg:
+		return m.handleOutlineRequestMsg(msg)
+
 	case filetree.OpenMsg:
 		_, action := m.bufs.OpenOrSwitch(msg.Path)
 		m.treePane.Blur()
@@ -1255,6 +1278,13 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.routeSymbolSearch(km)
 	}
 
+	// Outline modal swallows its own keys: typing edits the filter,
+	// arrows/home/end/pgup/pgdn move the cursor, Enter jumps to the
+	// highlighted symbol, Esc cancels.
+	if m.overlay == overlayOutline {
+		return m.routeOutline(km)
+	}
+
 	// Global keys
 	switch km.Type {
 	case tea.KeyCtrlQ:
@@ -1308,6 +1338,14 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Code's Ctrl+T muscle memory. Re-opening preserves the last
 		// query (cursor at end) so refining a search is one keystroke.
 		return m.openSymbolSearch()
+	case tea.KeyCtrlBackslash:
+		// File outline. Pre-loads the active buffer's symbol tree from
+		// the LSP and opens a filterable modal with the cursor parked
+		// on the symbol enclosing the current row. Complementary to
+		// Ctrl+T (workspace) — outline is scoped to one file. Cached
+		// per path so reopens are instant; the cache is dropped on
+		// save so post-edit reopens see the new symbols.
+		return m.openOutline()
 	case tea.KeyCtrlCloseBracket:
 		// Go-to-definition. Asks gopls where the symbol under the
 		// cursor was declared and jumps to it (opening the target file
@@ -2041,6 +2079,154 @@ func (m model) routeSymbolSearch(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for _, r := range runes {
 			m.symbolPrompt = m.symbolPrompt.Type(r)
 		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// outlineRequestMsg carries a single textDocument/documentSymbol result back
+// to the host. The Path field lets the host discard a stale response
+// when the user has switched buffers or saved-and-edited mid-flight.
+type outlineRequestMsg struct {
+	path string
+	syms []nooklsp.DocSymbol
+	err  error
+}
+
+// outlineDocumentSymbolCmd asks the LSP for the document symbol tree of
+// path. nil-client → an "no language server attached" error so the
+// modal still opens and surfaces the hint via outline.OpenError. The
+// request runs under a 4s timeout to match the workspace-symbol
+// command's window.
+func outlineDocumentSymbolCmd(client *nooklsp.Client, path string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return outlineRequestMsg{path: path, err: errors.New("no language server attached")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		syms, err := client.DocumentSymbol(ctx, path)
+		return outlineRequestMsg{path: path, syms: syms, err: err}
+	}
+}
+
+// openOutline opens the file-outline modal. If the active buffer's
+// symbol tree is already cached, the pane renders immediately; otherwise
+// the pane opens in a loading state (empty list, status hint) and the
+// LSP request fires. On reopen-while-loading we no-op so duplicate Ctrl+\
+// taps don't stack multiple in-flight requests.
+func (m model) openOutline() (tea.Model, tea.Cmd) {
+	ap := m.bufs.Active()
+	if ap == nil || ap.Path() == "" {
+		m.status = "outline: no active file"
+		return m, nil
+	}
+	path := ap.Path()
+	row := ap.CursorRow()
+	w, h := outlineDimensions(m.width, m.height)
+	m.outlinePane = m.outlinePane.WithSize(w, h)
+	if cached, ok := m.outlineCache[path]; ok {
+		m.outlinePane = m.outlinePane.Open(path, cached, row)
+		m.overlay = overlayOutline
+		*ap = ap.Blur()
+		m.status = "outline: " + filepath.Base(path)
+		return m, nil
+	}
+	if m.outlineLoading[path] {
+		return m, nil
+	}
+	if m.lsp == nil {
+		m.outlinePane = m.outlinePane.OpenError(path, "no language server attached yet")
+		m.overlay = overlayOutline
+		*ap = ap.Blur()
+		m.status = "outline: no language server"
+		return m, nil
+	}
+	m.outlineLoading[path] = true
+	m.outlinePane = m.outlinePane.Open(path, nil, row)
+	m.overlay = overlayOutline
+	*ap = ap.Blur()
+	m.status = "outline: asking gopls for document symbols…"
+	return m, outlineDocumentSymbolCmd(m.lsp, path)
+}
+
+// outlineDimensions picks the modal size from the workspace dimensions.
+// The pane is at most 80 cols wide and 24 rows tall, clamped to leave
+// breathing room around the edges (4 cols / 2 rows minimum). A 60×18
+// floor keeps the pane usable even on a tiny TTY.
+func outlineDimensions(workspaceW, workspaceH int) (int, int) {
+	w := workspaceW - 6
+	if w > 80 {
+		w = 80
+	}
+	if w < 60 {
+		w = 60
+	}
+	h := workspaceH - 6
+	if h > 24 {
+		h = 24
+	}
+	if h < 18 {
+		h = 18
+	}
+	return w, h
+}
+
+// handleOutlineRequestMsg consumes the LSP response. Stale responses
+// (the user switched files or closed the modal before the result
+// arrived) are dropped silently.
+func (m model) handleOutlineRequestMsg(msg outlineRequestMsg) (tea.Model, tea.Cmd) {
+	delete(m.outlineLoading, msg.path)
+	if msg.err != nil {
+		if m.overlay == overlayOutline && m.outlinePane.Path() == msg.path {
+			m.outlinePane = m.outlinePane.OpenError(msg.path, msg.err.Error())
+			m.status = "outline: " + msg.err.Error()
+		}
+		return m, nil
+	}
+	m.outlineCache[msg.path] = msg.syms
+	if m.overlay != overlayOutline || m.outlinePane.Path() != msg.path {
+		// User moved on; cache update is the only side effect.
+		return m, nil
+	}
+	row := 0
+	if ap := m.bufs.Active(); ap != nil && ap.Path() == msg.path {
+		row = ap.CursorRow()
+	}
+	m.outlinePane = m.outlinePane.Open(msg.path, msg.syms, row)
+	m.status = "outline: " + filepath.Base(msg.path)
+	return m, nil
+}
+
+// routeOutline forwards a keypress to the outline pane and reacts to the
+// Jump / Cancel messages it emits.
+func (m model) routeOutline(km tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.outlinePane, cmd = m.outlinePane.Update(km)
+	if cmd == nil {
+		if !m.outlinePane.IsOpen() {
+			m.overlay = overlayNone
+		}
+		return m, nil
+	}
+	msg := cmd()
+	switch v := msg.(type) {
+	case outline.JumpMsg:
+		m.overlay = overlayNone
+		ap := m.bufs.Active()
+		if ap == nil || ap.Path() != v.Path {
+			m.status = "outline: target file no longer active"
+			return m, nil
+		}
+		*ap = ap.JumpTo(v.Row+1, v.Col+1).Focus()
+		m.status = "outline: jumped to " + filepath.Base(v.Path)
+		return m, nil
+	case outline.CancelMsg:
+		m.overlay = overlayNone
+		if ap := m.bufs.Active(); ap != nil {
+			*ap = ap.Focus()
+		}
+		m.status = "outline cancelled"
 		return m, nil
 	}
 	return m, nil
@@ -3012,6 +3198,11 @@ func (m model) View() string {
 			boxW = m.width - 4
 		}
 		box := m.symbolPrompt.View(t, boxW)
+		float := centerOverlay(m.width, m.height-1, box)
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlayOutline {
+		box := m.outlinePane.View()
 		float := centerOverlay(m.width, m.height-1, box)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}

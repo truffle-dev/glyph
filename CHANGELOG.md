@@ -6,6 +6,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-05-25
+
+File outline modal in `nook`. Press `Ctrl+\` inside any file and a
+floating modal pops up listing every top-level and nested symbol gopls
+(or any other LSP) reports for the buffer: functions, methods, structs,
+constants, interfaces, the whole document symbol tree. Type to filter
+case-insensitively. Up/down/Home/End/PgUp/PgDn move the cursor; Enter
+jumps the editor to the symbol's definition row; Esc closes without
+moving. The modal opens with the cursor pre-positioned on whichever
+symbol encloses the current editor row, so the second keystroke is
+already useful.
+
+This is the single-file companion to the workspace symbol search
+(`Ctrl+T`, shipped in 0.23.0). Where workspace symbol crosses the
+project boundary and asks the server for every matching name, the
+outline modal stays inside the active buffer and asks for the
+hierarchical document symbol tree — cheaper, faster, and showing the
+nesting (methods grouped under their receivers, nested types indented
+under parents). Both keys land you on a definition; pick whichever
+matches the question you're holding in your head.
+
+The decoder handles both LSP response shapes: the modern hierarchical
+`DocumentSymbol[]` (with `selectionRange` and `children`) and the
+legacy flat `SymbolInformation[]` (parented by `containerName`). The
+client capability advertises both. Symbol kinds are rendered as short
+two-letter tags (`fn`, `mt`, `st`, `tp`, `vr`, `cn`, `if`, `en`, ...)
+to keep the row dense without losing the kind information.
+
+Per-file symbol trees are cached after the first fetch, so repeated
+`Ctrl+\` presses on the same file are instant. The cache is
+invalidated on save — a fresh document symbol request goes out the
+next time the user opens the outline after editing.
+
+### Added
+
+- `cmd/nook/internal/outline` package: pure-value `Pane` modal with
+  `New(t)`, `WithSize(w,h)`, `Open(path, syms, atRow)`,
+  `OpenError(path, msg)`, `Close()`, `IsOpen()`, and `Update(msg)`.
+  Emits `JumpMsg{Path, Row, Col}` on Enter and `CancelMsg{}` on Esc.
+  Pure helpers `Flatten(syms)` (DFS with depth annotation) and
+  `EnclosingIndex(flat, row)` (deepest containing symbol) for tests
+  and direct callers.
+
+- `lsp.Client.DocumentSymbol(ctx, path)` fetches the document symbol
+  tree for one file. Decodes both hierarchical `DocumentSymbol[]` and
+  flat `SymbolInformation[]` responses; the flat variant is
+  reconstructed into a one-level tree via `ContainerName`.
+  `DocumentSymbolClientCapabilities` advertises both shapes plus the
+  full `SymbolKind` enum.
+
+- `Ctrl+\` keybind in `nook`. Opens the file outline modal for the
+  active buffer. Falls back to a friendly error pane when no LSP is
+  attached (no .go file open, or gopls hasn't started yet).
+
+### Changed
+
+- Help overlay (`?`) lists the new `Ctrl+\` binding under "LSP &
+  Navigation".
+
 ## [0.24.0] — 2026-05-25
 
 Repo-level AI conventions in `nook`. Drop a `.nookrules` (nook-native)

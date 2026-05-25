@@ -125,6 +125,7 @@ func Default() []Section {
 			{"alt+y", "Toggle gopls inlay hints (type annotations, parameter names)"},
 			{"alt+u", "Find references to identifier under cursor"},
 			{"ctrl+t", "Workspace symbol search (functions, types, vars)"},
+			{"ctrl+\\", "File outline (document symbols in current file)"},
 		}},
 		{Name: "Panes", Bindings: []Binding{
 			{"ctrl+b", "Toggle file tree (left)"},
