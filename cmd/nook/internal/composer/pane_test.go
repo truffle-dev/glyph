@@ -235,3 +235,14 @@ func TestResetClearsState(t *testing.T) {
 		t.Fatalf("expected cleared state after Reset, got prompt=%q edits=%d", p.prompt, len(p.edits))
 	}
 }
+
+func TestComposerWithRulesPersists(t *testing.T) {
+	p := NewPane(theme.Default, nil).WithRules("prefer fmt.Errorf wrapping")
+	if p.rules != "prefer fmt.Errorf wrapping" {
+		t.Fatalf("WithRules did not set field; got %q", p.rules)
+	}
+	p = p.WithRules("two-line rule\nsecond line")
+	if !strings.Contains(p.rules, "two-line") {
+		t.Fatalf("WithRules overwrite lost; got %q", p.rules)
+	}
+}

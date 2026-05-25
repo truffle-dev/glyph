@@ -6,6 +6,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-05-25
+
+Repo-level AI conventions in `nook`. Drop a `.nookrules` (nook-native)
+or `.cursorrules` (Cursor compat) file at the workspace root and every
+AI wedge — ghost-text autocomplete, Cmd+K inline edits, Ctrl+L
+multi-file composer — picks up the prose conventions you've written:
+"use tabs, never wrap at 80 cols," "fmt.Errorf wraps the underlying
+err," "imports stay grouped stdlib/third-party/local," whatever your
+project already standardizes. A Cursor user dropping nook into their
+existing repo gets the same model behavior with zero re-onboarding.
+
+The loader looks for `.nookrules` first, then falls back to
+`.cursorrules`. Both missing is the common case and a no-op — the AI
+wedges run unchanged. A whitespace-only file is treated as absent so
+an empty `touch .nookrules` doesn't register a useless status chip.
+
+A small `rules:nookrules` / `rules:cursorrules` chip appears on the
+right end of the status bar when a file is loaded, so the user knows
+the rules are live. Loaded once at startup; a future tick can add a
+file-system watcher if reload-without-restart turns out to matter.
+
+The rules are appended to each wedge's task-specific system prompt
+under a "Repository conventions" trailer. Each wedge keeps its
+specialized prompt (one-line edits for `edit`, fenced multi-file
+blocks for `composer`, single-line continuations for `ghost`) but
+inherits the user's prose conventions on top.
+
+### Added
+
+- `cmd/nook/internal/airules` package: `Load(root)` returning
+  `(Source, content, error)` where `Source` is `SourceNookrules`,
+  `SourceCursorrules`, or `SourceNone`; `AugmentSystemPrompt(base,
+  rules)` for the system-prompt trailer composition (empty rules is
+  a no-op); `StatusChip(source)` for the status-bar label.
+- `edit.Pane.WithRules(s)` setter wiring the workspace rules into
+  Cmd+K inline-edit requests.
+- `composer.Pane.WithRules(s)` setter wiring the workspace rules
+  into Ctrl+L multi-file composer requests.
+- `ghost.Manager.SetRules(s)` setter wiring the workspace rules into
+  inline ghost-text autocomplete requests.
+- Status-bar chip rendering `rules:nookrules` / `rules:cursorrules`
+  next to the diagnostic counts.
+
 ## [0.23.0] — 2026-05-24
 
 Workspace symbol search in `nook`. Press Ctrl+T, type a query, hit

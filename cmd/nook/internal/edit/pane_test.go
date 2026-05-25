@@ -153,3 +153,16 @@ func TestTrimToHandlesShort(t *testing.T) {
 		t.Fatalf("expected ellipsis truncation, got %q", got)
 	}
 }
+
+func TestWithRulesPersistsAcrossOpen(t *testing.T) {
+	p := NewPane(theme.Default, nil).WithRules("use tabs only")
+	p = p.Open("a.go", 0, "x := 1")
+	if p.rules != "use tabs only" {
+		t.Fatalf("WithRules content lost across Open; got %q", p.rules)
+	}
+	// Resetting rules to empty is a no-op-equivalent state.
+	p = p.WithRules("")
+	if p.rules != "" {
+		t.Fatalf("WithRules(\"\") should clear; got %q", p.rules)
+	}
+}

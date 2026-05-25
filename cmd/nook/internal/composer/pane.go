@@ -16,6 +16,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/aihistory"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/airules"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -102,6 +103,11 @@ type Pane struct {
 	// histCount caches Count(activePath) so View() doesn't take the
 	// store lock on every render.
 	histCount int
+
+	// rules is the trimmed contents of the workspace's .nookrules /
+	// .cursorrules file, or "" when neither is present. Appended to the
+	// system prompt at every startStream call.
+	rules string
 }
 
 // NewPane builds an empty composer.
@@ -151,6 +157,14 @@ func (p Pane) HistoryCount() int { return p.histCount }
 
 // ActivePath reports the path currently scoping history.
 func (p Pane) ActivePath() string { return p.activePath }
+
+// WithRules binds repo-level AI conventions (.nookrules / .cursorrules
+// content) to the pane. The rules are folded into the system prompt on
+// every subsequent startStream. Empty rules is a no-op.
+func (p Pane) WithRules(rules string) Pane {
+	p.rules = rules
+	return p
+}
 
 // WithSize updates layout dimensions.
 func (p Pane) WithSize(w, h int) Pane {
@@ -348,7 +362,7 @@ func (p Pane) startStream() (Pane, tea.Cmd) {
 	}
 	req := ai.Request{
 		Tier:   ai.Smart,
-		System: systemPrompt,
+		System: airules.AugmentSystemPrompt(systemPrompt, p.rules),
 		User:   buildUserPrompt(p.ctx, p.prompt, prior),
 	}
 	deltas, done := p.client.Stream(ctx, req)

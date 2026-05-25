@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/airules"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -69,6 +70,11 @@ type Pane struct {
 	width  int
 	height int
 
+	// rules is the trimmed contents of the workspace's .nookrules /
+	// .cursorrules file, or "" when neither is present. Appended to the
+	// system prompt at every startStream call.
+	rules string
+
 	cancel context.CancelFunc
 }
 
@@ -98,6 +104,15 @@ func (p Pane) Open(path string, line int, original string) Pane {
 		p.cancel()
 	}
 	p.cancel = nil
+	return p
+}
+
+// WithRules binds repo-level AI conventions (.nookrules / .cursorrules
+// content) to the pane. The rules are folded into the system prompt on
+// every subsequent startStream. Empty rules is a no-op at call time;
+// the pane behaves exactly as if no file were present.
+func (p Pane) WithRules(rules string) Pane {
+	p.rules = rules
 	return p
 }
 
@@ -214,7 +229,7 @@ func (p Pane) startStream() (Pane, tea.Cmd) {
 
 	req := ai.Request{
 		Tier:   ai.Fast,
-		System: systemPrompt,
+		System: airules.AugmentSystemPrompt(systemPrompt, p.rules),
 		User:   buildUserPrompt(p.path, p.line, p.original, p.prompt),
 		// Fence the output. We strip the fence before applying.
 		StopSequences: []string{"\n```", "```\n"},

@@ -24,6 +24,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/airules"
 )
 
 // DemoEnvVar is the env var that, when set, replaces every ghost-text AI
@@ -99,6 +100,11 @@ type Manager struct {
 	// totals — small counters useful for tests and the status bar.
 	requested int64
 	completed int64
+
+	// rules is the trimmed contents of the workspace's .nookrules /
+	// .cursorrules file, or "" when neither is present. Appended to the
+	// system prompt at every request call.
+	rules string
 }
 
 // NewManager constructs a Manager.
@@ -129,6 +135,25 @@ func NewManager(client *ai.Client) *Manager {
 		}
 	}
 	return &Manager{client: client, enabled: client != nil}
+}
+
+// SetRules binds repo-level AI conventions (.nookrules / .cursorrules
+// content) to the manager. The rules are folded into the system prompt
+// on every subsequent request. Empty rules is a no-op.
+func (m *Manager) SetRules(rules string) {
+	if m == nil {
+		return
+	}
+	m.rules = rules
+}
+
+// Rules returns the currently-bound rules string. Exposed for tests so a
+// harness can verify the manager picked up the host-loaded value.
+func (m *Manager) Rules() string {
+	if m == nil {
+		return ""
+	}
+	return m.rules
 }
 
 // Enabled reports whether ghost-text is wired (client present).
@@ -286,10 +311,11 @@ func (m *Manager) request(site Site) tea.Cmd {
 	m.inflight = cancel
 
 	client := m.client
+	rules := m.rules
 	return func() tea.Msg {
 		deltas, done := client.Stream(ctx, ai.Request{
 			Tier:          ai.Fast,
-			System:        systemPrompt(),
+			System:        airules.AugmentSystemPrompt(systemPrompt(), rules),
 			User:          userPrompt(site),
 			StopSequences: []string{"\n"},
 		})

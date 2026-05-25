@@ -237,3 +237,20 @@ func TestLongPrefixTruncated(t *testing.T) {
 		t.Fatalf("expected prefix truncated, got %d x's", strings.Count(out, "x"))
 	}
 }
+
+func TestSetRulesRoundTrip(t *testing.T) {
+	m := NewManager(nil)
+	if got := m.Rules(); got != "" {
+		t.Fatalf("fresh manager should have empty rules, got %q", got)
+	}
+	m.SetRules("always lowercase identifiers")
+	if got := m.Rules(); got != "always lowercase identifiers" {
+		t.Fatalf("SetRules round-trip failed; got %q", got)
+	}
+	// SetRules on a nil manager is a no-op (no panic).
+	var nilMgr *Manager
+	nilMgr.SetRules("anything")
+	if got := nilMgr.Rules(); got != "" {
+		t.Fatalf("nil manager Rules() should be empty; got %q", got)
+	}
+}

@@ -61,6 +61,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/aihistory"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/airules"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/bufman"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/codeaction"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
@@ -150,6 +151,13 @@ type model struct {
 
 	aiClient  *ai.Client
 	aiHistory *aihistory.Store // per-file composer transcript
+
+	// rulesSource names which file the AI conventions came from
+	// (".nookrules" / ".cursorrules" / none). The chip in the status
+	// bar is derived from this. rulesText is the trimmed contents
+	// folded into every AI wedge's system prompt.
+	rulesSource airules.Source
+	rulesText   string
 
 	// LSP wiring. lsp is lazily started on the first .go file open. Diagnostics
 	// are tracked per absolute path; lspVersions feeds incrementing didChange
@@ -342,6 +350,9 @@ func newModel(root string) model {
 	t, themeOK := resolveTheme(cfg.Editor.Theme)
 	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
 	aiHistory := aihistory.NewStore()
+	rulesSrc, rulesText, rulesErr := airules.Load(root)
+	ghostMgr := ghost.NewManager(aiClient)
+	ghostMgr.SetRules(rulesText)
 	snipLib := snippets.LoadDefaults()
 	if home, err := os.UserHomeDir(); err == nil {
 		// Best-effort overlay; missing dir is not an error.
@@ -354,6 +365,8 @@ func newModel(root string) model {
 	switch {
 	case loadErr != nil:
 		status = "config: " + loadErr.Error() + " (using defaults)"
+	case rulesErr != nil:
+		status = "rules: " + rulesErr.Error() + " (ai wedges unaffected)"
 	case !themeOK && !loadMissing:
 		status = "theme " + cfg.Editor.Theme + " not found; using default"
 	}
@@ -368,13 +381,15 @@ func newModel(root string) model {
 		termPane:     term.NewPane(t, root),
 		picker:       picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
 		search:       search.NewPane(t, root),
-		editPane:     edit.NewPane(t, aiClient),
-		composer:     composer.NewPane(t, aiClient).WithHistory(aiHistory),
-		ghost:        ghost.NewManager(aiClient),
+		editPane:     edit.NewPane(t, aiClient).WithRules(rulesText),
+		composer:     composer.NewPane(t, aiClient).WithHistory(aiHistory).WithRules(rulesText),
+		ghost:        ghostMgr,
 		right:        rightNone,
 		status:       status,
 		aiClient:     aiClient,
 		aiHistory:    aiHistory,
+		rulesSource:  rulesSrc,
+		rulesText:    rulesText,
 		lspVersions:  map[string]int32{},
 		diagnostics:  map[string][]protocol.Diagnostic{},
 		finder:       finder.New(t),
@@ -3224,6 +3239,10 @@ func (m model) renderStatusBar() string {
 
 	if errs, warns := m.diagCounts(); errs > 0 || warns > 0 {
 		parts = append(parts, muted.Render(fmt.Sprintf("●%dE %dW", errs, warns)))
+	}
+
+	if chip := airules.StatusChip(m.rulesSource); chip != "" {
+		parts = append(parts, muted.Render(chip))
 	}
 
 	sep := dim.Render("  ·  ")
