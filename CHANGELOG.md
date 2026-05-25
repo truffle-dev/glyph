@@ -6,6 +6,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-05-25
+
+Selections and a working clipboard land in `nook`. Shift+arrow extends a
+selection from an anchor; Ctrl+A selects the whole buffer; Ctrl+C copies,
+Ctrl+X cuts, Ctrl+V pastes. With no selection active, Ctrl+C and Ctrl+X
+operate on the current line (the VSCode default), including the trailing
+newline so a follow-up paste re-inserts the line above wherever the
+cursor lands. A subsequent movement key collapses the selection to the
+appropriate side (Left collapses to start, Right to end, vertical keys
+clear it).
+
+The new package `cmd/nook/internal/clip` is a register-first clipboard:
+every `Set` always updates an in-process register, then makes a
+best-effort 500ms shell-out to whichever helper is on the host —
+`wl-copy`, `xclip`, `xsel`, `pbcopy`, `clip.exe`, or PowerShell's
+`Get-Clipboard`. `Get` reads the OS clipboard when a helper exists and
+falls back to the register otherwise. This keeps cut / copy / paste
+fully functional in headless containers, in CI, and in tests, while
+still round-tripping with VS Code, Slack, and the rest of the host's
+applications when a helper is installed.
+
+The editor's `Pane` grows a `selecting` flag plus `anchorRow` /
+`anchorCol` and a small helper surface — `SelectAll`, `ClearSelection`,
+`CollapseToLeft` / `CollapseToRight`, `DeleteSelection`,
+`SelectionRange`, `SelectionText`, `HasSelection`. The selection
+renders with a `Primary` background and `TextInverse` foreground;
+on multi-row selections a trailing-space sentinel paints the
+newline-included cells so the eye reads "this line is part of the
+selection" without ambiguity. The render path's style precedence
+runs Cursor > Active Match > Selection > Other Match > Plain
+syntax, so a `Ctrl+F` hit under the selection stays salient.
+
+Backspace, Delete, Enter, Tab, Space, and rune-insertion all delete
+the active selection first when one exists, which preserves the
+"select and type to replace" idiom every modern editor implements.
+Esc clears a selection in preference to extra cursors; multi-cursor
+extras and selections are mutually exclusive (any Shift+motion
+clears extras).
+
+The help overlay grows a "Selection / Clipboard" section listing
+every binding. Twenty-six new tests cover the selection model, the
+clip package's round-trip and newline preservation, and end-to-end
+host bindings for Ctrl+A / C / X / V across both selection and
+empty-selection paths.
+
 ## [0.32.0] — 2026-05-25
 
 Navigation history (vim-style jump list) lands in `nook`. Every

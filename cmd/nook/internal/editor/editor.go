@@ -21,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/clip"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
@@ -188,6 +189,19 @@ type Pane struct {
 	// keys collapse extras to the primary. See applyAtAllCursors.
 	extras []extraCursor
 
+	// selecting flags whether a selection is active. When true, the selection
+	// extends from anchor (anchorRow, anchorCol) to head (row, col). The
+	// anchor is the side of the selection the user did NOT extend; the head
+	// is the side the cursor moves with. Shift+arrow extends the head;
+	// plain arrow collapses to one edge (Left→start, Right→end, Up/Down to
+	// the head before moving). Edit primitives delete the selection first
+	// when present. Selections and extra cursors are mutually exclusive —
+	// any operation that begins a selection clears extras, and any operation
+	// that adds an extra cursor clears the selection.
+	selecting bool
+	anchorRow int
+	anchorCol int
+
 	// tabWidth is the column count a hard tab expands to during rendering.
 	// Defaults to 4 (NewPane sets it). On-disk bytes always stay tabs.
 	tabWidth int
@@ -326,6 +340,210 @@ func (p Pane) CursorRow() int { return p.row }
 // CursorCol returns the 0-based cursor column.
 func (p Pane) CursorCol() int { return p.col }
 
+// HasSelection reports whether a selection is active. An "active but empty"
+// selection (anchor == head) is still reported as a selection so a held
+// Shift modifier reads correctly even before the first extension.
+func (p Pane) HasSelection() bool { return p.selecting }
+
+// AnchorRow returns the 0-based row of the selection anchor, or the cursor
+// row when no selection is active.
+func (p Pane) AnchorRow() int {
+	if !p.selecting {
+		return p.row
+	}
+	return p.anchorRow
+}
+
+// AnchorCol returns the 0-based column of the selection anchor, or the
+// cursor column when no selection is active.
+func (p Pane) AnchorCol() int {
+	if !p.selecting {
+		return p.col
+	}
+	return p.anchorCol
+}
+
+// SelectionRange returns the normalized selection bounds (startRow,
+// startCol) ≤ (endRow, endCol). Returns the cursor position twice when
+// no selection is active. End is exclusive on the row's byte range when
+// startRow == endRow; otherwise the end row's first endCol bytes are
+// selected.
+func (p Pane) SelectionRange() (startRow, startCol, endRow, endCol int) {
+	if !p.selecting {
+		return p.row, p.col, p.row, p.col
+	}
+	if p.anchorRow < p.row || (p.anchorRow == p.row && p.anchorCol <= p.col) {
+		return p.anchorRow, p.anchorCol, p.row, p.col
+	}
+	return p.row, p.col, p.anchorRow, p.anchorCol
+}
+
+// SelectionText returns the selection's text, joining lines with "\n".
+// Returns "" when no selection is active or it is empty.
+func (p Pane) SelectionText() string {
+	if !p.selecting {
+		return ""
+	}
+	sr, sc, er, ec := p.SelectionRange()
+	if sr == er && sc == ec {
+		return ""
+	}
+	if sr == er {
+		line := p.buf.Lines[sr]
+		if sc < 0 {
+			sc = 0
+		}
+		if ec > len(line) {
+			ec = len(line)
+		}
+		if sc >= ec {
+			return ""
+		}
+		return line[sc:ec]
+	}
+	parts := make([]string, 0, er-sr+1)
+	first := p.buf.Lines[sr]
+	if sc < 0 {
+		sc = 0
+	}
+	if sc > len(first) {
+		sc = len(first)
+	}
+	parts = append(parts, first[sc:])
+	for r := sr + 1; r < er; r++ {
+		parts = append(parts, p.buf.Lines[r])
+	}
+	last := p.buf.Lines[er]
+	if ec > len(last) {
+		ec = len(last)
+	}
+	if ec < 0 {
+		ec = 0
+	}
+	parts = append(parts, last[:ec])
+	return strings.Join(parts, "\n")
+}
+
+// SelectAll selects the entire buffer: anchor at (0,0), head past the last
+// rune of the last line. Clears extra cursors.
+func (p Pane) SelectAll() Pane {
+	p.extras = nil
+	p.anchorRow = 0
+	p.anchorCol = 0
+	if len(p.buf.Lines) == 0 {
+		p.row, p.col = 0, 0
+	} else {
+		p.row = len(p.buf.Lines) - 1
+		p.col = len(p.buf.Lines[p.row])
+	}
+	p.selecting = true
+	(&p).ensureVisible()
+	return p
+}
+
+// ClearSelection drops any active selection. The cursor stays at the head
+// position (the side it was last extended to). Returns the updated Pane.
+func (p Pane) ClearSelection() Pane {
+	p.selecting = false
+	p.anchorRow = p.row
+	p.anchorCol = p.col
+	return p
+}
+
+// CollapseToLeft moves the head to the selection start (the smaller of
+// anchor and current cursor) and clears the selection. No-op when no
+// selection is active.
+func (p Pane) CollapseToLeft() Pane {
+	if !p.selecting {
+		return p
+	}
+	sr, sc, _, _ := p.SelectionRange()
+	p.row, p.col = sr, sc
+	p.selecting = false
+	p.anchorRow, p.anchorCol = sr, sc
+	(&p).ensureVisible()
+	return p
+}
+
+// CollapseToRight moves the head to the selection end (the larger of
+// anchor and current cursor) and clears the selection. No-op when no
+// selection is active.
+func (p Pane) CollapseToRight() Pane {
+	if !p.selecting {
+		return p
+	}
+	_, _, er, ec := p.SelectionRange()
+	p.row, p.col = er, ec
+	p.selecting = false
+	p.anchorRow, p.anchorCol = er, ec
+	(&p).ensureVisible()
+	return p
+}
+
+// DeleteSelection removes the currently-selected range from the buffer and
+// places the cursor at the start of what was selected. Marks the buffer
+// dirty and clears the selection. Returns the updated Pane unchanged when
+// no selection is active.
+func (p Pane) DeleteSelection() Pane {
+	if !p.selecting {
+		return p
+	}
+	sr, sc, er, ec := p.SelectionRange()
+	if sr == er && sc == ec {
+		p.selecting = false
+		return p
+	}
+	if sr == er {
+		line := p.buf.Lines[sr]
+		if sc < 0 {
+			sc = 0
+		}
+		if ec > len(line) {
+			ec = len(line)
+		}
+		p.buf.Lines[sr] = line[:sc] + line[ec:]
+	} else {
+		first := p.buf.Lines[sr]
+		last := p.buf.Lines[er]
+		if sc < 0 {
+			sc = 0
+		}
+		if sc > len(first) {
+			sc = len(first)
+		}
+		if ec < 0 {
+			ec = 0
+		}
+		if ec > len(last) {
+			ec = len(last)
+		}
+		merged := first[:sc] + last[ec:]
+		p.buf.Lines[sr] = merged
+		p.buf.Lines = append(p.buf.Lines[:sr+1], p.buf.Lines[er+1:]...)
+	}
+	p.row, p.col = sr, sc
+	p.anchorRow, p.anchorCol = sr, sc
+	p.selecting = false
+	p.extras = nil
+	p.buf.Dirty = true
+	p.bufVer++
+	(&p).applyHighlight()
+	(&p).ensureVisible()
+	return p
+}
+
+// startSelectionIfNeeded marks the current cursor as the anchor when no
+// selection is active. Called by every Shift+motion handler before moving
+// the head.
+func (p *Pane) startSelectionIfNeeded() {
+	if !p.selecting {
+		p.anchorRow = p.row
+		p.anchorCol = p.col
+		p.selecting = true
+		p.extras = nil
+	}
+}
+
 // LineCount returns total lines.
 func (p Pane) LineCount() int { return len(p.buf.Lines) }
 
@@ -348,6 +566,9 @@ func (p Pane) Open(path string) Pane {
 	p.buf = b
 	p.path = path
 	p.row, p.col, p.offset = 0, 0, 0
+	p.anchorRow, p.anchorCol = 0, 0
+	p.selecting = false
+	p.extras = nil
 	p.err = err
 	p.bufVer++
 	(&p).applyHighlight()
@@ -371,6 +592,8 @@ func (p Pane) JumpTo(line, col int) Pane {
 	if p.col > max {
 		p.col = max
 	}
+	p.anchorRow, p.anchorCol = p.row, p.col
+	p.selecting = false
 	p.ensureVisible()
 	return p
 }
@@ -1157,6 +1380,11 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 	}
 	switch km.Type {
 	case tea.KeyEsc:
+		if p.selecting {
+			p.selecting = false
+			p.anchorRow, p.anchorCol = p.row, p.col
+			return p, nil
+		}
 		if len(p.extras) > 0 {
 			p.extras = nil
 			return p, nil
@@ -1164,6 +1392,43 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 		return p, func() tea.Msg { return CancelMsg{} }
 	case tea.KeyCtrlS:
 		return p, p.SaveCmd()
+	case tea.KeyCtrlA:
+		// Select-all replaces the prior Home-binding on Ctrl+A. Home still
+		// works on its dedicated key.
+		return p.SelectAll(), nil
+	case tea.KeyCtrlC:
+		// VSCode default: with selection, copy selection text; with no
+		// selection, copy the current line including its trailing newline so
+		// a paste re-inserts the whole line above wherever the cursor lands.
+		if p.selecting {
+			clip.Set(p.SelectionText())
+		} else {
+			clip.Set(p.buf.Lines[p.row] + "\n")
+		}
+		return p, nil
+	case tea.KeyCtrlX:
+		// VSCode default: with selection, cut it; with no selection, cut the
+		// current line (the line plus newline goes to the clipboard, and the
+		// line is removed from the buffer).
+		if p.selecting {
+			clip.Set(p.SelectionText())
+			p = p.DeleteSelection()
+		} else {
+			clip.Set(p.buf.Lines[p.row] + "\n")
+			(&p).deleteCurrentLine()
+		}
+	case tea.KeyCtrlV:
+		// Paste at the head. An active selection is replaced. Multi-cursor
+		// extras are cleared first so the splice points stay coherent.
+		text := clip.Get()
+		if text == "" {
+			return p, nil
+		}
+		p.extras = nil
+		if p.selecting {
+			p = p.DeleteSelection()
+		}
+		p = p.InsertText(text)
 	case tea.KeyCtrlD:
 		// Add a cursor at the end of the next whole-word match of the word
 		// under the primary cursor.
@@ -1174,22 +1439,22 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 	case tea.KeyCtrlDown:
 		// Stack a cursor on the row below the bottommost cursor.
 		p = p.AddCursorBelow()
-	case tea.KeyUp:
-		p.extras = nil
+	case tea.KeyShiftUp:
+		(&p).startSelectionIfNeeded()
 		if p.row > 0 {
 			p.row--
 			p.clampCol()
 		}
 		p.ensureVisible()
-	case tea.KeyDown:
-		p.extras = nil
+	case tea.KeyShiftDown:
+		(&p).startSelectionIfNeeded()
 		if p.row < len(p.buf.Lines)-1 {
 			p.row++
 			p.clampCol()
 		}
 		p.ensureVisible()
-	case tea.KeyLeft:
-		p.extras = nil
+	case tea.KeyShiftLeft:
+		(&p).startSelectionIfNeeded()
 		if p.col > 0 {
 			p.col--
 		} else if p.row > 0 {
@@ -1197,8 +1462,8 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p.col = len(p.buf.Lines[p.row])
 			p.ensureVisible()
 		}
-	case tea.KeyRight:
-		p.extras = nil
+	case tea.KeyShiftRight:
+		(&p).startSelectionIfNeeded()
 		if p.col < len(p.buf.Lines[p.row]) {
 			p.col++
 		} else if p.row < len(p.buf.Lines)-1 {
@@ -1206,14 +1471,80 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p.col = 0
 			p.ensureVisible()
 		}
-	case tea.KeyHome, tea.KeyCtrlA:
-		p.extras = nil
+	case tea.KeyShiftHome:
+		(&p).startSelectionIfNeeded()
 		p.col = 0
+	case tea.KeyShiftEnd:
+		(&p).startSelectionIfNeeded()
+		p.col = len(p.buf.Lines[p.row])
+	case tea.KeyUp:
+		p.extras = nil
+		p.selecting = false
+		if p.row > 0 {
+			p.row--
+			p.clampCol()
+		}
+		p.anchorRow, p.anchorCol = p.row, p.col
+		p.ensureVisible()
+	case tea.KeyDown:
+		p.extras = nil
+		p.selecting = false
+		if p.row < len(p.buf.Lines)-1 {
+			p.row++
+			p.clampCol()
+		}
+		p.anchorRow, p.anchorCol = p.row, p.col
+		p.ensureVisible()
+	case tea.KeyLeft:
+		p.extras = nil
+		if p.selecting {
+			// Collapse to selection start; no further movement.
+			sr, sc, _, _ := p.SelectionRange()
+			p.row, p.col = sr, sc
+			p.selecting = false
+			p.anchorRow, p.anchorCol = p.row, p.col
+			p.ensureVisible()
+			break
+		}
+		if p.col > 0 {
+			p.col--
+		} else if p.row > 0 {
+			p.row--
+			p.col = len(p.buf.Lines[p.row])
+			p.ensureVisible()
+		}
+		p.anchorRow, p.anchorCol = p.row, p.col
+	case tea.KeyRight:
+		p.extras = nil
+		if p.selecting {
+			_, _, er, ec := p.SelectionRange()
+			p.row, p.col = er, ec
+			p.selecting = false
+			p.anchorRow, p.anchorCol = p.row, p.col
+			p.ensureVisible()
+			break
+		}
+		if p.col < len(p.buf.Lines[p.row]) {
+			p.col++
+		} else if p.row < len(p.buf.Lines)-1 {
+			p.row++
+			p.col = 0
+			p.ensureVisible()
+		}
+		p.anchorRow, p.anchorCol = p.row, p.col
+	case tea.KeyHome:
+		p.extras = nil
+		p.selecting = false
+		p.col = 0
+		p.anchorRow, p.anchorCol = p.row, p.col
 	case tea.KeyEnd, tea.KeyCtrlE:
 		p.extras = nil
+		p.selecting = false
 		p.col = len(p.buf.Lines[p.row])
+		p.anchorRow, p.anchorCol = p.row, p.col
 	case tea.KeyPgUp:
 		p.extras = nil
+		p.selecting = false
 		jump := p.height - 2
 		if jump < 1 {
 			jump = 1
@@ -1223,9 +1554,11 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p.row = 0
 		}
 		p.clampCol()
+		p.anchorRow, p.anchorCol = p.row, p.col
 		p.ensureVisible()
 	case tea.KeyPgDown:
 		p.extras = nil
+		p.selecting = false
 		jump := p.height - 2
 		if jump < 1 {
 			jump = 1
@@ -1235,39 +1568,56 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p.row = len(p.buf.Lines) - 1
 		}
 		p.clampCol()
+		p.anchorRow, p.anchorCol = p.row, p.col
 		p.ensureVisible()
 	case tea.KeyBackspace:
-		if len(p.extras) > 0 {
+		if p.selecting {
+			p = p.DeleteSelection()
+		} else if len(p.extras) > 0 {
 			(&p).backspaceAllCursors()
 		} else {
 			p.delBack()
 		}
 	case tea.KeyDelete:
-		if len(p.extras) > 0 {
+		if p.selecting {
+			p = p.DeleteSelection()
+		} else if len(p.extras) > 0 {
 			(&p).delForwardAllCursors()
 		} else {
 			p.delForward()
 		}
 	case tea.KeyEnter:
-		if len(p.extras) > 0 {
+		if p.selecting {
+			p = p.DeleteSelection()
+			p.insertNewline()
+		} else if len(p.extras) > 0 {
 			(&p).newlineAllCursors()
 		} else {
 			p.insertNewline()
 		}
 	case tea.KeyTab:
-		if len(p.extras) > 0 {
+		if p.selecting {
+			p = p.DeleteSelection()
+			p.insertRunes([]rune{'\t'})
+		} else if len(p.extras) > 0 {
 			(&p).insertRunesAllCursors([]rune{'\t'})
 		} else {
 			p.insertRunes([]rune{'\t'})
 		}
 	case tea.KeySpace:
-		if len(p.extras) > 0 {
+		if p.selecting {
+			p = p.DeleteSelection()
+			p.insertRunes([]rune{' '})
+		} else if len(p.extras) > 0 {
 			(&p).insertRunesAllCursors([]rune{' '})
 		} else {
 			p.insertRunes([]rune{' '})
 		}
 	case tea.KeyRunes:
-		if len(p.extras) > 0 {
+		if p.selecting {
+			p = p.DeleteSelection()
+			p.insertRunes(km.Runes)
+		} else if len(p.extras) > 0 {
 			(&p).insertRunesAllCursors(km.Runes)
 		} else {
 			p.insertRunes(km.Runes)
@@ -1401,6 +1751,33 @@ func (p *Pane) delForward() {
 	p.buf.Lines = append(p.buf.Lines[:p.row+1], p.buf.Lines[p.row+2:]...)
 	p.buf.Dirty = true
 	p.bufVer++
+}
+
+// deleteCurrentLine removes the row the primary cursor sits on. Used by Ctrl+X
+// when no selection is active (VSCode default: cut entire line). The cursor
+// stays on the same row index when possible, landing at column 0; on the last
+// row it drops one row. A single-line buffer becomes one empty line.
+func (p *Pane) deleteCurrentLine() {
+	if len(p.buf.Lines) <= 1 {
+		p.buf.Lines = []string{""}
+		p.row, p.col = 0, 0
+		p.anchorRow, p.anchorCol = 0, 0
+		p.buf.Dirty = true
+		p.bufVer++
+		p.applyHighlight()
+		p.ensureVisible()
+		return
+	}
+	p.buf.Lines = append(p.buf.Lines[:p.row], p.buf.Lines[p.row+1:]...)
+	if p.row >= len(p.buf.Lines) {
+		p.row = len(p.buf.Lines) - 1
+	}
+	p.col = 0
+	p.anchorRow, p.anchorCol = p.row, p.col
+	p.buf.Dirty = true
+	p.bufVer++
+	p.applyHighlight()
+	p.ensureVisible()
 }
 
 // insertRunesAllCursors inserts r at every cursor in ascending order, advancing
@@ -1552,6 +1929,19 @@ func (p Pane) View() string {
 		sort.Ints(cursorsByRow[r])
 	}
 
+	// Compute per-row selection bounds once. selStartRow/selEndRow bracket
+	// the visible band of selection; on rows in the middle of a multi-line
+	// selection, the byte range covers the full row + the trailing newline
+	// indicator (rendered as a single trailing space).
+	selActive := p.selecting
+	var selStartRow, selStartCol, selEndRow, selEndCol int
+	if selActive {
+		selStartRow, selStartCol, selEndRow, selEndCol = p.SelectionRange()
+		if selStartRow == selEndRow && selStartCol == selEndCol {
+			selActive = false
+		}
+	}
+
 	var rows []string
 	for i := p.offset; i < end; i++ {
 		var gut string
@@ -1598,6 +1988,28 @@ func (p Pane) View() string {
 		spans := p.spans.Spans(i)
 		marks, activeIdx := p.matchesForRow(i)
 		hints := p.InlayHintsAt(i)
+		// Selection bounds for this row: -1/-1 when this row is outside
+		// the selection. Mid-rows of a multi-line selection get a full
+		// row coverage plus a one-cell trailing tail (rendered after the
+		// last rune) to indicate the newline is included.
+		selStart, selEnd, selTail := -1, -1, false
+		if selActive && i >= selStartRow && i <= selEndRow {
+			switch {
+			case selStartRow == selEndRow:
+				selStart, selEnd = selStartCol, selEndCol
+			case i == selStartRow:
+				selStart = selStartCol
+				selEnd = len(raw)
+				selTail = true
+			case i == selEndRow:
+				selStart = 0
+				selEnd = selEndCol
+			default:
+				selStart = 0
+				selEnd = len(raw)
+				selTail = true
+			}
+		}
 		var line string
 		cols, hasCursors := cursorsByRow[i]
 		if hasCursors {
@@ -1609,9 +2021,9 @@ func (p Pane) View() string {
 					ghost = p.ghostText
 				}
 			}
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail)
 		} else {
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", hints, contentWidth, t, false, tabW)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail)
 		}
 		if p.blameVisible && i == p.row {
 			if entry, ok := p.BlameAt(i); ok {
@@ -1809,7 +2221,11 @@ func (p Pane) matchesForRow(row int) ([]Range, int) {
 // hints is the inlay-hint slice for the row; each renders as dim italic text
 // at its display column, between the rune at that column and the rune to its
 // left. Hints anchored at or past end-of-line render after the last rune.
-func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int) string {
+// selStart/selEnd are raw-byte columns (inclusive/exclusive) covered by the
+// active selection on this row; -1/-1 means no selection on this row. selTail
+// is true when the selection extends past EOL on this row (mid-rows of a
+// multi-line selection); a trailing space is painted to make the wrap visible.
+func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int, selStart, selEnd int, selTail bool) string {
 	if tabWidth <= 0 {
 		tabWidth = 4
 	}
@@ -1826,15 +2242,26 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	if string(t.Warning) == "" {
 		matchActiveBG = lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary).Bold(true)
 	}
+	// selBG paints the active text selection. Background is the primary
+	// accent (the same band the cursor cell wears) so a held Shift+motion
+	// reads as a single contiguous painted region; foreground flips to
+	// TextInverse so syntax colors stay legible over the strong band.
+	selBG := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary)
+	if string(t.Primary) == "" {
+		selBG = lipgloss.NewStyle().Background(t.SurfaceStrong)
+	}
 	palette := syntaxPalette(t)
 
 	// Pre-expand tabs and build a raw-byte -> display-column index so spans
 	// and the cursor map cleanly into expanded coords. expandedRunes holds
 	// the runes we'll emit; runeKind[i] is the Kind backing expandedRunes[i];
-	// runeMatch[i] tags whether the rune is inside a finder match (and which).
+	// runeMatch[i] tags whether the rune is inside a finder match (and which);
+	// runeSel[i] flags whether the rune sits inside the active selection.
+	hasSel := selStart >= 0 && selEnd > selStart
 	var expanded []rune
 	var runeKind []highlight.Kind
 	var runeMatch []matchKind
+	var runeSel []bool
 	rawToExpStart := make([]int, len(raw)+1) // raw byte offset -> first expanded rune idx
 	for i := 0; i < len(raw); i++ {
 		rawToExpStart[i] = len(expanded)
@@ -1863,11 +2290,13 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 				mk = matchOther
 			}
 		}
+		sel := hasSel && i >= selStart && i < selEnd
 		if c == '\t' {
 			for k := 0; k < tabWidth; k++ {
 				expanded = append(expanded, ' ')
 				runeKind = append(runeKind, highlight.KindPlain)
 				runeMatch = append(runeMatch, mk)
+				runeSel = append(runeSel, sel)
 			}
 			continue
 		}
@@ -1877,6 +2306,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		expanded = append(expanded, rune(c))
 		runeKind = append(runeKind, kind)
 		runeMatch = append(runeMatch, mk)
+		runeSel = append(runeSel, sel)
 	}
 	rawToExpStart[len(raw)] = len(expanded)
 
@@ -1987,6 +2417,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 			expanded = expanded[:budget]
 			runeKind = runeKind[:budget]
 			runeMatch = runeMatch[:budget]
+			runeSel = runeSel[:budget]
 			ghostRunes = nil
 		} else {
 			remain := budget - len(expanded)
@@ -2010,19 +2441,27 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		dispHintsByCol[hi.col] = append(dispHintsByCol[hi.col], hi)
 	}
 
-	// Emit. Batch contiguous runes of the same (kind, matchKind) pair into one
-	// Style.Render call — per-rune emission inflates ANSI overhead and breaks
-	// substring asserts in tests because each rune gets surrounded by escape
-	// codes. The cursor cell breaks the run and is emitted separately.
+	// Emit. Batch contiguous runes of the same (kind, matchKind, sel) tuple
+	// into one Style.Render call — per-rune emission inflates ANSI overhead
+	// and breaks substring asserts in tests because each rune gets
+	// surrounded by escape codes. The cursor cell breaks the run and is
+	// emitted separately. Selection takes precedence over the inactive
+	// match band but yields to the active search match (so a Ctrl+F hit
+	// stays salient while the user grows the selection toward it).
 	var b strings.Builder
-	flush := func(buf []rune, k highlight.Kind, m matchKind) {
+	flush := func(buf []rune, k highlight.Kind, m matchKind, sel bool) {
 		if len(buf) == 0 {
 			return
 		}
-		switch m {
-		case matchActive:
+		if m == matchActive {
 			b.WriteString(matchActiveBG.Render(string(buf)))
 			return
+		}
+		if sel {
+			b.WriteString(selBG.Render(string(buf)))
+			return
+		}
+		switch m {
 		case matchOther:
 			// Layer syntax color over the match background. lipgloss styles
 			// merge cleanly when applied via Background + Foreground in one
@@ -2059,14 +2498,15 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	var run []rune
 	var runKind highlight.Kind
 	var runMatch matchKind
+	var runSel bool
 	for i, r := range expanded {
 		if _, hasHint := dispHintsByCol[i]; hasHint {
-			flush(run, runKind, runMatch)
+			flush(run, runKind, runMatch, runSel)
 			run = nil
 			emitHintsAt(i)
 		}
 		if drawCursor && dispCursorSet[i] {
-			flush(run, runKind, runMatch)
+			flush(run, runKind, runMatch, runSel)
 			run = nil
 			b.WriteString(cur.Render(string(r)))
 			continue
@@ -2076,18 +2516,30 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		if i < len(runeMatch) {
 			m = runeMatch[i]
 		}
-		if len(run) > 0 && (k != runKind || m != runMatch) {
-			flush(run, runKind, runMatch)
+		var sel bool
+		if i < len(runeSel) {
+			sel = runeSel[i]
+		}
+		if len(run) > 0 && (k != runKind || m != runMatch || sel != runSel) {
+			flush(run, runKind, runMatch, runSel)
 			run = run[:0]
 		}
 		runKind = k
 		runMatch = m
+		runSel = sel
 		run = append(run, r)
 	}
-	flush(run, runKind, runMatch)
+	flush(run, runKind, runMatch, runSel)
 	// EOL hints (anchored at or past the last rune) render before ghost-text
 	// and the end-cursor cell so they sit naturally after the line content.
 	emitHintsAt(len(expanded))
+	// Trailing selection tail. Mid-rows of a multi-line selection extend past
+	// EOL; render one painted cell so the wrap to the next line reads as a
+	// continuous band. Suppressed when the cursor is at EOL (the cursor cell
+	// owns that visual real estate).
+	if selTail && !cursorAtEnd && !clipped {
+		b.WriteString(selBG.Render(" "))
+	}
 	// Ghost text rendered next; first rune cursor-styled if the PRIMARY cursor
 	// is at EOL (no rune under it), else all muted. Extra cursors do not anchor
 	// ghost text.
@@ -2134,17 +2586,6 @@ func syntaxPalette(t theme.Theme) map[highlight.Kind]lipgloss.Style {
 		highlight.KindNamespace:   lipgloss.NewStyle().Foreground(pick(t.SyntaxNamespace, t.Info)),
 		highlight.KindReadonly:    lipgloss.NewStyle().Foreground(pick(t.SyntaxReadonly, t.Accent)),
 	}
-}
-
-func clip(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	if w <= 1 {
-		return string(r[:w])
-	}
-	return string(r[:w-1]) + "…"
 }
 
 func numWidth(n int) int {
