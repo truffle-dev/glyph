@@ -89,6 +89,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/signature"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/symbolsearch"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tabbar"
@@ -296,6 +297,17 @@ type model struct {
 	// stopped cleanly when the overlay closes.
 	tasksPane    tasks.Pane
 	activeRunner *tasks.Runner
+
+	// LSP signature help (parameter hints). Auto-fires on '(' inside a
+	// buffer with an attached language server; auto-closes on ')' or Esc.
+	// Unlike outline/symbolsearch this is a hint overlay — it never
+	// captures input — so it lives off the overlay enum and renders only
+	// when sigPane.IsOpen(). sigReqPath/Row/Col echo the request inputs
+	// so a late response after the cursor moved gets discarded.
+	sigPane    signature.Pane
+	sigReqPath string
+	sigReqRow  int
+	sigReqCol  int
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -425,6 +437,7 @@ func newModel(root string) model {
 		tabWidth:       cfg.Editor.TabWidth,
 		snipLib:        snipLib,
 		tasksPane:      tasks.NewPane(t, root),
+		sigPane:        signature.New(),
 	}
 }
 
@@ -964,6 +977,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.overlay = overlayHover
 		return m, nil
 
+	case lookup.SignatureHelpMsg:
+		// Discard stale: only honor a response that matches the pin
+		// captured when we fired the request. Avoids painting an
+		// overlay for a paren the user has already closed.
+		if msg.Path != m.sigReqPath || msg.Row != m.sigReqRow || msg.Col != m.sigReqCol {
+			return m, nil
+		}
+		// Signature help is a hint, not a command surface; swallow
+		// errors and empties silently instead of writing to status.
+		if msg.Err != nil || len(msg.Info.Signatures) == 0 {
+			m.sigPane = m.sigPane.Close()
+			return m, nil
+		}
+		w := m.width - 4
+		if w > 64 {
+			w = 64
+		}
+		m.sigPane = m.sigPane.Open(msg.Info).WithSize(w)
+		return m, nil
+
 	case lookup.DefinitionMsg:
 		if msg.Err != nil {
 			m.status = "definition: " + msg.Err.Error()
@@ -1380,6 +1413,7 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch km.Runes[0] {
 		case ']':
 			m.bufs.Next()
+			m.sigPane = m.sigPane.Close()
 			m = m.resize()
 			m = m.applyDiagnosticsToActive()
 			if p := m.bufs.Active(); p != nil {
@@ -1391,6 +1425,7 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case '[':
 			m.bufs.Prev()
+			m.sigPane = m.sigPane.Close()
 			m = m.resize()
 			m = m.applyDiagnosticsToActive()
 			if p := m.bufs.Active(); p != nil {
@@ -1598,6 +1633,14 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		*p = p.Focus()
 	}
 
+	// Signature-help dismissal on Esc takes precedence over the editor's
+	// default handling so the user can clear a stale hint without losing
+	// their place. Only swallows the Esc when the pane is actually open.
+	if km.Type == tea.KeyEsc && m.sigPane.IsOpen() {
+		m.sigPane = m.sigPane.Close()
+		return m, nil
+	}
+
 	// Ghost-text key handling: Tab accepts a pending proposal; Esc dismisses
 	// it (and doesn't propagate). Any other key invalidates the current
 	// proposal but otherwise falls through.
@@ -1634,6 +1677,16 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.lspVersions[p.Path()] = v
 		cmds = append(cmds, m.lspChangeCmd(p.Path(), v, p.Contents()))
 	}
+	// Signature-help trigger: '(' or ',' opens or refreshes the parameter
+	// hint overlay; ')' closes it. The closure is intentionally narrow —
+	// signature help is a hint, not a flow, so we only honor the explicit
+	// open/close characters and an Esc swept up elsewhere.
+	if newM, sigCmd := m.maybeUpdateSignatureHelp(km, p); sigCmd != nil {
+		m = newM
+		cmds = append(cmds, sigCmd)
+	} else {
+		m = newM
+	}
 	// After the editor state changes, ask ghost whether to schedule a request.
 	if tcmd := m.scheduleGhost(); tcmd != nil {
 		cmds = append(cmds, tcmd)
@@ -1656,6 +1709,59 @@ func isMutatingKey(t tea.KeyType) bool {
 		return true
 	}
 	return false
+}
+
+// maybeUpdateSignatureHelp reacts to the just-typed key by opening,
+// refreshing, or closing the signature-help overlay. Returns the updated
+// model (sigPane state and request-pin fields may change) and a tea.Cmd
+// fetching fresh signature info when the keystroke warrants it. The
+// trigger rules: '(' fires a new fetch (entered call expression);
+// ',' fires a new fetch when the pane is already open (active parameter
+// likely advanced); ')' closes the pane. Buffers with no path or no LSP
+// are no-ops — the signature overlay can't have anything to show.
+func (m model) maybeUpdateSignatureHelp(km tea.KeyMsg, p *editor.Pane) (model, tea.Cmd) {
+	if p == nil || p.Path() == "" {
+		if m.sigPane.IsOpen() {
+			m.sigPane = m.sigPane.Close()
+		}
+		return m, nil
+	}
+	if km.Type != tea.KeyRunes || len(km.Runes) != 1 {
+		return m, nil
+	}
+	r := km.Runes[0]
+	switch r {
+	case ')':
+		if m.sigPane.IsOpen() {
+			m.sigPane = m.sigPane.Close()
+		}
+		return m, nil
+	case '(':
+		// Open or refresh: fire a fresh request at the current cursor.
+	case ',':
+		// Only refresh if the overlay is already up — typing a comma in
+		// prose shouldn't summon a signature box.
+		if !m.sigPane.IsOpen() {
+			return m, nil
+		}
+	default:
+		return m, nil
+	}
+	if m.lsp == nil {
+		return m, nil
+	}
+	row := p.CursorRow() - 1
+	col := p.CursorCol() - 1
+	if row < 0 {
+		row = 0
+	}
+	if col < 0 {
+		col = 0
+	}
+	m.sigReqPath = p.Path()
+	m.sigReqRow = row
+	m.sigReqCol = col
+	return m, lookup.SignatureHelpCmd(m.lsp, p.Path(), row, col)
 }
 
 // scheduleGhost asks the ghost manager whether to schedule a new debounced
@@ -2729,6 +2835,7 @@ func (m model) closeActiveTab() (tea.Model, tea.Cmd) {
 	path := m.bufs.CloseActive()
 	delete(m.lspVersions, path)
 	delete(m.diagnostics, path)
+	m.sigPane = m.sigPane.Close()
 	var cmd tea.Cmd
 	if m.lsp != nil && isGoFile(path) {
 		cmd = m.lspCloseCmd(path)
@@ -3254,12 +3361,22 @@ func (m model) View() string {
 		finderBar = m.finder.View()
 	}
 
+	var sigBar string
+	var sigBarH int
+	if m.sigPane.IsOpen() {
+		sigBar = m.sigPane.View(t)
+		sigBarH = lipgloss.Height(sigBar)
+	}
+
 	bodyH := m.height - 2
 	if tabBar != "" {
 		bodyH--
 	}
 	if fh := m.finder.Height(); fh > 0 {
 		bodyH -= fh
+	}
+	if sigBarH > 0 {
+		bodyH -= sigBarH
 	}
 	verticalBar := func() string {
 		return lipgloss.NewStyle().Foreground(t.Border).Render(strings.Repeat("│\n", bodyH))
@@ -3300,11 +3417,14 @@ func (m model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, pieces...)
 	}
 
-	segments := make([]string, 0, 4)
+	segments := make([]string, 0, 5)
 	if tabBar != "" {
 		segments = append(segments, tabBar)
 	}
 	segments = append(segments, body)
+	if sigBar != "" {
+		segments = append(segments, sigBar)
+	}
 	if finderBar != "" {
 		segments = append(segments, finderBar)
 	}

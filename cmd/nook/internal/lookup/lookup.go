@@ -253,3 +253,31 @@ func InlayHintCmd(client *nooklsp.Client, path string, version int32, startLine,
 		return InlayHintMsg{Path: path, Version: version, Hints: inlayhint.ByRow(hints)}
 	}
 }
+
+// SignatureHelpMsg carries the result of a textDocument/signatureHelp
+// request back to the host model. Path/Row/Col echo the request inputs so
+// a late response (the user moved on) can be discarded. Info.Signatures is
+// empty when the cursor is not inside a call expression.
+type SignatureHelpMsg struct {
+	Path string
+	Row  int
+	Col  int
+	Info nooklsp.SignatureInfo
+	Err  error
+}
+
+// SignatureHelpCmd returns a tea.Cmd that calls client.SignatureHelp and
+// wraps the result in SignatureHelpMsg. nil-client returns the message
+// with errNoClient so the host can bind '(' unconditionally — a buffer
+// with no language server attached just silently never opens the overlay.
+func SignatureHelpCmd(client *nooklsp.Client, path string, row, col int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return SignatureHelpMsg{Path: path, Row: row, Col: col, Err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		info, err := client.SignatureHelp(ctx, path, row, col)
+		return SignatureHelpMsg{Path: path, Row: row, Col: col, Info: info, Err: err}
+	}
+}

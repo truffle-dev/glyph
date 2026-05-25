@@ -6,6 +6,84 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-05-25
+
+LSP signature help in `nook`. Type `(` inside a function call and a
+small bordered overlay appears at the bottom of the editor showing
+the call's signature with the parameter you're about to fill bolded
+and highlighted. Type a `,` and the highlight slides to the next
+parameter. Type `)` or press `Esc` and the overlay vanishes. The
+trigger is intentionally narrow — signature help is a hint, not a
+flow — so the only keys that open or close it are the call-expression
+delimiters and Esc. While the overlay is up, every other key (typing
+arguments, deleting, moving) leaves it alone.
+
+Two label shapes both work. Gopls's legacy form sends the parameter
+label as a plain string and expects the client to find it inside the
+parent signature string; rust-analyzer and typescript-language-server
+send a `[start, end]` offset pair pointing into the parent signature
+directly. The client advertises `parameterInformation.labelOffsetSupport`
+so servers that can use offsets do, and the decoder tries the offset
+form first, falling back to substring search on the string form.
+Either way the active parameter's range gets reverse-styled with the
+theme primary, and the row that paints it is rune-indexed so multi-byte
+identifiers don't shift the highlight.
+
+Multiple overloads are honored — the LSP response's `activeSignature`
+index selects which one shows, and a small "n of m" italic counter
+appears under the signature when more than one is available. Overload
+cycling between them (Alt+↑/↓ on the overlay) is deferred to a later
+release; for now the server's choice is the one the user sees.
+
+Signature-level and parameter-level documentation both render under the
+signature, wrapped at the overlay's inner width and clamped at four
+lines so a chatty typescript-language-server response can't blow out
+the screen. When the two docs match exactly (gopls sometimes echoes the
+summary into both fields) the duplicate is suppressed.
+
+### Added
+
+- `cmd/nook/internal/signature` package: pure-value `Pane` overlay with
+  `New()`, `WithSize(w)`, `Open(info)`, `Close()`, `IsOpen()`, `Info()`,
+  `ActiveSignature()`, and `View(theme)`. Renders a bordered surface
+  with the signature label, an optional "n of m" overload counter for
+  multi-signature responses, the active parameter's documentation, and
+  the signature-level documentation (each independently word-wrapped
+  and line-clamped). Helpers `clampLine`, `wrapAndClamp`, and
+  `formatCounter` cover the truncation and label shape.
+
+- `lsp.Client.SignatureHelp(ctx, path, line, col)` calls
+  `textDocument/signatureHelp` and returns a strongly-typed
+  `SignatureInfo{Signatures, ActiveSignature}` regardless of which
+  label shape the server uses. Decoder handles polymorphic
+  `Documentation` (string or `MarkupContent`) and polymorphic
+  `Parameter.Label` (string substring or `[start, end]` offset pair),
+  per the LSP spec.
+
+- `SignatureHelpTextDocumentClientCapabilities` is advertised in
+  `Initialize`, including
+  `parameterInformation.labelOffsetSupport: true` and
+  `activeParameterSupport: true`. Servers that respect these (most
+  modern ones) send offset-form labels and per-signature active
+  parameter indexes; servers that don't still work via the substring
+  fallback.
+
+- `lookup.SignatureHelpCmd` / `lookup.SignatureHelpMsg`: standard
+  async LSP wrapper following the established `HoverCmd` / `HoverMsg`
+  pattern (2-second timeout, nil-client guard, stale-request discard
+  via path/row/col pin in the host model).
+
+- `(` listed in the keymap under "Language server" with the description
+  "Signature help (parameter hints auto-fire on '(', close on ')' or
+  esc)".
+
+### Changed
+
+- `nook` host model carries an open/closed `sigPane` plus the
+  request-pin (`sigReqPath`, `sigReqRow`, `sigReqCol`) so late
+  responses to a paren the user has since closed are silently
+  discarded.
+
 ## [0.25.0] — 2026-05-25
 
 File outline modal in `nook`. Press `Ctrl+\` inside any file and a

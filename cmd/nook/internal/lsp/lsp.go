@@ -137,6 +137,17 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 				Hover: &protocol.HoverTextDocumentClientCapabilities{
 					ContentFormat: []protocol.MarkupKind{protocol.PlainText, protocol.Markdown},
 				},
+				SignatureHelp: &protocol.SignatureHelpTextDocumentClientCapabilities{
+					DynamicRegistration: false,
+					SignatureInformation: &protocol.TextDocumentClientCapabilitiesSignatureInformation{
+						DocumentationFormat:    []protocol.MarkupKind{protocol.PlainText, protocol.Markdown},
+						ActiveParameterSupport: true,
+						ParameterInformation: &protocol.TextDocumentClientCapabilitiesParameterInformation{
+							LabelOffsetSupport: true,
+						},
+					},
+					ContextSupport: true,
+				},
 				Definition: &protocol.DefinitionTextDocumentClientCapabilities{
 					LinkSupport: false,
 				},
@@ -550,6 +561,188 @@ func (c *Client) References(ctx context.Context, path string, line, col int) ([]
 		})
 	}
 	return out, nil
+}
+
+// SignatureParam is one parameter of a signature. Start and End are rune
+// offsets into the containing Signature.Label (start inclusive, end
+// exclusive). When the server emits a string label rather than offsets,
+// the client resolves them by locating the substring inside the parent
+// label; if no match is found, Start == End == 0 so the renderer skips
+// the parameter highlight without crashing.
+type SignatureParam struct {
+	Label string
+	Doc   string
+	Start int
+	End   int
+}
+
+// Signature is one callable's signature. ActiveParameter is the index into
+// Parameters that should be highlighted, or -1 when the server did not
+// nominate one. Parameters may be empty for a niladic function.
+type Signature struct {
+	Label           string
+	Doc             string
+	Parameters      []SignatureParam
+	ActiveParameter int
+}
+
+// SignatureInfo is the host-side view of a textDocument/signatureHelp
+// response. Signatures is empty (not nil) when the server resolves
+// nothing; ActiveSignature is -1 in that case.
+type SignatureInfo struct {
+	Signatures      []Signature
+	ActiveSignature int
+}
+
+// SignatureHelp asks the server for parameter hints for the call expression
+// surrounding the cursor at (line, col), 0-indexed. The wedge tries the
+// modern label-offset shape first (LSP 3.14+) and falls back to substring
+// matching when the server emits string parameter labels. nil-client and
+// empty-server return an initialization error so the host can wire the
+// keybind unconditionally and surface a hint when the LSP is still
+// attaching.
+//
+// We drive the call via the raw jsonrpc2 connection because LSP's
+// ParameterInformation.Label is "string | [uint32, uint32]" but the
+// typed protocol package types it as plain string — the typed decoder
+// silently drops the offset-pair form. Most servers (rust-analyzer,
+// typescript-language-server) emit the offset pair when the client
+// declares LabelOffsetSupport, which we do.
+func (c *Client) SignatureHelp(ctx context.Context, path string, line, col int) (SignatureInfo, error) {
+	if c == nil || c.conn == nil {
+		return SignatureInfo{Signatures: []Signature{}, ActiveSignature: -1}, errors.New("lsp: client not initialized")
+	}
+	params := map[string]any{
+		"textDocument": map[string]any{"uri": string(uri.File(path))},
+		"position":     map[string]any{"line": line, "character": col},
+	}
+	var raw rawSignatureHelp
+	hasResp, err := c.conn.Call(ctx, "textDocument/signatureHelp", params, &raw)
+	_ = hasResp
+	if err != nil {
+		return SignatureInfo{Signatures: []Signature{}, ActiveSignature: -1}, fmt.Errorf("lsp: signatureHelp: %w", err)
+	}
+	return decodeSignatureHelp(raw), nil
+}
+
+// rawSignatureHelp is the wire shape we decode into.
+type rawSignatureHelp struct {
+	Signatures      []rawSignature `json:"signatures"`
+	ActiveSignature *int           `json:"activeSignature,omitempty"`
+	ActiveParameter *int           `json:"activeParameter,omitempty"`
+}
+
+type rawSignature struct {
+	Label           string              `json:"label"`
+	Documentation   json.RawMessage     `json:"documentation,omitempty"`
+	Parameters      []rawSignatureParam `json:"parameters,omitempty"`
+	ActiveParameter *int                `json:"activeParameter,omitempty"`
+}
+
+type rawSignatureParam struct {
+	Label         json.RawMessage `json:"label"`
+	Documentation json.RawMessage `json:"documentation,omitempty"`
+}
+
+// decodeSignatureHelp normalizes the wire form. Empty/null result becomes
+// (zero signatures, ActiveSignature=-1).
+func decodeSignatureHelp(raw rawSignatureHelp) SignatureInfo {
+	out := SignatureInfo{Signatures: make([]Signature, 0, len(raw.Signatures)), ActiveSignature: -1}
+	for _, s := range raw.Signatures {
+		sig := Signature{
+			Label:           s.Label,
+			Doc:             decodeMarkupOrString(s.Documentation),
+			ActiveParameter: -1,
+		}
+		if s.ActiveParameter != nil {
+			sig.ActiveParameter = *s.ActiveParameter
+		}
+		labelRunes := []rune(s.Label)
+		for _, p := range s.Parameters {
+			pi := SignatureParam{
+				Doc: decodeMarkupOrString(p.Documentation),
+			}
+			pi.Label, pi.Start, pi.End = decodeParameterLabel(p.Label, s.Label, labelRunes)
+			sig.Parameters = append(sig.Parameters, pi)
+		}
+		out.Signatures = append(out.Signatures, sig)
+	}
+	if raw.ActiveSignature != nil {
+		out.ActiveSignature = *raw.ActiveSignature
+	} else if len(out.Signatures) > 0 {
+		out.ActiveSignature = 0
+	}
+	// If the top-level ActiveParameter is set, it overrides any per-signature
+	// value (per LSP 3.16: top-level activeParameter is the future-default).
+	if raw.ActiveParameter != nil && out.ActiveSignature >= 0 && out.ActiveSignature < len(out.Signatures) {
+		out.Signatures[out.ActiveSignature].ActiveParameter = *raw.ActiveParameter
+	}
+	return out
+}
+
+// decodeParameterLabel resolves the parameter's label and rune offsets.
+// LSP allows label to be either a string substring of the parent label
+// or a [start, end] pair of UTF-16 offsets. We treat the offsets as rune
+// indexes — for the common ASCII/BMP function signatures gopls and
+// rust-analyzer emit, that's a faithful equivalence; surrogate pairs in
+// identifier names are vanishingly rare. When the server gives us a
+// substring, we find its first occurrence in the parent label and emit
+// rune offsets. If neither shape decodes, we return ("", 0, 0).
+func decodeParameterLabel(raw json.RawMessage, parentLabel string, parentRunes []rune) (string, int, int) {
+	if len(raw) == 0 {
+		return "", 0, 0
+	}
+	// Try the offset-pair form first ([start, end] uint32 array).
+	var pair [2]uint32
+	if err := json.Unmarshal(raw, &pair); err == nil {
+		start, end := int(pair[0]), int(pair[1])
+		if start < 0 {
+			start = 0
+		}
+		if end > len(parentRunes) {
+			end = len(parentRunes)
+		}
+		if end < start {
+			end = start
+		}
+		return string(parentRunes[start:end]), start, end
+	}
+	// Fall back to the string form: search for the substring inside the
+	// parent label and convert byte offsets to rune offsets.
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", 0, 0
+	}
+	if s == "" {
+		return "", 0, 0
+	}
+	idx := strings.Index(parentLabel, s)
+	if idx < 0 {
+		return s, 0, 0
+	}
+	runeStart := len([]rune(parentLabel[:idx]))
+	return s, runeStart, runeStart + len([]rune(s))
+}
+
+// decodeMarkupOrString unwraps LSP's "string | MarkupContent" doc shape.
+// MarkupContent has a "value" field which we treat as the displayable
+// text (clients render markdown elsewhere if they wish). Returns the
+// empty string when raw is nil/null/empty.
+func decodeMarkupOrString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var m struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &m); err == nil {
+		return m.Value
+	}
+	return ""
 }
 
 // WorkspaceSymbol kind, distilled from LSP SymbolKind so callers don't

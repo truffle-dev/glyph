@@ -963,3 +963,232 @@ func TestDocumentSymbolRejectsUninitialized(t *testing.T) {
 		t.Error("documentSymbol on uninitialized client should error")
 	}
 }
+
+// TestSignatureHelpRejectsUninitialized covers the nil-client guard. The
+// signature help wedge fires on '(' keypress; the guard lets the host call
+// it freely while the LSP is still warming up.
+func TestSignatureHelpRejectsUninitialized(t *testing.T) {
+	t.Parallel()
+	c := &Client{}
+	if _, err := c.SignatureHelp(context.Background(), "x.go", 0, 0); err == nil {
+		t.Error("signatureHelp on uninitialized client should error")
+	}
+}
+
+// TestDecodeSignatureHelpEmpty handles the "server returned null" path —
+// we expect an empty Signatures slice and ActiveSignature == -1 so the
+// renderer can treat both "no help" cases identically.
+func TestDecodeSignatureHelpEmpty(t *testing.T) {
+	t.Parallel()
+	got := decodeSignatureHelp(rawSignatureHelp{})
+	if got.ActiveSignature != -1 {
+		t.Errorf("ActiveSignature: got %d, want -1", got.ActiveSignature)
+	}
+	if len(got.Signatures) != 0 {
+		t.Errorf("Signatures: got %d, want 0", len(got.Signatures))
+	}
+	if got.Signatures == nil {
+		t.Error("Signatures should be non-nil empty slice, got nil")
+	}
+}
+
+// TestDecodeSignatureHelpStringLabel covers the legacy form where the
+// server emits parameter labels as substrings of the parent signature.
+// We resolve their rune offsets via strings.Index.
+func TestDecodeSignatureHelpStringLabel(t *testing.T) {
+	t.Parallel()
+	raw := rawSignatureHelp{
+		Signatures: []rawSignature{
+			{
+				Label: "func Hello(name string, age int) error",
+				Parameters: []rawSignatureParam{
+					{Label: []byte(`"name string"`)},
+					{Label: []byte(`"age int"`)},
+				},
+			},
+		},
+	}
+	got := decodeSignatureHelp(raw)
+	if len(got.Signatures) != 1 {
+		t.Fatalf("Signatures: got %d, want 1", len(got.Signatures))
+	}
+	sig := got.Signatures[0]
+	if sig.Label != "func Hello(name string, age int) error" {
+		t.Errorf("Label mismatch: %q", sig.Label)
+	}
+	if len(sig.Parameters) != 2 {
+		t.Fatalf("Parameters: got %d, want 2", len(sig.Parameters))
+	}
+	if sig.Parameters[0].Label != "name string" || sig.Parameters[0].Start != 11 || sig.Parameters[0].End != 22 {
+		t.Errorf("param0: %+v", sig.Parameters[0])
+	}
+	if sig.Parameters[1].Label != "age int" || sig.Parameters[1].Start != 24 || sig.Parameters[1].End != 31 {
+		t.Errorf("param1: %+v", sig.Parameters[1])
+	}
+	if got.ActiveSignature != 0 {
+		t.Errorf("ActiveSignature: got %d, want 0 (default)", got.ActiveSignature)
+	}
+}
+
+// TestDecodeSignatureHelpOffsetLabel covers the modern form where the
+// server emits [start, end] pairs after the client declares
+// LabelOffsetSupport. rust-analyzer and typescript-language-server use
+// this shape.
+func TestDecodeSignatureHelpOffsetLabel(t *testing.T) {
+	t.Parallel()
+	raw := rawSignatureHelp{
+		Signatures: []rawSignature{
+			{
+				Label: "fn add(a: i32, b: i32) -> i32",
+				Parameters: []rawSignatureParam{
+					{Label: []byte(`[7, 13]`)},  // "a: i32"
+					{Label: []byte(`[15, 21]`)}, // "b: i32"
+				},
+			},
+		},
+		ActiveSignature: intPtr(0),
+		ActiveParameter: intPtr(1),
+	}
+	got := decodeSignatureHelp(raw)
+	if got.ActiveSignature != 0 {
+		t.Errorf("ActiveSignature: %d", got.ActiveSignature)
+	}
+	if got.Signatures[0].ActiveParameter != 1 {
+		t.Errorf("ActiveParameter: got %d, want 1", got.Signatures[0].ActiveParameter)
+	}
+	p0 := got.Signatures[0].Parameters[0]
+	if p0.Label != "a: i32" || p0.Start != 7 || p0.End != 13 {
+		t.Errorf("param0: %+v", p0)
+	}
+	p1 := got.Signatures[0].Parameters[1]
+	if p1.Label != "b: i32" || p1.Start != 15 || p1.End != 21 {
+		t.Errorf("param1: %+v", p1)
+	}
+}
+
+// TestDecodeSignatureHelpDocAsMarkup covers the MarkupContent doc shape
+// servers may emit (`{"kind": "markdown", "value": "..."}`).
+func TestDecodeSignatureHelpDocAsMarkup(t *testing.T) {
+	t.Parallel()
+	raw := rawSignatureHelp{
+		Signatures: []rawSignature{
+			{
+				Label:         "func F()",
+				Documentation: []byte(`{"kind":"markdown","value":"Hello docs"}`),
+			},
+		},
+	}
+	got := decodeSignatureHelp(raw)
+	if got.Signatures[0].Doc != "Hello docs" {
+		t.Errorf("Doc: %q", got.Signatures[0].Doc)
+	}
+}
+
+// TestDecodeSignatureHelpDocAsString covers the legacy string doc shape.
+func TestDecodeSignatureHelpDocAsString(t *testing.T) {
+	t.Parallel()
+	raw := rawSignatureHelp{
+		Signatures: []rawSignature{
+			{
+				Label:         "func F()",
+				Documentation: []byte(`"plain text doc"`),
+			},
+		},
+	}
+	got := decodeSignatureHelp(raw)
+	if got.Signatures[0].Doc != "plain text doc" {
+		t.Errorf("Doc: %q", got.Signatures[0].Doc)
+	}
+}
+
+// TestDecodeSignatureHelpActiveParameterPerSignature covers per-signature
+// activeParameter (each signature carries its own active index when no
+// top-level value is set).
+func TestDecodeSignatureHelpActiveParameterPerSignature(t *testing.T) {
+	t.Parallel()
+	raw := rawSignatureHelp{
+		Signatures: []rawSignature{
+			{Label: "func F(a, b int)", ActiveParameter: intPtr(1)},
+		},
+	}
+	got := decodeSignatureHelp(raw)
+	if got.Signatures[0].ActiveParameter != 1 {
+		t.Errorf("per-sig ActiveParameter: %d", got.Signatures[0].ActiveParameter)
+	}
+}
+
+// TestDecodeSignatureHelpUnresolvedSubstring covers the corner case where
+// the parameter label is a string that does not appear in the parent
+// label. We keep the label text but emit zero offsets so the renderer
+// shows the raw text without an inverted highlight band.
+func TestDecodeSignatureHelpUnresolvedSubstring(t *testing.T) {
+	t.Parallel()
+	raw := rawSignatureHelp{
+		Signatures: []rawSignature{
+			{
+				Label: "func F()",
+				Parameters: []rawSignatureParam{
+					{Label: []byte(`"missing"`)},
+				},
+			},
+		},
+	}
+	got := decodeSignatureHelp(raw)
+	p := got.Signatures[0].Parameters[0]
+	if p.Label != "missing" {
+		t.Errorf("Label: %q", p.Label)
+	}
+	if p.Start != 0 || p.End != 0 {
+		t.Errorf("offsets should be zero when substring not found: start=%d end=%d", p.Start, p.End)
+	}
+}
+
+// TestDecodeSignatureHelpOffsetClampedToLabelEnd guards against a
+// malformed server response where the end offset overshoots the rune
+// length of the parent label.
+func TestDecodeSignatureHelpOffsetClampedToLabelEnd(t *testing.T) {
+	t.Parallel()
+	raw := rawSignatureHelp{
+		Signatures: []rawSignature{
+			{
+				Label: "func F()",
+				Parameters: []rawSignatureParam{
+					{Label: []byte(`[2, 99]`)},
+				},
+			},
+		},
+	}
+	got := decodeSignatureHelp(raw)
+	p := got.Signatures[0].Parameters[0]
+	if p.End != 8 { // len("func F()")
+		t.Errorf("End should clamp to label length: got %d", p.End)
+	}
+}
+
+// TestDecodeSignatureHelpUtf8Identifier covers UTF-8 identifiers where
+// rune indexing diverges from byte indexing. The string-substring path
+// must convert byte offsets to rune offsets so renderers that count
+// runes line up the highlight correctly.
+func TestDecodeSignatureHelpUtf8Identifier(t *testing.T) {
+	t.Parallel()
+	raw := rawSignatureHelp{
+		Signatures: []rawSignature{
+			{
+				Label: "fn (πfile, βvalue)",
+				Parameters: []rawSignatureParam{
+					{Label: []byte(`"βvalue"`)},
+				},
+			},
+		},
+	}
+	got := decodeSignatureHelp(raw)
+	p := got.Signatures[0].Parameters[0]
+	if p.Label != "βvalue" {
+		t.Errorf("Label: %q", p.Label)
+	}
+	if p.Start != 11 || p.End != 17 {
+		t.Errorf("rune offsets: start=%d end=%d, want 11..17", p.Start, p.End)
+	}
+}
+
+func intPtr(v int) *int { return &v }
