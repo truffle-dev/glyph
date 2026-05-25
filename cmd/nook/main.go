@@ -2,9 +2,14 @@
 //
 // Usage:
 //
-//	nook [project-root]
-//
-// If project-root is omitted, nook opens the current working directory.
+//	nook                      # open the current working directory
+//	nook some/dir             # open a project rooted at some/dir
+//	nook some/file.go         # open one file; root is its parent
+//	nook ~/.zshrc             # works for files outside any project
+//	nook newfile.txt          # vim-style: opens an empty buffer; save
+//	                          # writes the new file (mkdir -p first)
+//	nook a.go b.go c.go       # open many files; first one is active,
+//	                          # alt+] / alt+[ switch between buffers
 //
 // Keymap:
 //
@@ -316,6 +321,13 @@ type model struct {
 	sigReqPath string
 	sigReqRow  int
 	sigReqCol  int
+
+	// startupFiles are absolute paths opened from the CLI (`nook file …`).
+	// Pre-opened in newModel via bufman.OpenOrSwitch so the first frame
+	// shows the file rather than the welcome card. Init() dispatches LSP /
+	// gutter / inlay / blame for the active one so a single-file launch
+	// behaves like opening from the picker.
+	startupFiles []string
 }
 
 // pendingRename holds the cursor position the rename flow was launched from.
@@ -327,30 +339,110 @@ type pendingRename struct {
 }
 
 func main() {
-	root, err := os.Getwd()
+	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "nook:", err)
 		os.Exit(1)
 	}
-	if len(os.Args) > 1 {
-		root = os.Args[1]
-	}
-	abs, err := filepath.Abs(root)
+	s, err := parseStartup(cwd, os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "nook:", err)
-		os.Exit(1)
-	}
-	if _, err := os.Stat(abs); err != nil {
 		fmt.Fprintln(os.Stderr, "nook:", err)
 		os.Exit(1)
 	}
 
-	m := newModel(abs)
+	m := newModel(s.root, s.files...)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "nook:", err)
 		os.Exit(1)
 	}
+}
+
+// startup captures the workspace root and any files to pre-open from the
+// CLI. Used by parseStartup so main() can stay one or two lines.
+type startup struct {
+	root  string
+	files []string
+}
+
+// parseStartup turns CLI args into a (root, files) pair. Supported shapes:
+//   - no args                  → root = cwd
+//   - one dir arg              → root = dir
+//   - one file arg             → root = file's parent, files = [file]
+//   - one missing-path arg     → root = parent (must exist), files = [path]
+//     (vim-style: creates a new buffer; Save will mkdir + write)
+//   - N file/missing-path args → root = first arg's parent, files = all
+//
+// Trailing-slash paths are treated as directory references and rejected when
+// they don't exist. Mixing a directory with other args is rejected.
+func parseStartup(cwd string, args []string) (startup, error) {
+	if len(args) == 0 {
+		return startup{root: cwd}, nil
+	}
+
+	abs := make([]string, len(args))
+	for i, a := range args {
+		p, err := filepath.Abs(a)
+		if err != nil {
+			return startup{}, fmt.Errorf("%s: %w", a, err)
+		}
+		abs[i] = p
+	}
+
+	classify := func(i int) (info os.FileInfo, exists, dirRef bool, err error) {
+		fi, statErr := os.Stat(abs[i])
+		if statErr == nil {
+			return fi, true, fi.IsDir(), nil
+		}
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			return nil, false, false, statErr
+		}
+		// Doesn't exist. A trailing slash means the user intended a
+		// directory; refuse instead of silently treating it as a file.
+		trail := strings.HasSuffix(args[i], "/") || strings.HasSuffix(args[i], string(filepath.Separator))
+		return nil, false, trail, nil
+	}
+
+	if len(args) == 1 {
+		_, exists, dirRef, err := classify(0)
+		if err != nil {
+			return startup{}, fmt.Errorf("%s: %w", args[0], err)
+		}
+		switch {
+		case exists && dirRef:
+			return startup{root: abs[0]}, nil
+		case exists && !dirRef:
+			return startup{root: filepath.Dir(abs[0]), files: []string{abs[0]}}, nil
+		case !exists && dirRef:
+			return startup{}, fmt.Errorf("%s: no such directory", args[0])
+		}
+		// Doesn't exist, no trailing slash → vim-style new file.
+		dir := filepath.Dir(abs[0])
+		if _, derr := os.Stat(dir); derr != nil {
+			return startup{}, fmt.Errorf("%s: %w", args[0], derr)
+		}
+		return startup{root: dir, files: []string{abs[0]}}, nil
+	}
+
+	// Multi-arg: every arg must be a file (existing or new). A directory
+	// argument is ambiguous here (which root wins?) so we reject.
+	for i := range args {
+		_, exists, dirRef, err := classify(i)
+		if err != nil {
+			return startup{}, fmt.Errorf("%s: %w", args[i], err)
+		}
+		if exists && dirRef {
+			return startup{}, fmt.Errorf("%s: directory not allowed in multi-file mode", args[i])
+		}
+		if !exists && dirRef {
+			return startup{}, fmt.Errorf("%s: no such directory", args[i])
+		}
+	}
+	root := filepath.Dir(abs[0])
+	if _, err := os.Stat(root); err != nil {
+		root = cwd
+	}
+	return startup{root: root, files: abs}, nil
 }
 
 // resolveTheme returns the named theme from the registry, falling back to
@@ -364,7 +456,7 @@ func resolveTheme(name string) (theme.Theme, bool) {
 	return t, true
 }
 
-func newModel(root string) model {
+func newModel(root string, opens ...string) model {
 	cfgPath, _ := config.Path()
 	cfg := config.Default()
 	loadErr := error(nil)
@@ -405,7 +497,7 @@ func newModel(root string) model {
 		status = "theme " + cfg.Editor.Theme + " not found; using default"
 	}
 
-	return model{
+	m := model{
 		theme:          t,
 		root:           root,
 		width:          80,
@@ -448,6 +540,32 @@ func newModel(root string) model {
 		sigPane:        signature.New(),
 		docPane:        completedoc.New(),
 	}
+
+	// Pre-open any files the user passed on the CLI. After OpenOrSwitch
+	// the last one is active; switch back to index 0 so a multi-file
+	// launch (`nook a b c`) lands on the first file the way vim does.
+	if len(opens) > 0 {
+		for _, abs := range opens {
+			m.bufs.OpenOrSwitch(abs)
+		}
+		if len(opens) > 1 {
+			m.bufs.Switch(0)
+		}
+		m.startupFiles = append(m.startupFiles, opens...)
+		if len(opens) == 1 {
+			if rel, err := filepath.Rel(root, opens[0]); err == nil && !strings.HasPrefix(rel, "..") {
+				m.status = "opened " + rel
+			} else {
+				m.status = "opened " + filepath.Base(opens[0])
+			}
+		} else {
+			m.status = fmt.Sprintf("opened %d files (alt+] / alt+[ to switch)", len(opens))
+		}
+		if m.showTree {
+			m.treePane.Reveal(opens[0])
+		}
+	}
+	return m
 }
 
 // reloadConfig re-reads m.cfgPath and applies the runtime-mutable knobs.
@@ -486,10 +604,18 @@ func (m model) reloadConfig() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
-		m.loadFilesCmd(),
-		m.refreshGitCmd(),
-	)
+	cmds := []tea.Cmd{m.loadFilesCmd(), m.refreshGitCmd()}
+	// If files were pre-opened from the CLI, fire the same auxiliary
+	// commands the picker/filetree open paths run so a single-file
+	// launch (`nook foo.go`) gets LSP attach, gutter, inlay hints, and
+	// blame on the first frame.
+	if p := m.bufs.Active(); p != nil && p.Path() != "" {
+		cmds = append(cmds, m.ensureLSPForFile(p.Path()))
+		cmds = append(cmds, m.refreshGutterCmd())
+		cmds = append(cmds, m.refreshInlayHintsCmd())
+		cmds = append(cmds, m.refreshBlameCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 type filesLoadedMsg struct{ files []string }

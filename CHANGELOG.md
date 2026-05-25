@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-05-25
+
+`nook` now opens single files from the CLI. Three shapes work:
+
+```
+nook file.go              # open one file; root is its parent dir
+nook ~/.zshrc             # files outside any project work too
+nook newfile.txt          # vim-style: creates an empty buffer,
+                          # save writes the file (mkdir -p first)
+nook a.go b.go c.go       # multi-file; first is active,
+                          # alt+] / alt+[ switch between buffers
+```
+
+The previous behavior (`nook` with no args, or `nook some/dir` for
+a project root) is unchanged. Argument parsing lives in a new
+`parseStartup` function with unit-tested cases for every shape
+(directories, files, missing-but-creatable paths, trailing-slash
+directory references, mixed multi-arg input). Pre-opened buffers
+get the same first-frame treatment as a picker-opened file: LSP
+attach for `.go` paths, git gutter computation, gopls inlay hints
+when the toggle is on, and inline blame. The status bar surfaces
+`opened <path>` or `opened N files (alt+] / alt+[ to switch)` so
+the launch reads as deliberate, not as a side effect.
+
+This closes the "you can't quickly edit your dotfiles" gap. `nook
+~/.config/nook/config.toml` lands directly on the file in two
+keystrokes, behaving like `vim` for the open-and-edit-one-file
+case while still giving you the full IDE if you launch into a
+project root.
+
 ## [0.27.0] — 2026-05-25
 
 LSP completion documentation side panel in `nook`. Open the completion
