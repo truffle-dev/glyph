@@ -67,6 +67,15 @@ func Default() []Section {
 			{"tab", "Switch between find / replace field"},
 			{"esc", "Close find bar"},
 		}},
+		{Name: "Project search (alt+f)", Bindings: []Binding{
+			{"type", "Build the query; enter runs ripgrep"},
+			{"↑ ↓ pgup pgdn", "Navigate the result list"},
+			{"enter", "Open the selected match"},
+			{"alt+r", "Toggle replace-all mode (across every match)"},
+			{"enter (replace)", "Apply the replacement to every match"},
+			{"esc (replace)", "Collapse back to result navigation"},
+			{"esc", "Cancel and dismiss the pane"},
+		}},
 		{Name: "Editing", Bindings: []Binding{
 			{"↑ ↓ ← →", "Move cursor"},
 			{"home", "Start of line"},

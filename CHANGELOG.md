@@ -6,6 +6,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-05-25
+
+Project-wide find/replace in `nook`. The Alt+F search pane already
+streamed ripgrep matches and let Enter open a hit; v0.34 adds the
+second half. With results visible, Alt+R flips the pane into replace
+mode: a second prompt row appears beneath the header showing the
+replacement field; typing builds it; Enter applies the replacement to
+every recorded match across the workspace; Esc collapses back to
+result navigation without throwing away what you typed. Up/Down still
+move the cursor while in replace mode so you can see what's about to
+be rewritten.
+
+The new `cmd/nook/internal/search/replace.go` does the disk pass.
+Matches are grouped by path; per-file the body is read once, lines
+split (preserving the original trailing-newline state byte-exact —
+files like `package.json` that ship without one stay that way), hits
+on each line are sorted right-to-left by byte column so earlier
+column indices stay valid after the rewrite changes line length, and
+the file is written once. Corrupt hits (out-of-range line, zero or
+negative span, span past row end) are skipped silently so a stale
+match list from a competing edit can't panic or corrupt a file. The
+caller gets `Result{FilesChanged, ReplacementsApplied, PathsTouched}`
+back; the host iterates `PathsTouched` to call
+`bufman.RefreshIfOpen` so any of the rewritten files that are
+currently open reload immediately and show the new bytes.
+
+Status hint surfaces `replaced N occurrence(s) in M file(s)` on
+success or `replace error: <wrapped read/write error>` on partial
+failure; the search pane closes either way so the user lands back on
+their editor. Help overlay gains a new `Project search (alt+f)`
+section documenting the typing → results → Alt+R → Enter flow.
+
+Match struct gains `Len int` (byte length of the first submatch),
+populated from ripgrep's `submatches[].end - .start`. This is the
+field ApplyAll needs to know what span to replace; consumers that
+only care about navigation can ignore it.
+
+No in-app undo for replace: git is the safety net. The help overlay
+notes this so users know to commit before a workspace-wide rewrite
+of a common token. Sixteen new tests pin the apply semantics
+(single-file, same-line-multi, UTF-8 byte spans, missing trailing
+newline preserved, empty-replacement-deletes-span, multi-file,
+corrupt-hit skip, write-error path) plus eight Pane tests for
+EnterReplace gating, mode-collapse on Esc, ApplyMsg emission on
+Enter, replacement preservation across mode toggles, cursor
+navigation while replacing, and View rendering the replace row.
+
 ## [0.33.1] — 2026-05-25
 
 Windows clipboard paste fix. v0.33.0 shipped with three Windows CI test

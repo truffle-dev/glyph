@@ -997,6 +997,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case search.ApplyMsg:
+		// Project-wide replace. ApplyAll rewrites every recorded match
+		// span on disk; we then reload any of those paths that happen
+		// to be open in a buffer so the user sees the new bytes
+		// immediately. Errors surface through the status hint without
+		// aborting the rest of the pass (ApplyAll already returns a
+		// partial Result on read/write failure).
+		res, err := search.ApplyAll(m.search.Matches(), msg.Replacement)
+		for _, p := range res.PathsTouched {
+			m.bufs.RefreshIfOpen(p)
+		}
+		if err != nil {
+			m.status = "replace error: " + err.Error()
+		} else {
+			m.status = fmt.Sprintf(
+				"replaced %d occurrence(s) in %d file(s)",
+				res.ReplacementsApplied, res.FilesChanged,
+			)
+		}
+		m.search = m.search.ExitReplace()
+		m.overlay = overlayNone
+		if m.searchCancel != nil {
+			m.searchCancel()
+			m.searchCancel = nil
+		}
+		m = m.applyDiagnosticsToActive()
+		return m, m.refreshGutterCmd()
+
 	case git.StatusMsg:
 		if msg.Err == nil {
 			m.gitPane = m.gitPane.SetStatus(msg.Status)
@@ -3332,6 +3360,35 @@ func min(a, b int) int {
 }
 
 func (m model) routeProjectSearch(km tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Replace mode wins over query editing. Rune input, space, and
+	// backspace edit the replacement field; Enter/Esc/navigation are
+	// handled by the pane's own Update which emits ApplyMsg on Enter
+	// and collapses back to result navigation on Esc.
+	if m.search.Replacing() {
+		switch km.Type {
+		case tea.KeyRunes:
+			m.search = m.search.AppendReplacementRune(string(km.Runes))
+			return m, nil
+		case tea.KeySpace:
+			m.search = m.search.AppendReplacementRune(" ")
+			return m, nil
+		case tea.KeyBackspace:
+			m.search = m.search.BackspaceReplacement()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.search, cmd = m.search.Update(km)
+		return m, cmd
+	}
+	// Alt+R toggles replace mode. Lives outside the typing branch so it
+	// fires whether the query field is empty or the result list has
+	// already streamed in (it no-ops on either empty matches or while
+	// ripgrep is still running, so the user doesn't enter a useless
+	// "replace with nothing" state).
+	if km.Alt && km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == 'r' {
+		m.search = m.search.EnterReplace()
+		return m, nil
+	}
 	// If user is still typing the query, treat the search pane as "editing query"
 	if m.search.Query() == "" || km.Type == tea.KeyRunes || km.Type == tea.KeyBackspace || km.Type == tea.KeySpace {
 		// Only the query stage handles typing; once results stream, navigation keys win.
