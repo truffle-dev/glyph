@@ -43,3 +43,49 @@ func TestGet_ReturnsString(t *testing.T) {
 	Set("round-trip")
 	_ = Get()
 }
+
+// PowerShell's Get-Clipboard always appends CRLF; without normalization the
+// "INS"-shaped tests in editor_selection_test.go paste as "INS\n" on Windows
+// and split the line, which is what failed Windows CI on v0.33.0.
+func TestNormalizeOSText_StripsCRLF(t *testing.T) {
+	if got := normalizeOSText([]byte("hello\r\n")); got != "hello" {
+		t.Fatalf("normalizeOSText(\"hello\\r\\n\") = %q, want %q", got, "hello")
+	}
+}
+
+func TestNormalizeOSText_StripsTrailingLF(t *testing.T) {
+	if got := normalizeOSText([]byte("hello\n")); got != "hello" {
+		t.Fatalf("normalizeOSText(\"hello\\n\") = %q, want %q", got, "hello")
+	}
+}
+
+// Interior newlines must survive — a multi-line paste reads back with the
+// embedded LFs intact; only ONE trailing newline is stripped.
+func TestNormalizeOSText_PreservesInteriorNewlines(t *testing.T) {
+	if got := normalizeOSText([]byte("a\nb\nc\n")); got != "a\nb\nc" {
+		t.Fatalf("normalizeOSText(multi-line) = %q, want %q", got, "a\nb\nc")
+	}
+}
+
+func TestNormalizeOSText_NoTrailingNewlineUnchanged(t *testing.T) {
+	if got := normalizeOSText([]byte("hello")); got != "hello" {
+		t.Fatalf("normalizeOSText(\"hello\") = %q, want %q", got, "hello")
+	}
+}
+
+// CRLF inside the body (rare but technically possible when text was copied
+// from a Windows-side editor that uses CRLF line endings) gets lowered to LF.
+func TestNormalizeOSText_LowersInteriorCRLF(t *testing.T) {
+	if got := normalizeOSText([]byte("a\r\nb\r\n")); got != "a\nb" {
+		t.Fatalf("normalizeOSText(CRLF body) = %q, want %q", got, "a\nb")
+	}
+}
+
+// Strip only ONE trailing newline so the user can still tell a two-line copy
+// from a one-line copy of an empty trailing line; mirrors how wl-paste
+// --no-newline behaves on Wayland already.
+func TestNormalizeOSText_StripsAtMostOneTrailingNewline(t *testing.T) {
+	if got := normalizeOSText([]byte("hello\n\n")); got != "hello\n" {
+		t.Fatalf("normalizeOSText(double trailing) = %q, want %q", got, "hello\n")
+	}
+}

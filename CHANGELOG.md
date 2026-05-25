@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.33.1] — 2026-05-25
+
+Windows clipboard paste fix. v0.33.0 shipped with three Windows CI test
+failures around `Ctrl+V`: `aINSbc` came back as `aINS`, `REPLACED world`
+as `REPLACED`, and a three-line paste added an extra newline before the
+trailing character. The root cause was PowerShell's `Get-Clipboard`
+helper always appending CRLF to its output, which the previous CRLF
+normalization in `cmd/nook/internal/clip.readFromOS` left as a trailing
+LF. The paste then split the line. macOS (pbpaste) and Linux without a
+helper were already green because pbpaste preserves content as-is and
+the no-helper path falls back to the in-process register byte-exact.
+
+Fix: a new `normalizeOSText([]byte) string` helper runs CRLF→LF first,
+then `strings.TrimSuffix(s, "\n")` to strip exactly one trailing
+newline. This matches `wl-paste --no-newline` semantics already used on
+Wayland, and matches how every IDE paste behaves (a copied line never
+re-inserts its line-end). Six new clip-package tests pin the
+normalization shape: CRLF stripped, trailing LF stripped, interior LFs
+preserved, no-trailing-newline unchanged, interior CRLF lowered to LF,
+double-trailing-newline reduced to exactly one.
+
+No new API surface, no version-bump dependency, no behavior change on
+Linux or macOS hosts.
+
 ## [0.33.0] — 2026-05-25
 
 Selections and a working clipboard land in `nook`. Shift+arrow extends a

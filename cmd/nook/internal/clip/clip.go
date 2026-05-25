@@ -140,11 +140,19 @@ func readFromOS() (string, bool) {
 		if err != nil {
 			continue
 		}
-		// PowerShell appends CRLF; xclip/xsel preserve content as-is; wl-paste
-		// --no-newline already strips the trailing newline. Normalize CRLF
-		// across platforms so a Windows-side copy pastes as Unix newlines.
-		s := strings.ReplaceAll(string(out), "\r\n", "\n")
-		return s, true
+		return normalizeOSText(out), true
 	}
 	return "", false
+}
+
+// normalizeOSText converts clipboard read bytes into the form callers want to
+// paste: CRLF lowered to LF, then exactly one trailing newline stripped.
+// PowerShell's Get-Clipboard always appends CRLF, so without the trim a
+// "INS"-shaped Set on Windows pastes as "INS\n" and splits the line. xclip
+// and pbpaste preserve content as-is, so a deliberately-newline-terminated
+// copy loses its trailing newline here — that matches wl-paste --no-newline
+// semantics already used on Wayland, and matches how every IDE paste behaves.
+func normalizeOSText(out []byte) string {
+	s := strings.ReplaceAll(string(out), "\r\n", "\n")
+	return strings.TrimSuffix(s, "\n")
 }
