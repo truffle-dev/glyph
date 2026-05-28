@@ -6,6 +6,62 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.40.0] — 2026-05-28
+
+Auto-pair brackets and quotes. Typing an opener — `(` `[` `{` `"` `'`
+`` ` `` — inserts the matching closer and parks the cursor between the
+two so the next keystroke lands inside. Typing the closer on top of an
+already-paired closer skips over it instead of inserting a duplicate.
+Backspacing when the cursor sits between an empty auto-pair deletes
+both halves at once. The behavior matches Zed and VS Code.
+
+Word-rune suppression keeps the feature from getting in the way:
+
+- Typing `(` mid-identifier (next char is a letter / digit / underscore)
+  inserts a literal `(` without auto-pairing — `foo` plus cursor-at-1
+  plus `(` becomes `f(oo`, not `f()oo`.
+- Typing `'` after a word rune (so `it` then `'`) leaves the quote
+  unpaired — contractions like `it's` and `don't` survive intact. Same
+  rule for `"` and `` ` ``.
+- Typing a symmetric quote on top of the same quote skips over it (the
+  ShouldSkip path) instead of double-pairing.
+
+Selection and multi-cursor modes bypass auto-pair so semantics stay
+simple in those modes; the rune just inserts at the cursor / at every
+extra cursor.
+
+The implementation:
+
+- `cmd/nook/internal/autopair` is a new pure package. `OpenerFor(r)` is
+  the opener-to-closer map; `ShouldPair(line, col, r)` decides whether
+  to insert the closer alongside an opener; `ShouldSkip(line, col, r)`
+  decides whether typing a closer should skip over an existing one;
+  `IsEmptyPair(line, col)` reports whether the cursor sits between an
+  opener at col-1 and the matching closer at col. The rules are
+  unicode-aware: `utf8.DecodeRuneInString` / `DecodeLastRuneInString`
+  read the next / prev rune at the byte cursor so a Greek letter or
+  any multi-byte word rune still suppresses pairing correctly.
+- `editor.Pane.applyAutoPair(r)` is the single-rune insert hook,
+  consulted from the `KeyRunes` case in `Update`. Skip-over advances
+  the cursor by one column without bumping `bufVer` (no buffer
+  mutation). Pair-insert calls `insertRunes([]rune{r, close})` and
+  decrements the cursor by one so it lands between the pair.
+- `KeyBackspace` consults `autopair.IsEmptyPair(p.buf.Lines[p.row],
+  p.col)` before falling through to `delBack`. When true, the path
+  calls `delForward` (eat the closer) then `delBack` (eat the opener)
+  so the user is back at the empty slot they were about to fill.
+- Multi-cursor mode (`len(p.extras) > 0`) and selection mode bypass
+  `applyAutoPair` entirely and fall through to the existing
+  `insertRunesAllCursors` / `DeleteSelection + insertRunes` paths.
+- Help overlay grows one row in the Editing section: `( [ { " ' `` —
+  Auto-pair: typing an opener inserts its closer`.
+
+Auto-pair is a typing-feel feature, not a key-binding feature: it has
+no overlay, no separate keybind, no toggle. It changes what `(` does at
+the microscopic level. The change is small per keystroke and easy to
+miss; in practice, you stop noticing it within a few minutes, which is
+the goal.
+
 ## [0.39.0] — 2026-05-28
 
 Comment toggle (Ctrl+/). Select any range — or just park the cursor on
