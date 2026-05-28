@@ -119,12 +119,12 @@ func TestBuildFragmentsIncomingSingleCall(t *testing.T) {
 
 func TestBuildFragmentsOutgoingUsesSourcePath(t *testing.T) {
 	src := strings.Join([]string{
-		"package main", // 0
-		"",             // 1
+		"package main",   // 0
+		"",               // 1
 		"func Source(){", // 2
-		"\tFoo()",      // 3 hit
-		"\tBar()",      // 4 hit (different callee)
-		"}",            // 5
+		"\tFoo()",        // 3 hit
+		"\tBar()",        // 4 hit (different callee)
+		"}",              // 5
 	}, "\n")
 	calls := []nooklsp.CallHierarchyCall{
 		{
@@ -157,11 +157,11 @@ func TestBuildFragmentsOutgoingUsesSourcePath(t *testing.T) {
 
 func TestBuildFragmentsMergesAdjacentRanges(t *testing.T) {
 	src := strings.Join([]string{
-		"a",  // 0
-		"b",  // 1
-		"c",  // 2 hit
-		"d",  // 3 hit
-		"e",  // 4
+		"a", // 0
+		"b", // 1
+		"c", // 2 hit
+		"d", // 3 hit
+		"e", // 4
 	}, "\n")
 	calls := []nooklsp.CallHierarchyCall{{
 		Item: nooklsp.CallHierarchyItem{Name: "Caller", Path: "/p.go", SelStartLine: 0},

@@ -840,19 +840,19 @@ func (c *Client) DocumentHighlight(ctx context.Context, path string, line, col i
 // outgoingCalls without re-resolving — gopls in particular stores resolver
 // state there and rejects items that drop it.
 type CallHierarchyItem struct {
-	Name           string
-	Detail         string
-	Kind           protocol.SymbolKind
-	Path           string
-	StartLine      int
-	StartCol       int
-	EndLine        int
-	EndCol         int
-	SelStartLine   int
-	SelStartCol    int
-	SelEndLine     int
-	SelEndCol      int
-	Data           json.RawMessage
+	Name         string
+	Detail       string
+	Kind         protocol.SymbolKind
+	Path         string
+	StartLine    int
+	StartCol     int
+	EndLine      int
+	EndCol       int
+	SelStartLine int
+	SelStartCol  int
+	SelEndLine   int
+	SelEndCol    int
+	Data         json.RawMessage
 }
 
 // CallHierarchyCall is one edge in the graph: a caller (incoming direction)
