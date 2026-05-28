@@ -77,6 +77,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/codeaction"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/complete"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/completedoc"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/callhierarchy"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/config"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/dap"
@@ -2114,6 +2115,20 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// not universally-reliable in terminals, so alt+u is the
 			// portable surface. Mnemonic: "usages".
 			return m.findReferencesAtCursor()
+		case 'k':
+			// Alt+k opens the LSP call-hierarchy view in incoming direction —
+			// "who calls this?" The two-step LSP graph walk (prepare then
+			// callHierarchy/incomingCalls) renders each caller as a
+			// multibuffer fragment with the caller's name in the suffix and
+			// the call-site rows highlighted. Mnemonic: "k for callers."
+			return m.callHierarchyAtCursor(callhierarchy.Incoming)
+		case 'K':
+			// Alt+Shift+k flips the direction to outgoing — "what does this
+			// call?" Same pane, same fragment shape; the suffix now carries
+			// the callee's name and the highlighted rows live in the source
+			// file. Pairing alt+k / alt+K keeps the muscle memory close to
+			// alt+u (find references) which sits one key over.
+			return m.callHierarchyAtCursor(callhierarchy.Outgoing)
 		}
 	}
 	// Ctrl+` toggles terminal — bubbletea expresses this as KeyRunes ` with ctrl.
@@ -2733,6 +2748,52 @@ func (m model) findReferencesAtCursor() (tea.Model, tea.Cmd) {
 		*ap = ap.Blur()
 	}
 	return m, findrefs.FindReferencesCmd(m.lsp, p.Path(), row, col, findrefs.DefaultContextLines, nil)
+}
+
+// callHierarchyAtCursor is the alt+k / alt+K handler. Resolves the
+// identifier under the cursor (same character-class walk as find-references
+// uses; no LSP call needed to know what we're hovering), opens the
+// multibuffer overlay with a direction-tagged title, and fires the async
+// callhierarchy.CallHierarchyCmd which internally does
+// textDocument/prepareCallHierarchy then callHierarchy/incomingCalls or
+// callHierarchy/outgoingCalls. Errors come back through the standard
+// multibuffer.FragmentsMsg pathway; empty results land as a Fragments slice
+// of length zero, which the pane renders as "no fragments — press esc to
+// close" — accurate UX for "the LSP returned no edges."
+//
+// Early exits:
+//   - no active buffer: status hint, no overlay opened
+//   - no LSP client attached yet: status hint, no overlay opened
+//   - cursor not on an identifier: status hint, no overlay opened
+func (m model) callHierarchyAtCursor(direction callhierarchy.Direction) (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil || p.Path() == "" {
+		m.status = "open a file first (ctrl+p)"
+		return m, nil
+	}
+	if m.lsp == nil {
+		m.status = direction.Label() + ": no language server attached"
+		return m, nil
+	}
+	row := p.CursorRow()
+	col := p.CursorCol()
+	sym := callhierarchy.Symbol(p.Contents(), row, col)
+	if sym == "" {
+		m.status = direction.Label() + ": no identifier under cursor"
+		return m, nil
+	}
+	m.overlay = overlayMultibuffer
+	m.multibufPane = m.multibufPane.
+		WithSize(m.width-4, m.height-4).
+		Reset(direction.Label() + " — " + sym).
+		Focus()
+	if ap := m.bufs.Active(); ap != nil {
+		*ap = ap.Blur()
+	}
+	return m, callhierarchy.CallHierarchyCmd(
+		m.lsp, p.Path(), row, col, direction,
+		callhierarchy.DefaultContextLines, nil,
+	)
 }
 
 // openSymbolSearch arms the workspace-symbol prompt. It re-uses the last

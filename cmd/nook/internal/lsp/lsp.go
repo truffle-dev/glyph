@@ -209,6 +209,9 @@ func (c *Client) initialize(ctx context.Context, rootDir string) error {
 					OverlappingTokenSupport: false,
 					MultilineTokenSupport:   false,
 				},
+				CallHierarchy: &protocol.CallHierarchyClientCapabilities{
+					DynamicRegistration: false,
+				},
 				DocumentSymbol: &protocol.DocumentSymbolClientCapabilities{
 					DynamicRegistration:               false,
 					HierarchicalDocumentSymbolSupport: true,
@@ -829,6 +832,181 @@ func (c *Client) DocumentHighlight(ctx context.Context, path string, line, col i
 		})
 	}
 	return out, nil
+}
+
+// CallHierarchyItem is the host-side view of a single node in a call-hierarchy
+// graph. The Data field is opaque bytes (re-serialized JSON) so the same item
+// can round-trip through callHierarchy/incomingCalls and callHierarchy/
+// outgoingCalls without re-resolving — gopls in particular stores resolver
+// state there and rejects items that drop it.
+type CallHierarchyItem struct {
+	Name           string
+	Detail         string
+	Kind           protocol.SymbolKind
+	Path           string
+	StartLine      int
+	StartCol       int
+	EndLine        int
+	EndCol         int
+	SelStartLine   int
+	SelStartCol    int
+	SelEndLine     int
+	SelEndCol      int
+	Data           json.RawMessage
+}
+
+// CallHierarchyCall is one edge in the graph: a caller (incoming direction)
+// or a callee (outgoing direction) together with the source-relative ranges
+// at which the call appears. The Item field carries the caller for incoming
+// calls and the callee for outgoing calls; the renderer doesn't care which
+// because both directions paint the same way through the multibuffer overlay.
+type CallHierarchyCall struct {
+	Item       CallHierarchyItem
+	FromRanges []Range
+}
+
+// Range is a generic source range used by the call-hierarchy methods.
+// Positions are 0-indexed.
+type Range struct {
+	StartLine int
+	StartCol  int
+	EndLine   int
+	EndCol    int
+}
+
+// PrepareCallHierarchy resolves the symbol under the cursor at (path, line,
+// col) into one or more CallHierarchyItem entries that can be passed to
+// IncomingCalls or OutgoingCalls. Most servers return zero or one item;
+// languages with overloads (Java, C++) may return multiple. nil-client and
+// empty-server return an initialization error so the host can wire the
+// keybind unconditionally and surface a hint when the LSP is still attaching.
+func (c *Client) PrepareCallHierarchy(ctx context.Context, path string, line, col int) ([]CallHierarchyItem, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	items, err := c.server.PrepareCallHierarchy(ctx, &protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(path)},
+			Position:     protocol.Position{Line: uint32(line), Character: uint32(col)},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: prepareCallHierarchy: %w", err)
+	}
+	out := make([]CallHierarchyItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, convertCallHierarchyItem(it))
+	}
+	return out, nil
+}
+
+// IncomingCalls returns every callsite that points at the given item.
+// The returned Item on each call is the *caller* (i.e. the function or
+// method that contains the FromRanges).
+func (c *Client) IncomingCalls(ctx context.Context, item CallHierarchyItem) ([]CallHierarchyCall, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	calls, err := c.server.IncomingCalls(ctx, &protocol.CallHierarchyIncomingCallsParams{
+		Item: toProtocolCallHierarchyItem(item),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: incomingCalls: %w", err)
+	}
+	out := make([]CallHierarchyCall, 0, len(calls))
+	for _, ic := range calls {
+		out = append(out, CallHierarchyCall{
+			Item:       convertCallHierarchyItem(ic.From),
+			FromRanges: convertRanges(ic.FromRanges),
+		})
+	}
+	return out, nil
+}
+
+// OutgoingCalls returns every call the given item makes. The Item on each
+// returned call is the *callee*; FromRanges are positions inside the source
+// item where the callee is referenced.
+func (c *Client) OutgoingCalls(ctx context.Context, item CallHierarchyItem) ([]CallHierarchyCall, error) {
+	if c == nil || c.server == nil {
+		return nil, errors.New("lsp: client not initialized")
+	}
+	calls, err := c.server.OutgoingCalls(ctx, &protocol.CallHierarchyOutgoingCallsParams{
+		Item: toProtocolCallHierarchyItem(item),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lsp: outgoingCalls: %w", err)
+	}
+	out := make([]CallHierarchyCall, 0, len(calls))
+	for _, oc := range calls {
+		out = append(out, CallHierarchyCall{
+			Item:       convertCallHierarchyItem(oc.To),
+			FromRanges: convertRanges(oc.FromRanges),
+		})
+	}
+	return out, nil
+}
+
+func convertCallHierarchyItem(it protocol.CallHierarchyItem) CallHierarchyItem {
+	out := CallHierarchyItem{
+		Name:         it.Name,
+		Detail:       it.Detail,
+		Kind:         it.Kind,
+		Path:         uri.URI(it.URI).Filename(),
+		StartLine:    int(it.Range.Start.Line),
+		StartCol:     int(it.Range.Start.Character),
+		EndLine:      int(it.Range.End.Line),
+		EndCol:       int(it.Range.End.Character),
+		SelStartLine: int(it.SelectionRange.Start.Line),
+		SelStartCol:  int(it.SelectionRange.Start.Character),
+		SelEndLine:   int(it.SelectionRange.End.Line),
+		SelEndCol:    int(it.SelectionRange.End.Character),
+	}
+	if it.Data != nil {
+		if raw, err := json.Marshal(it.Data); err == nil {
+			out.Data = raw
+		}
+	}
+	return out
+}
+
+func toProtocolCallHierarchyItem(it CallHierarchyItem) protocol.CallHierarchyItem {
+	out := protocol.CallHierarchyItem{
+		Name:   it.Name,
+		Detail: it.Detail,
+		Kind:   it.Kind,
+		URI:    protocol.DocumentURI(uri.File(it.Path)),
+		Range: protocol.Range{
+			Start: protocol.Position{Line: uint32(it.StartLine), Character: uint32(it.StartCol)},
+			End:   protocol.Position{Line: uint32(it.EndLine), Character: uint32(it.EndCol)},
+		},
+		SelectionRange: protocol.Range{
+			Start: protocol.Position{Line: uint32(it.SelStartLine), Character: uint32(it.SelStartCol)},
+			End:   protocol.Position{Line: uint32(it.SelEndLine), Character: uint32(it.SelEndCol)},
+		},
+	}
+	if len(it.Data) > 0 {
+		var data any
+		if err := json.Unmarshal(it.Data, &data); err == nil {
+			out.Data = data
+		}
+	}
+	return out
+}
+
+func convertRanges(in []protocol.Range) []Range {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Range, 0, len(in))
+	for _, r := range in {
+		out = append(out, Range{
+			StartLine: int(r.Start.Line),
+			StartCol:  int(r.Start.Character),
+			EndLine:   int(r.End.Line),
+			EndCol:    int(r.End.Character),
+		})
+	}
+	return out
 }
 
 // SignatureParam is one parameter of a signature. Start and End are rune

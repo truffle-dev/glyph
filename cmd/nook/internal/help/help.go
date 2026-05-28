@@ -157,6 +157,8 @@ func Default() []Section {
 			{"alt+y", "Toggle gopls inlay hints (type annotations, parameter names)"},
 			{"(settle)", "Document highlights light up every occurrence of the identifier under the cursor"},
 			{"alt+u", "Find references to identifier under cursor"},
+			{"alt+k", "Call hierarchy — incoming (who calls this)"},
+			{"alt+K", "Call hierarchy — outgoing (what does this call)"},
 			{"ctrl+t", "Workspace symbol search (functions, types, vars)"},
 			{"ctrl+\\", "File outline (document symbols in current file)"},
 			{"(", "Signature help (parameter hints auto-fire on '(', close on ')' or esc)"},
