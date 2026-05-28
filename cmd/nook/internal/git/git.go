@@ -234,6 +234,10 @@ func NewPane(t theme.Theme, root string) Pane {
 // WithSize sets pane dimensions.
 func (p Pane) WithSize(w, h int) Pane { p.width = w; p.height = h; return p }
 
+// SetTheme swaps the palette used for status rows, the branch chip, stage
+// markers, and the commit editor. Next View() picks up the new colors.
+func (p Pane) SetTheme(t theme.Theme) Pane { p.theme = t; return p }
+
 // Focused reports whether the pane has keyboard focus.
 func (p Pane) Focused() bool { return p.focused }
 

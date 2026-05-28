@@ -80,6 +80,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/completedoc"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/config"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/configwatch"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/dap"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/diagnostics"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
@@ -296,9 +297,14 @@ type model struct {
 	// path (e.g. no home dir) — the reload key surfaces an error in that
 	// case rather than crashing.
 	cfgPath string
-	// themeName is the name of the currently-applied theme. Stored so the
-	// reload handler can detect a theme change and surface a "restart to
-	// apply" hint, since deeply-themed sub-panes aren't live-reskinned.
+	// cfgFinger is the most recent fingerprint of cfgPath, used by the
+	// configwatch poller to detect a save. Re-armed via WatchCmd on every
+	// TickMsg so the loop runs without a long-lived goroutine.
+	cfgFinger configwatch.Fingerprint
+	// themeName is the name of the currently-applied theme. Live-reload
+	// detects a change against this stored name and propagates SetTheme to
+	// every pane in m. v0.38.0 dropped the "restart to apply" hint that
+	// preceded live-reskin support.
 	themeName string
 	// tabWidth is the editor's hard-tab expansion. Sourced from config at
 	// startup and reload; forwarded to bufman and lookup.FormattingCmd.
@@ -570,6 +576,7 @@ func newModel(root string, opens ...string) model {
 		mdPane:         mdpreview.NewPane(t),
 		inlayHintsOn:   cfg.Editor.InlayHints,
 		cfgPath:        cfgPath,
+		cfgFinger:      configwatch.Snapshot(cfgPath),
 		themeName:      cfg.Editor.Theme,
 		tabWidth:       cfg.Editor.TabWidth,
 		snipLib:        snipLib,
@@ -609,9 +616,10 @@ func newModel(root string, opens ...string) model {
 
 // reloadConfig re-reads m.cfgPath and applies the runtime-mutable knobs.
 // Editor toggles (format-on-save, inlay hints, tab width, line numbers) take
-// effect immediately. A theme change is detected and surfaced as a status
-// hint asking the user to restart, since deeply-themed sub-panes aren't
-// live-reskinned in v0.15.0. Returns the updated model.
+// effect immediately, and a theme change propagates live to every theme-
+// holding pane via SetTheme so the user sees the new palette on the next
+// render without a restart. Used by both the manual `alt+,` keybind and
+// the configwatch tick loop. Returns the updated model.
 func (m model) reloadConfig() model {
 	if m.cfgPath == "" {
 		m.status = "config: no path resolved"
@@ -631,14 +639,50 @@ func (m model) reloadConfig() model {
 	if !m.inlayHintsOn {
 		m = m.clearInlayHints()
 	}
+
+	themeChanged := prevTheme != cfg.Editor.Theme
+	themeFound := true
+	if themeChanged {
+		t, ok := resolveTheme(cfg.Editor.Theme)
+		themeFound = ok
+		m = m.applyTheme(t)
+	}
+
 	switch {
 	case errors.Is(err, config.ErrNotFound):
 		m.status = "config: no file at " + m.cfgPath + " (using defaults)"
-	case prevTheme != cfg.Editor.Theme:
-		m.status = "settings reloaded — restart nook to apply theme change"
+	case themeChanged && !themeFound:
+		m.status = "settings reloaded — theme " + cfg.Editor.Theme + " not found; using default"
+	case themeChanged:
+		m.status = "theme switched to " + cfg.Editor.Theme
 	default:
 		m.status = "settings reloaded"
 	}
+	return m
+}
+
+// applyTheme propagates a new palette to every pane on m that holds a
+// theme. The host model itself caches the theme too (used directly for
+// status row, tab bar, help overlay, welcome card, modals built around
+// pane-style overlays). Returns the updated model. v0.38.0 made theme
+// changes live-applicable — each new pane added since must take a copy
+// of the theme via SetTheme here.
+func (m model) applyTheme(t theme.Theme) model {
+	m.theme = t
+	m.bufs.SetTheme(t)
+	m.gitPane = m.gitPane.SetTheme(t)
+	m.termPane = m.termPane.SetTheme(t)
+	m.picker = m.picker.SetTheme(t)
+	m.search = m.search.SetTheme(t)
+	m.editPane = m.editPane.SetTheme(t)
+	m.composer = m.composer.SetTheme(t)
+	m.finder = m.finder.SetTheme(t)
+	m.treePane.SetTheme(t)
+	m.outlinePane = m.outlinePane.SetTheme(t)
+	m.multibufPane = m.multibufPane.SetTheme(t)
+	m.diagPane = m.diagPane.SetTheme(t)
+	m.mdPane = m.mdPane.SetTheme(t)
+	m.tasksPane = m.tasksPane.SetTheme(t)
 	return m
 }
 
@@ -648,6 +692,12 @@ func (m model) Init() tea.Cmd {
 	// for home-directory launches like `nook ~/.zshrc`). The pane
 	// renders a "Scanning…" placeholder until the BuildTreeMsg lands.
 	cmds := []tea.Cmd{m.loadFilesCmd(), m.refreshGitCmd(), filetree.BuildTreeCmd(m.root)}
+	// configwatch polls cfgPath every Interval and emits configwatch.TickMsg.
+	// The host's Update handler re-arms WatchCmd on every tick so the loop
+	// runs without a long-lived goroutine. Nil when cfgPath is empty.
+	if cmd := configwatch.WatchCmd(m.cfgPath, m.cfgFinger); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	// If files were pre-opened from the CLI, fire the same auxiliary
 	// commands the picker/filetree open paths run so a single-file
 	// launch (`nook foo.go`) gets LSP attach, gutter, inlay hints, and
@@ -1434,6 +1484,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.treePane.SetNode(msg.Node)
 		return m, nil
+
+	case configwatch.TickMsg:
+		// Discard stale ticks if the host re-resolved its config path
+		// (currently never, but the guard keeps the contract stable).
+		if msg.Path != m.cfgPath {
+			return m, nil
+		}
+		if msg.Changed() {
+			m = m.reloadConfig()
+		}
+		m.cfgFinger = msg.Cur
+		return m, configwatch.WatchCmd(m.cfgPath, m.cfgFinger)
 
 	case filetree.OpenMsg:
 		_, action := m.bufs.OpenOrSwitch(msg.Path)

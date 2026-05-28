@@ -88,6 +88,10 @@ func (p Pane) WithSize(w, h int) Pane {
 	return p
 }
 
+// SetTheme swaps the palette used for the bordered modal, the filter row,
+// and the highlighted cursor row. Next View() picks up the new colors.
+func (p Pane) SetTheme(t theme.Theme) Pane { p.theme = t; return p }
+
 // Open arms the pane with the file's symbol tree. atRow is the user's
 // current editor row (0-based); the cursor lands on the deepest symbol
 // whose range contains atRow. An empty syms slice opens the pane with

@@ -70,6 +70,23 @@ func (p Pane) WithSource(path, contents string) Pane {
 // uses this to decide whether to open the pane vs. show "no buffer."
 func (p Pane) HasSource() bool { return p.hasSrc }
 
+// SetTheme swaps the palette. The underlying glyph markdown viewer is
+// rebuilt with the new theme; any current source contents are re-fed so
+// the rendered output uses the new colors. Size is preserved.
+func (p Pane) SetTheme(t theme.Theme) Pane {
+	p.theme = t
+	src := p.viewer.Source()
+	bodyH := p.height - 1
+	if bodyH < 3 {
+		bodyH = 3
+	}
+	p.viewer = markdownviewer.New(t).WithSize(p.width, bodyH)
+	if src != "" {
+		p.viewer = p.viewer.WithSource(src)
+	}
+	return p
+}
+
 // Path returns the source path the pane is currently rendering.
 func (p Pane) Path() string { return p.path }
 

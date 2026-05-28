@@ -67,6 +67,18 @@ func (m *Manager) WithLineNumbers(b bool) *Manager {
 	return m
 }
 
+// SetTheme swaps the palette stored on the manager and propagates it to
+// every open pane. Called from the host's live-reload path when the user
+// changes the theme name in config.toml — the next render uses the new
+// colors without restart.
+func (m *Manager) SetTheme(t theme.Theme) *Manager {
+	m.theme = t
+	for i := range m.panes {
+		m.panes[i] = m.panes[i].SetTheme(t)
+	}
+	return m
+}
+
 // Count returns the number of open buffers.
 func (m *Manager) Count() int { return len(m.panes) }
 

@@ -107,6 +107,10 @@ func (p Picker) WithSize(w, h int) Picker {
 // WithTitle sets the title rendered above the input.
 func (p Picker) WithTitle(s string) Picker { p.title = s; return p }
 
+// SetTheme swaps the palette used for the border, title, input, and
+// highlighted match row. Next View() picks up the new colors.
+func (p Picker) SetTheme(t theme.Theme) Picker { p.theme = t; return p }
+
 // WithPlaceholder sets the input placeholder.
 func (p Picker) WithPlaceholder(s string) Picker { p.placeholder = s; return p }
 

@@ -122,6 +122,10 @@ func NewPane(t theme.Theme, root string) Pane {
 // against these on every View call.
 func (p Pane) WithSize(w, h int) Pane { p.width = w; p.height = h; return p }
 
+// SetTheme swaps the palette used to render fragment headers, context lines,
+// and the Added/Deleted accents. Next View() picks up the new colors.
+func (p Pane) SetTheme(t theme.Theme) Pane { p.theme = t; return p }
+
 // Focused reports keyboard focus.
 func (p Pane) Focused() bool { return p.focused }
 

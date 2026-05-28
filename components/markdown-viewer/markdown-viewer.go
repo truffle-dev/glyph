@@ -39,6 +39,10 @@ func (v Viewer) WithSource(s string) Viewer {
 	return v
 }
 
+// Source returns the current markdown string. Used by nook's mdpreview pane
+// to re-feed source after recreating the viewer with a new theme.
+func (v Viewer) Source() string { return v.source }
+
 // WithSize sets the rendered width and visible-row height. Minimums are
 // enforced so the layout never collapses.
 func (v Viewer) WithSize(w, h int) Viewer {

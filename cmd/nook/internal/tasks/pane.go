@@ -94,6 +94,10 @@ func (p Pane) WithSize(w, h int) Pane {
 	return p
 }
 
+// SetTheme swaps the palette used for the picker list, output streaming
+// viewport, and stdout/stderr tags. Next View() picks up the new colors.
+func (p Pane) SetTheme(t theme.Theme) Pane { p.theme = t; return p }
+
 // WithTasks replaces the picker list and clamps the cursor.
 func (p Pane) WithTasks(ts []Task) Pane {
 	// Filter out invalid tasks so the picker can't show them.

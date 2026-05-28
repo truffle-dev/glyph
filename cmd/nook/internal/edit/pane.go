@@ -116,6 +116,10 @@ func (p Pane) WithRules(rules string) Pane {
 	return p
 }
 
+// SetTheme swaps the palette used for the input box, prompt label, and
+// streaming response area. Next View() picks up the new colors.
+func (p Pane) SetTheme(t theme.Theme) Pane { p.theme = t; return p }
+
 // WithSize updates layout dimensions.
 func (p Pane) WithSize(w, h int) Pane {
 	if w > 0 {

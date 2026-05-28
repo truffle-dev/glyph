@@ -86,6 +86,10 @@ func New(t theme.Theme) Finder {
 // mode).
 func (f Finder) WithSize(w int) Finder { f.width = w; return f }
 
+// SetTheme swaps the palette used for the input box, mode chip, and the
+// `n of N` counter. Next View() picks up the new colors.
+func (f Finder) SetTheme(t theme.Theme) Finder { f.theme = t; return f }
+
 // Open shows the finder in the requested mode. If the mode is changed from
 // ModeFind to ModeReplace (or vice versa) the existing pattern is preserved.
 func (f Finder) Open(m Mode) Finder {

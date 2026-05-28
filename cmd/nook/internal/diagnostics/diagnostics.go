@@ -142,6 +142,10 @@ func (p Pane) WithSize(w, h int) Pane {
 	return p
 }
 
+// SetTheme swaps the palette used for the bordered overlay, header,
+// severity dots, and selected row. Next View() picks up the new colors.
+func (p Pane) SetTheme(t theme.Theme) Pane { p.theme = t; return p }
+
 // WithEntries replaces the entry list. The new list is sorted; the
 // cursor clamps to a valid row.
 func (p Pane) WithEntries(entries []Entry) Pane {

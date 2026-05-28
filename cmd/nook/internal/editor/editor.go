@@ -295,6 +295,19 @@ func (p Pane) SetLineNumbers(b bool) Pane {
 // LineNumbers reports whether the row-number gutter is currently visible.
 func (p Pane) LineNumbers() bool { return p.lineNumbers }
 
+// SetTheme swaps the palette used for syntax highlighting, the cursor cell,
+// the line-number gutter, and the inline-blame strip. No cached state to
+// invalidate — syntaxPalette materializes per-row from p.theme each render —
+// so the next View() pass picks up the new colors.
+func (p Pane) SetTheme(t theme.Theme) Pane {
+	p.theme = t
+	return p
+}
+
+// Theme returns the palette currently held by this pane. Used by the host
+// to assert that live-reload propagated correctly, and by tests.
+func (p Pane) Theme() theme.Theme { return p.theme }
+
 // WithSearchMatches stores the search matches to paint as background
 // highlights and the index of the currently active hit (or -1 for none).
 // The host calls this whenever the finder pattern or selection changes.

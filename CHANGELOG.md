@@ -6,6 +6,67 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-05-28
+
+Live config + theme reload. Edit `~/.config/nook/config.toml` while
+nook is open and the new settings take effect on the next render —
+no restart, no `alt+,` reach. Switch `theme = "tokyo-night"` to
+`theme = "catppuccin-mocha"` and every open buffer, the file tree, the
+welcome card, the markdown preview, the tab bar, and the status row all
+adopt the new palette together. Tab width, line numbers, format-on-save,
+and inlay hints follow the same path.
+
+The implementation:
+
+- `cmd/nook/internal/configwatch` is a new package that polls the
+  config file once a second. `Fingerprint{ModTime, Size, Exists}` is
+  the change cue — size catches edits on filesystems with coarse
+  mtimes (ext4 relatime, NFS) where two saves within the same second
+  would otherwise look identical. `Snapshot(path)` reads the cue;
+  `WatchCmd(path, last)` returns a tea.Cmd that ticks, re-snapshots,
+  and emits a `TickMsg` whose `Changed()` method tells the host
+  whether to reload. The host re-arms the cmd from its `Update`
+  handler so the loop self-sustains until the program exits.
+- Polling instead of fsnotify. Config files are tiny and change rarely,
+  the platform surface (inotify/FSEvents/RDCW + atomic-rename editor
+  dance) carries more risk than 1 Hz buys back, and avoiding the new
+  direct dependency keeps the nook binary lean.
+- `editor.Pane.SetTheme(t) Pane` joins fifteen other panes that now
+  take a live theme swap: bufman, multibuffer, term, diagnostics, git,
+  picker, edit, finder, composer, outline, search, tasks, filetree,
+  and the markdown preview (which rebuilds its wrapped glyph viewer
+  so the new palette propagates through the embedded markdown
+  component). `model.applyTheme(t)` walks every theme-holding field
+  in one place, which means future panes opt in by adding one
+  SetTheme call to that method.
+- `markdownviewer.Source() string` is the small additive shim on the
+  glyph public surface that lets mdpreview rebuild the viewer with
+  the new theme while preserving the rendered markdown source.
+
+Manual `alt+,` still works and now lands on the same code path, so
+the keybind is an "I know I edited the file, refresh now" shortcut
+rather than the only way in. The earlier "restart to apply" status
+hint is gone — theme changes apply live, and the new status reads
+`theme switched to <name>` when the user changes themes,
+`settings reloaded` for anything else.
+
+## [0.37.0] — 2026-05-28
+
+LSP call hierarchy. `alt+k` and `alt+K` turn an identifier under the
+cursor into a call graph and surface the results in the multibuffer
+pane the same way find-references does — one row per call site, the
+caller name in the suffix, the multi-file context already wired.
+`alt+k` asks gopls "who calls this?" (incoming); `alt+K` asks "what
+does this call?" (outgoing). The pair shares wiring with `alt+u`
+find-references: prepareCallHierarchy first, then a direction-specific
+roundtrip, then `BuildFragments` collapses results into the
+multibuffer.Fragment slices the pane already knows how to render.
+Implementation lives in `cmd/nook/internal/callhierarchy`; the LSP
+client picks up `PrepareCallHierarchy`, `IncomingCalls`, and
+`OutgoingCalls` on the existing protocol@v0.12.0 surface, and the
+CallHierarchy capability is advertised in Initialize so gopls knows
+to answer.
+
 ## [0.36.0] — 2026-05-25
 
 LSP document highlights. When the cursor settles for a quarter second

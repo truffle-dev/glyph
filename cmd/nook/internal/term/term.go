@@ -158,6 +158,10 @@ func (p Pane) WithSize(w, h int) Pane {
 	return p
 }
 
+// SetTheme swaps the palette used for the surrounding box, status row, and
+// fallback line styling. The shell child's own ANSI escapes are untouched.
+func (p Pane) SetTheme(t theme.Theme) Pane { p.theme = t; return p }
+
 // Start spawns the shell. Idempotent.
 func (p Pane) Start() (Pane, error) {
 	if p.session != nil {

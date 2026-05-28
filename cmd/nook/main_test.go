@@ -1913,11 +1913,12 @@ format_on_save = false
 	}
 }
 
-func TestAltCommaThemeChangeAsksForRestart(t *testing.T) {
+func TestAltCommaThemeChangeAppliesLive(t *testing.T) {
 	cfg := writeNookConfig(t, `[editor]
 theme = "default"
 `)
 	m := newModel(t.TempDir())
+	defaultTheme := m.theme
 	if err := os.WriteFile(cfg, []byte(`[editor]
 theme = "tokyo-night"
 `), 0o644); err != nil {
@@ -1928,8 +1929,15 @@ theme = "tokyo-night"
 	if mm.themeName != "tokyo-night" {
 		t.Errorf("themeName after reload = %q, want %q", mm.themeName, "tokyo-night")
 	}
-	if !strings.Contains(mm.status, "restart") {
-		t.Errorf("status = %q, want it to mention restart", mm.status)
+	// v0.38.0: theme is swapped on the host immediately; no restart hint.
+	if mm.theme == defaultTheme {
+		t.Errorf("host theme not swapped on reload")
+	}
+	if strings.Contains(mm.status, "restart") {
+		t.Errorf("status mentions restart but v0.38.0 applies theme live: %q", mm.status)
+	}
+	if !strings.Contains(mm.status, "tokyo-night") {
+		t.Errorf("status = %q, want it to mention the new theme", mm.status)
 	}
 }
 

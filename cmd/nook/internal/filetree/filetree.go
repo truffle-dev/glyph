@@ -108,6 +108,12 @@ func (p *Pane) Blur() { p.focused = false }
 // Focused reports the pane's focus state.
 func (p Pane) Focused() bool { return p.focused }
 
+// SetTheme swaps the palette used for borders, the file/folder glyphs, and
+// the cursor row. The wrapped glyph file-tree model uses its own internal
+// palette tied to lipgloss tokens, so visual changes are limited to the
+// nook-side framing; deeper recolor is a follow-up.
+func (p *Pane) SetTheme(t theme.Theme) { p.theme = t }
+
 // RefreshCmd returns a tea.Cmd that re-walks the file system off the
 // UI thread and produces a BuildTreeMsg the host can hand back to
 // SetNode. The previous synchronous Refresh blocked first paint on a
