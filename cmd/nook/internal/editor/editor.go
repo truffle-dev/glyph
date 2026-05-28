@@ -21,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/autopair"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/clip"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/comment"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
@@ -1724,6 +1725,12 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p = p.DeleteSelection()
 		} else if len(p.extras) > 0 {
 			(&p).backspaceAllCursors()
+		} else if autopair.IsEmptyPair(p.buf.Lines[p.row], p.col) {
+			// Cursor sits between an auto-paired opener and its closer.
+			// Single Backspace deletes both halves so the user is back at
+			// the empty slot they were about to fill.
+			p.delForward()
+			p.delBack()
 		} else {
 			p.delBack()
 		}
@@ -1768,6 +1775,9 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p.insertRunes(km.Runes)
 		} else if len(p.extras) > 0 {
 			(&p).insertRunesAllCursors(km.Runes)
+		} else if len(km.Runes) == 1 && p.applyAutoPair(km.Runes[0]) {
+			// applyAutoPair handled the keystroke (insert-with-pair or
+			// skip-over-closer). Nothing further to do.
 		} else {
 			p.insertRunes(km.Runes)
 		}
@@ -1847,6 +1857,31 @@ func (p *Pane) insertRunes(r []rune) {
 	p.col += len(r)
 	p.buf.Dirty = true
 	p.bufVer++
+}
+
+// applyAutoPair handles a single-rune insertion when auto-pair rules
+// fire. Returns true when the keystroke was consumed by auto-pair
+// (skip-over an existing closer, or pair an opener with its closer
+// and park the cursor between them). Returns false to let the caller
+// fall through to plain insertRunes.
+//
+// Skip-over wins when the cursor sits directly on the closer the user
+// is about to type — the typical "type past the parked closer" path.
+// Otherwise, if the rune is a known opener and ShouldPair allows, the
+// closer is inserted along with the opener and the cursor is decremented
+// by one so the next keystroke lands between the pair.
+func (p *Pane) applyAutoPair(r rune) bool {
+	line := p.buf.Lines[p.row]
+	if autopair.ShouldSkip(line, p.col, r) {
+		p.col++
+		return true
+	}
+	if close, ok := autopair.OpenerFor(r); ok && autopair.ShouldPair(line, p.col, r) {
+		p.insertRunes([]rune{r, close})
+		p.col--
+		return true
+	}
+	return false
 }
 
 func (p *Pane) insertNewline() {
