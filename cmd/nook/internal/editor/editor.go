@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/clip"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/comment"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
@@ -589,6 +590,95 @@ func (p Pane) DeleteSelection() Pane {
 	(&p).applyHighlight()
 	(&p).ensureVisible()
 	return p
+}
+
+// ToggleComment toggles line-comment markers across the selection range,
+// or just the current row when no selection is active. The marker comes
+// from comment.Prefix(p.path), so a `.go` buffer uses `// `, a `.py`
+// buffer uses `# `, etc. No-op when the filetype has no known line
+// comment (HTML, CSS, XML, etc.). Selection is preserved; cursor and
+// anchor columns shift to account for the inserted or removed prefix
+// so the visual position before/after the toggle is stable.
+func (p Pane) ToggleComment() Pane {
+	prefix := comment.Prefix(p.path)
+	if prefix == "" {
+		return p
+	}
+	if len(p.buf.Lines) == 0 {
+		return p
+	}
+	sr, er := p.row, p.row
+	if p.selecting {
+		sr, _, er, _ = p.SelectionRange()
+	}
+	if sr < 0 {
+		sr = 0
+	}
+	if er >= len(p.buf.Lines) {
+		er = len(p.buf.Lines) - 1
+	}
+	if sr > er {
+		return p
+	}
+
+	old := make([]string, er-sr+1)
+	copy(old, p.buf.Lines[sr:er+1])
+	neu, op := comment.ToggleLines(old, prefix)
+	if op == comment.Noop {
+		return p
+	}
+	for i, line := range neu {
+		p.buf.Lines[sr+i] = line
+	}
+
+	p.row, p.col = adjustCursorAfterToggle(p.row, p.col, sr, old, neu)
+	if p.selecting {
+		p.anchorRow, p.anchorCol = adjustCursorAfterToggle(p.anchorRow, p.anchorCol, sr, old, neu)
+	}
+
+	p.buf.Dirty = true
+	p.bufVer++
+	(&p).applyHighlight()
+	(&p).ensureVisible()
+	return p
+}
+
+// adjustCursorAfterToggle maps a (curRow, curCol) position from the
+// pre-toggle buffer to the post-toggle buffer. sr is the starting row
+// of the toggled slice; old and neu are the original and replacement
+// row contents for [sr, sr+len(old)). Rows outside the slice are
+// untouched. Within the slice, the per-row delta = len(neu[i]) -
+// len(old[i]) is applied to curCol once curCol passes the column where
+// the edit began, with the result clamped into [diffCol, len(neu[i])].
+func adjustCursorAfterToggle(curRow, curCol, sr int, old, neu []string) (int, int) {
+	if curRow < sr || curRow >= sr+len(old) {
+		return curRow, curCol
+	}
+	i := curRow - sr
+	oldLine, newLine := old[i], neu[i]
+	delta := len(newLine) - len(oldLine)
+	if delta == 0 {
+		return curRow, curCol
+	}
+	limit := len(oldLine)
+	if len(newLine) < limit {
+		limit = len(newLine)
+	}
+	diffCol := 0
+	for diffCol < limit && oldLine[diffCol] == newLine[diffCol] {
+		diffCol++
+	}
+	if curCol <= diffCol {
+		return curRow, curCol
+	}
+	newCol := curCol + delta
+	if newCol < diffCol {
+		newCol = diffCol
+	}
+	if newCol > len(newLine) {
+		newCol = len(newLine)
+	}
+	return curRow, newCol
 }
 
 // startSelectionIfNeeded marks the current cursor as the anchor when no
