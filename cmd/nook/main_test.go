@@ -2141,6 +2141,58 @@ func TestDebugStatusBarSegmentAppearsWithBreakpoints(t *testing.T) {
 	}
 }
 
+// TestCtrlSlashTogglesLineComment confirms ctrl+/ runs the comment
+// transform on the active buffer. Ctrl+/ on every xterm-style emulator
+// folds into 0x1F, which bubbletea surfaces as KeyCtrlUnderscore.
+func TestCtrlSlashTogglesLineComment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(path, []byte("x := 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(dir)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.bufs.OpenOrSwitch(path)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlUnderscore})
+	mm := updated.(model)
+	p := mm.bufs.Active()
+	if p == nil {
+		t.Fatal("expected active buffer after Ctrl+/")
+	}
+	if got := p.Line(0); got != "// x := 1" {
+		t.Errorf("Line 0 = %q, want %q", got, "// x := 1")
+	}
+	// Toggle again to confirm round-trip.
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlUnderscore})
+	mm = updated.(model)
+	p = mm.bufs.Active()
+	if got := p.Line(0); got != "x := 1" {
+		t.Errorf("Line 0 after round-trip = %q, want %q", got, "x := 1")
+	}
+}
+
+// TestCtrlSlashWithoutBufferIsNoop confirms Ctrl+/ without an active
+// buffer doesn't panic and doesn't change state. The model only ships a
+// status hint when there's a real thing to act on; comment toggle on
+// the welcome card silently does nothing, matching alt+enter's shape.
+func TestCtrlSlashWithoutBufferIsNoop(t *testing.T) {
+	m := newModel(t.TempDir())
+	m.width = 100
+	m.height = 24
+	m = m.resize()
+	before := m.status
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlUnderscore})
+	mm := updated.(model)
+	if cmd != nil {
+		t.Errorf("expected nil cmd, got %T", cmd())
+	}
+	if mm.status != before {
+		t.Errorf("status changed for Ctrl+/ with no buffer: %q -> %q", before, mm.status)
+	}
+}
+
 func stripANSI(s string) string {
 	var out strings.Builder
 	for i := 0; i < len(s); i++ {

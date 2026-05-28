@@ -85,6 +85,7 @@ func Default() []Section {
 			{"delete", "Delete next character"},
 			{"enter", "Insert newline"},
 			{"tab", "Insert tab (or accept ghost text)"},
+			{"ctrl+/", "Toggle line comment on selection or cursor row"},
 		}},
 		{Name: "Selection / Clipboard", Bindings: []Binding{
 			{"shift+← →", "Extend selection one character"},

@@ -6,6 +6,67 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-05-28
+
+Comment toggle (Ctrl+/). Select any range — or just park the cursor on
+a row — and press Ctrl+/ to flip the lines between commented and
+uncommented. Twenty-four extensions and four canonical basenames know
+their prefix: `// ` for Go / Rust / Zig / C / C++ / Java / Swift /
+Kotlin / Scala / Dart / C# / F# / JS / TS / JSX / TSX / PHP / Groovy,
+`# ` for Python / Bash / Ruby / Perl / R / Julia / Elixir / Elm / TOML
+/ YAML / Terraform / HCL / Makefile / Dockerfile / Rakefile / Gemfile,
+`-- ` for Lua / Haskell / SQL / Ada / VHDL, `" ` for Vim, `; ` for
+Lisp / Scheme / Clojure / Emacs Lisp, `% ` for TeX / BibTeX.
+Block-comment-only languages (HTML, CSS, XML) and unknown extensions
+no-op silently — no status noise, no destructive surprise.
+
+The implementation:
+
+- `cmd/nook/internal/comment` is a new pure package. `Prefix(path)`
+  reads the extension (or basename for Makefile et al.) and returns
+  the line-comment marker, with a trailing space so toggled code reads
+  like the surrounding language rather than a greppable banner.
+  `ToggleLines(lines, prefix)` returns the new slice and an op
+  (Comment, Uncomment, Noop); blank lines pass through unchanged in
+  both directions, and the "are we already commented" check inspects
+  only non-blank lines.
+- Indented blocks anchor at the minimum non-blank indent so all rows
+  share the comment column. Match Zed and VS Code: an uncommented-
+  then-recommented block returns to where it started.
+- `editor.Pane.ToggleComment()` walks the active selection (or the
+  cursor row when nothing's selected), copies the rows out, runs them
+  through `ToggleLines`, writes them back in place, advances `bufVer`,
+  marks the buffer dirty, and re-applies syntax highlight + ensures
+  visibility. Cursor accounting is handled by `adjustCursorAfterToggle`:
+  compute the leftmost-diff column, apply the signed delta to columns
+  at or right of the diff, clamp into `[diffCol, len(newLine)]`. The
+  selection anchor is adjusted alongside the head so the visual
+  selection survives the toggle.
+- Host binding lands at `tea.KeyCtrlUnderscore`. xterm-style emulators
+  fold both Ctrl+/ and Ctrl+_ into byte 0x1F (US, Unit Separator), so
+  a single case covers both for the same operation. Go-file buffers
+  fire `lspChangeCmd` after the toggle so gopls diagnostics track the
+  change live.
+- Help overlay grows one row in the Editing section: `ctrl+/ — Toggle
+  line comment on selection or cursor row`.
+
+### Added
+
+- `cmd/nook/internal/comment` package with `Prefix(path string) string`
+  and `ToggleLines(lines []string, prefix string) ([]string, Op)`.
+- `editor.Pane.ToggleComment() Pane` chainable transform on the editor
+  pane, including cursor and selection-anchor adjustment.
+- Host `Ctrl+/` keybinding for the comment toggle.
+
+### Changed
+
+- Help overlay's Editing section now lists `ctrl+/`.
+
+### Notes
+
+- `editor.Pane.Theme() theme.Theme` (added in v0.38.0) was used to
+  validate live theme propagation in unit tests; it stays exported.
+
 ## [0.38.0] — 2026-05-28
 
 Live config + theme reload. Edit `~/.config/nook/config.toml` while

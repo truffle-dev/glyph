@@ -1937,6 +1937,12 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// terminals because ASCII space has no separate control code.
 		// Treat it as the completion trigger.
 		return m.triggerCompletion()
+	case tea.KeyCtrlUnderscore:
+		// Ctrl+/ is delivered as 0x1F (KeyCtrlUnderscore) under every
+		// xterm-style emulator — the slash key and the underscore key
+		// both fold into the US byte when Ctrl is held. Treat it as the
+		// line-comment toggle.
+		return m.toggleComment()
 	case tea.KeyF2:
 		// LSP rename. F2 because Ctrl+R is already taken by
 		// "replace current match" in the finder. We ask gopls to
@@ -2554,6 +2560,33 @@ func (m model) handleFormattingMsg(msg lookup.FormattingMsg) (tea.Model, tea.Cmd
 	}
 	m.status = "formatted " + filepath.Base(msg.Path)
 	return m, tea.Batch(cmds...)
+}
+
+// toggleComment toggles line comments on the active buffer's selection
+// (or the cursor row when nothing is selected). The editor pane owns the
+// transform; the host's job is to drive it, then publish a didChange so
+// gopls picks up the edit live for diagnostics on Go files. For files
+// with no canonical line-comment marker (HTML, CSS, unknown filetypes)
+// editor.ToggleComment is a no-op and we leave the status bar alone so
+// the user gets the same "nothing happened" feedback as e.g. ctrl+s on
+// a clean buffer.
+func (m model) toggleComment() (tea.Model, tea.Cmd) {
+	p := m.bufs.Active()
+	if p == nil {
+		return m, nil
+	}
+	before := p.Contents()
+	*p = p.ToggleComment()
+	if p.Contents() == before {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	if m.lsp != nil && isGoFile(p.Path()) {
+		v := m.lspVersions[p.Path()] + 1
+		m.lspVersions[p.Path()] = v
+		cmd = m.lspChangeCmd(p.Path(), v, p.Contents())
+	}
+	return m, cmd
 }
 
 // triggerCompletion fires an LSP completion request at the cursor. The
