@@ -6,6 +6,59 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-05-29
+
+Per-project config inheritance. A `.nook/config.toml` sitting at the
+project root now layers on top of `~/.config/nook/config.toml`. The
+project file uses the same `[editor]` schema as the user file, and
+any field it explicitly sets — `tab_width`, `format_on_save`,
+`line_numbers`, `inlay_hints`, `theme` — wins over the user's choice
+for that field only. Fields the project file omits fall through to
+the user's setting (or to the built-in default when the user file
+also omits them). The `.nook/` directory is the same one that
+already holds `tasks.toml` (v0.19.0), so the per-project settings
+live alongside the per-project task list for discoverability.
+
+New pure-package primitives under `cmd/nook/internal/config`:
+
+- `LoadRaw(path)` decodes a config file WITHOUT applying the
+  `Default()` seeds or the safety reapplies that `Load` performs. It
+  returns the parsed Config (every field at its Go zero unless the
+  file set it explicitly) plus `toml.MetaData` so callers can
+  distinguish "absent in source" from "explicit Go zero." That
+  distinction is essential for bool fields like `format_on_save`: a
+  project setting it explicitly to `false` must override a user
+  default of `true`, and without the metadata, "absent" and
+  "explicit false" look identical.
+- `Merge(base, overlay, overlayMeta)` per-field overlays only the
+  keys metadata reports as defined. Safety reapplies (`TabWidth > 0`,
+  `Theme != ""`) run at the end so the result is always usable.
+- `ProjectPath(root)` returns `<root>/.nook/config.toml`.
+
+The host layers both files at every read point. `newModel` calls
+`config.Load(userPath)` for the seeded user config, then
+`config.LoadRaw(projectPath)` + `config.Merge` to fold the project
+overlay in. A project parse error surfaces as `project config: …
+(using user settings)` so the user can distinguish a malformed
+`.nook/config.toml` from a malformed `~/.config/nook/config.toml`.
+
+`Init` fires a parallel `configwatch.WatchCmd` against the project
+path, so both files are polled independently. The `TickMsg` handler
+dispatches on `msg.Path` and re-arms the matching watch; whichever
+file moved triggers a full `reloadConfig`, which re-runs
+`loadMergedConfig(userPath, projectPath)` to produce the merged
+result from current disk state. Status hints carry a scope suffix:
+"settings reloaded (user + project)", "(user)", or "(project)" so
+the user can see which scopes shaped the current settings.
+
+13 new config-package tests cover the merge matrix (empty overlay
+passthrough, full overlay wins, partial overlay per-field wins,
+explicit-false bool, explicit-zero TabWidth, explicit-empty Theme,
+base non-mutation, realistic two-layer merge) plus the LoadRaw
+shape itself. 5 new host tests cover newModel layering, project-only
+config, project parse error surfacing, alt+, picking up project
+edits, and TickMsg routing on project path.
+
 ## [0.41.0] — 2026-05-28
 
 Signature-help overload cycling. When the floating parameter-hint
