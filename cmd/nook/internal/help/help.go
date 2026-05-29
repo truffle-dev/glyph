@@ -168,6 +168,7 @@ func Default() []Section {
 		}},
 		{Name: "Panes", Bindings: []Binding{
 			{"ctrl+b", "Toggle file tree (left)"},
+			{"a", "Create file or directory (file tree focused, suffix / for dir)"},
 			{"ctrl+g", "Toggle git pane"},
 			{"ctrl+`", "Toggle embedded terminal"},
 			{"alt+v", "Toggle markdown preview (.md / .markdown only)"},

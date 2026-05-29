@@ -81,11 +81,13 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/config"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/configwatch"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/createprompt"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/dap"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/diagnostics"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/filetree"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/filetreeops"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/finder"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/findrefs"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ghost"
@@ -132,6 +134,7 @@ const (
 	overlayTasks
 	overlaySymbolSearch
 	overlayOutline
+	overlayCreate
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -243,6 +246,14 @@ type model struct {
 	// prompt (which they can't, but the pin is defensive).
 	renamePrompt  rename.Prompt
 	pendingRename pendingRename
+
+	// File-tree "new file or directory" prompt: armed by
+	// filetree.CreatePromptMsg, displayed under overlayCreate. The prompt
+	// carries the parent directory the new entry should land under; the
+	// Enter handler runs filetreeops.CreatePath and on success refreshes
+	// the tree and opens the file (if a file was created).
+	createPrompt    createprompt.Prompt
+	createParentDir string
 
 	// Workspace symbol search modal (Ctrl+T). The prompt collects a query
 	// string; on Enter the host fires lsp.WorkspaceSymbol and routes the
@@ -590,6 +601,7 @@ func newModel(root string, opens ...string) model {
 		showTree:       false,
 		caPopup:        codeaction.New(),
 		renamePrompt:   rename.New(),
+		createPrompt:   createprompt.New(),
 		symbolPrompt:   symbolsearch.New(),
 		outlinePane:    outline.New(t),
 		outlineCache:   map[string][]nooklsp.DocSymbol{},
@@ -1611,6 +1623,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.applyDiagnosticsToActive()
 		return m, tea.Batch(m.ensureLSPForFile(msg.Path), m.refreshGutterCmd(), m.refreshInlayHintsCmd(), m.refreshBlameCmd())
 
+	case filetree.CreatePromptMsg:
+		return m.openCreatePrompt(msg.ParentDir), nil
+
+	case createPathMsg:
+		return m.handleCreatePathMsg(msg)
+
 	case multibuffer.FragmentsMsg:
 		m.multibufPane = m.multibufPane.SetFragments(msg.Fragments, msg.Err)
 		return m, nil
@@ -1948,6 +1966,13 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// the rename request, Esc cancels.
 	if m.overlay == overlayRename {
 		return m.routeRename(km)
+	}
+
+	// File-tree "new file or directory" prompt swallows its own keys:
+	// typing edits the path, arrows/home/end move the cursor, Backspace
+	// deletes, Enter fires the create command, Esc cancels.
+	if m.overlay == overlayCreate {
+		return m.routeCreate(km)
 	}
 
 	// Symbol-search prompt swallows its own keys: typing edits the
@@ -4253,6 +4278,15 @@ func (m model) View() string {
 		float := centerOverlay(m.width, m.height-1, box)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}
+	if m.overlay == overlayCreate {
+		boxW := 60
+		if boxW > m.width-4 {
+			boxW = m.width - 4
+		}
+		box := m.createPrompt.View(t, boxW)
+		float := centerOverlay(m.width, m.height-1, box)
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
 	if m.overlay == overlaySymbolSearch {
 		boxW := 64
 		if boxW > m.width-4 {
@@ -5140,4 +5174,151 @@ func (m model) shutdownDebugSession() (model, tea.Cmd) {
 	m = m.clearAllStopMarkers()
 	m.status = "debug: terminated"
 	return m, cmd
+}
+
+// createPathMsg is the result of a filetreeops.CreatePath call. Result
+// carries the absolute path of the new entry on success; Err is the
+// error from filetreeops (collision, invalid name, fs failure). The host
+// branches on Err.
+type createPathMsg struct {
+	Result filetreeops.CreateResult
+	Err    error
+}
+
+// createPathCmd runs filetreeops.CreatePath in a goroutine and routes the
+// outcome back as createPathMsg. The filesystem call is fast (single
+// O_EXCL open or MkdirAll), but keeping it off the UI thread keeps the
+// reveal/refresh latency-free and consistent with the rest of the host.
+func createPathCmd(parentDir, input string) tea.Cmd {
+	return func() tea.Msg {
+		res, err := filetreeops.CreatePath(parentDir, input)
+		return createPathMsg{Result: res, Err: err}
+	}
+}
+
+// openCreatePrompt arms the create-prompt overlay with a parent label
+// derived from the parent-directory path the filetree pane sent. The
+// label shown is the path relative to the project root, falling back to
+// "." when the parent IS the root.
+func (m model) openCreatePrompt(parentDir string) model {
+	rel, err := filepath.Rel(m.root, parentDir)
+	if err != nil || rel == "" {
+		rel = "."
+	}
+	rel = filepath.ToSlash(rel)
+	m.createPrompt = m.createPrompt.WithParent(rel)
+	m.createParentDir = parentDir
+	m.overlay = overlayCreate
+	m.status = "new: type path, / suffix for dir, enter to create"
+	return m
+}
+
+// dismissCreatePrompt closes the create-prompt overlay and clears the
+// parent-dir pin.
+func (m *model) dismissCreatePrompt() {
+	m.createPrompt = createprompt.New()
+	m.createParentDir = ""
+	if m.overlay == overlayCreate {
+		m.overlay = overlayNone
+	}
+}
+
+// routeCreate forwards a keypress into the create.Prompt. Enter fires the
+// create command, Esc cancels.
+func (m model) routeCreate(km tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch km.Type {
+	case tea.KeyEsc:
+		m.dismissCreatePrompt()
+		m.status = "new: cancelled"
+		return m, nil
+	case tea.KeyEnter:
+		value := m.createPrompt.Value()
+		if value == "" {
+			m.createPrompt = m.createPrompt.WithError("name is empty")
+			return m, nil
+		}
+		parent := m.createParentDir
+		return m, createPathCmd(parent, value)
+	case tea.KeyBackspace:
+		m.createPrompt = m.createPrompt.Backspace()
+		return m, nil
+	case tea.KeyLeft:
+		m.createPrompt = m.createPrompt.MoveLeft()
+		return m, nil
+	case tea.KeyRight:
+		m.createPrompt = m.createPrompt.MoveRight()
+		return m, nil
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.createPrompt = m.createPrompt.MoveHome()
+		return m, nil
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.createPrompt = m.createPrompt.MoveEnd()
+		return m, nil
+	case tea.KeyRunes:
+		for _, r := range km.Runes {
+			m.createPrompt = m.createPrompt.Type(r)
+		}
+		return m, nil
+	case tea.KeySpace:
+		m.createPrompt = m.createPrompt.Type(' ')
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleCreatePathMsg dispatches the outcome of a createPathCmd. Errors
+// keep the prompt open so the user can retype. Success closes the
+// prompt, refreshes the file tree, reveals the new entry, and (for
+// files) opens it in a buffer.
+func (m model) handleCreatePathMsg(msg createPathMsg) (model, tea.Cmd) {
+	if msg.Err != nil {
+		m.createPrompt = m.createPrompt.WithError(createErrorString(msg.Err))
+		return m, nil
+	}
+	res := msg.Result
+	rel, _ := filepath.Rel(m.root, res.Path)
+	rel = filepath.ToSlash(rel)
+
+	m.dismissCreatePrompt()
+	m.treePane.Reveal(res.Path)
+
+	if res.IsDir {
+		m.status = "created " + rel + "/"
+		return m, m.treePane.RefreshCmd()
+	}
+
+	_, action := m.bufs.OpenOrSwitch(res.Path)
+	switch action {
+	case bufman.Switched:
+		m.status = "created " + rel + " (already open, switched)"
+	default:
+		m.status = "created " + rel
+	}
+	m = m.resize()
+	m = m.applyDiagnosticsToActive()
+	return m, tea.Batch(
+		m.treePane.RefreshCmd(),
+		m.ensureLSPForFile(res.Path),
+		m.refreshGutterCmd(),
+		m.refreshInlayHintsCmd(),
+		m.refreshBlameCmd(),
+	)
+}
+
+// createErrorString turns a filetreeops error into a short user-facing
+// label. The package-prefixed errors are accurate for logs but too noisy
+// for a small prompt; we map the well-known sentinels to terse strings.
+func createErrorString(err error) string {
+	switch {
+	case errors.Is(err, filetreeops.ErrEmptyName):
+		return "name is empty"
+	case errors.Is(err, filetreeops.ErrAbsolutePath):
+		return "name must be relative"
+	case errors.Is(err, filetreeops.ErrInvalidName):
+		return "invalid path (no .. allowed)"
+	case errors.Is(err, filetreeops.ErrPathExists):
+		return "path already exists"
+	default:
+		return err.Error()
+	}
 }

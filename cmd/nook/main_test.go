@@ -2461,3 +2461,233 @@ func stripANSI(s string) string {
 	}
 	return out.String()
 }
+
+// --- create-prompt (filetree 'a' → new file/dir) -----------------------
+
+func TestFiletreeCreatePromptMsgOpensOverlaySeededWithParent(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	parentDir := filepath.Join(root, "subdir")
+	if err := os.Mkdir(parentDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	updated, _ := m.Update(filetree.CreatePromptMsg{ParentDir: parentDir})
+	mm := updated.(model)
+	if mm.overlay != overlayCreate {
+		t.Fatalf("expected overlayCreate, got %v", mm.overlay)
+	}
+	if !mm.createPrompt.Open() {
+		t.Errorf("expected create prompt to be open")
+	}
+	if mm.createParentDir != parentDir {
+		t.Errorf("expected parentDir %q, got %q", parentDir, mm.createParentDir)
+	}
+	if mm.createPrompt.ParentRel() != "subdir" {
+		t.Errorf("expected parent label %q, got %q", "subdir", mm.createPrompt.ParentRel())
+	}
+}
+
+func TestCreatePromptParentLabelAtRootIsDot(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	updated, _ := m.Update(filetree.CreatePromptMsg{ParentDir: root})
+	mm := updated.(model)
+	if mm.createPrompt.ParentRel() != "." {
+		t.Errorf("expected '.' at root, got %q", mm.createPrompt.ParentRel())
+	}
+}
+
+func TestCreatePromptEnterFiresCreatePathCmd(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayCreate
+	m.createParentDir = root
+	m.createPrompt = m.createPrompt.WithParent(".")
+	// .txt picks a non-Go file so gopls auto-start doesn't clobber the
+	// "created X" status; the gopls-bootstrap path is exercised by the
+	// regular open-file tests upstream.
+	for _, r := range "hello.txt" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(model)
+	if cmd == nil {
+		t.Fatalf("Enter should fire a CreatePathCmd")
+	}
+	if !mm.createPrompt.Open() {
+		t.Errorf("prompt should still be open until createPathMsg arrives")
+	}
+	resultMsg := cmd()
+	if _, ok := resultMsg.(createPathMsg); !ok {
+		t.Fatalf("expected createPathMsg, got %T", resultMsg)
+	}
+	updated, _ = mm.Update(resultMsg)
+	mm = updated.(model)
+	if mm.overlay == overlayCreate {
+		t.Errorf("overlay should close on success, still %v", mm.overlay)
+	}
+	if _, err := os.Stat(filepath.Join(root, "hello.txt")); err != nil {
+		t.Errorf("expected hello.txt to be created: %v", err)
+	}
+	if !strings.Contains(mm.status, "created hello.txt") {
+		t.Errorf("status should announce create, got %q", mm.status)
+	}
+	if mm.bufs.Active() == nil {
+		t.Errorf("expected the new file to be opened in a buffer")
+	}
+}
+
+func TestCreatePromptTrailingSlashCreatesDir(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayCreate
+	m.createParentDir = root
+	m.createPrompt = m.createPrompt.WithParent(".")
+	for _, r := range "newdir/" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(model)
+	if cmd == nil {
+		t.Fatalf("Enter should fire a CreatePathCmd for dir")
+	}
+	updated, _ = mm.Update(cmd())
+	mm = updated.(model)
+	info, err := os.Stat(filepath.Join(root, "newdir"))
+	if err != nil {
+		t.Fatalf("expected newdir to exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("expected newdir to be a directory")
+	}
+	if !strings.Contains(mm.status, "newdir/") {
+		t.Errorf("status should announce dir, got %q", mm.status)
+	}
+	if mm.overlay == overlayCreate {
+		t.Errorf("overlay should close on success, still %v", mm.overlay)
+	}
+}
+
+func TestCreatePromptEscCancelsWithoutSideEffect(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayCreate
+	m.createParentDir = root
+	m.createPrompt = m.createPrompt.WithParent(".")
+	for _, r := range "uncommitted.txt" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mm := updated.(model)
+	if mm.overlay == overlayCreate {
+		t.Errorf("Esc should close the create prompt")
+	}
+	if _, err := os.Stat(filepath.Join(root, "uncommitted.txt")); err == nil {
+		t.Errorf("Esc should NOT have created uncommitted.txt")
+	}
+	if !strings.Contains(mm.status, "cancelled") {
+		t.Errorf("status should mention cancellation, got %q", mm.status)
+	}
+}
+
+func TestCreatePromptEmptyValueKeepsPromptOpenWithError(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayCreate
+	m.createParentDir = root
+	m.createPrompt = m.createPrompt.WithParent(".")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(model)
+	if cmd != nil {
+		t.Errorf("empty value should not fire a Cmd")
+	}
+	if mm.overlay != overlayCreate {
+		t.Errorf("prompt should stay open on empty Enter")
+	}
+}
+
+func TestCreatePromptCollisionKeepsPromptOpenWithError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "exists.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayCreate
+	m.createParentDir = root
+	m.createPrompt = m.createPrompt.WithParent(".")
+	for _, r := range "exists.txt" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(model)
+	if cmd == nil {
+		t.Fatalf("Enter on collision should still fire the cmd")
+	}
+	updated, _ = mm.Update(cmd())
+	mm = updated.(model)
+	if mm.overlay != overlayCreate {
+		t.Errorf("collision should keep prompt open, overlay=%v", mm.overlay)
+	}
+	if !mm.createPrompt.Open() {
+		t.Errorf("prompt should remain open on collision")
+	}
+	// Confirm the existing file wasn't overwritten.
+	body, _ := os.ReadFile(filepath.Join(root, "exists.txt"))
+	if string(body) != "x" {
+		t.Errorf("collision should not overwrite existing file; got %q", body)
+	}
+}
+
+func TestCreatePromptNestedFileMaterializesParents(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(root)
+	m.width = 120
+	m.height = 30
+	m = m.resize()
+	m.overlay = overlayCreate
+	m.createParentDir = root
+	m.createPrompt = m.createPrompt.WithParent(".")
+	for _, r := range "deep/nest/leaf.go" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(model)
+	if cmd == nil {
+		t.Fatalf("Enter should fire CreatePathCmd")
+	}
+	updated, _ = mm.Update(cmd())
+	mm = updated.(model)
+	if _, err := os.Stat(filepath.Join(root, "deep", "nest")); err != nil {
+		t.Errorf("expected parent dirs materialized: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "deep", "nest", "leaf.go")); err != nil {
+		t.Errorf("expected leaf file created: %v", err)
+	}
+	_ = mm
+}
