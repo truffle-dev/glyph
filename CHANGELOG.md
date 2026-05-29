@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-05-29
+
+Bracket-pair highlight. The cursor sits on or just past a `(`, `[`, or `{`
+(or its closer), and nook paints both ends of the pair with a Primary
+foreground over the SurfaceStrong band so the eye finds the match in one
+beat. Works across lines, across soft-wrap sub-rows, and for all three
+universal pairs.
+
+Anchor selection follows Zed convention: rune-at-cursor wins so the
+block cursor's "under here" position is the answer in the dense case,
+with rune-before-cursor as the fallback when the cursor sits past the
+last rune on a line. The cursor cell pre-empts the band on its own
+rune (so the cursor stays visible at the bracket), and the match end
+always paints so the eye still finds where the pair closes.
+
+Suppressed during selection (a held Shift+motion grows a band that
+would fight the pair) and during multi-cursor (a single highlight
+would be ambiguous about which cursor it belonged to). String- and
+comment-aware exclusion is intentionally deferred; bracket counting
+inside string literals is wrong by definition but the caller only
+paints when both endpoints exist, so the damage is "no highlight"
+rather than "wrong highlight."
+
+New pure-package primitive at `cmd/nook/internal/bracketmatch`:
+
+- `Match(lines, row, col) (anchor, match, kind, ok)` performs the
+  stack-based depth walk forward when the anchor is an opener and
+  backward when it is a closer. Mismatched-kind brackets are ignored,
+  so an inner paren pair never confuses an outer bracket pair search.
+  Scan-budget capped at 1 MiB so a pathological unmatched brace can't
+  stall first paint on a megabyte buffer.
+
 ## [0.45.0] — 2026-05-29
 
 Soft wrap. `Alt+Z` wraps long logical lines onto multiple visual rows
