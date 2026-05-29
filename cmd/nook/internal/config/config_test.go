@@ -27,6 +27,9 @@ func TestDefault(t *testing.T) {
 	if !cfg.Editor.InlayHints {
 		t.Error("Default InlayHints = false, want true")
 	}
+	if cfg.Editor.SoftWrap {
+		t.Error("Default SoftWrap = true, want false")
+	}
 	if cfg.Editor.Theme != "default" {
 		t.Errorf("Default Theme = %q, want %q", cfg.Editor.Theme, "default")
 	}
@@ -371,6 +374,7 @@ format_on_save = false
 line_numbers = false
 indent_guides = false
 inlay_hints = false
+soft_wrap = true
 theme = "rose-pine"
 `)
 	base := Default()
@@ -389,6 +393,9 @@ theme = "rose-pine"
 	}
 	if got.Editor.InlayHints {
 		t.Error("InlayHints = true, want false (overlay wins)")
+	}
+	if !got.Editor.SoftWrap {
+		t.Error("SoftWrap = false, want true (overlay wins)")
 	}
 	if got.Editor.Theme != "rose-pine" {
 		t.Errorf("Theme = %q, want %q", got.Editor.Theme, "rose-pine")

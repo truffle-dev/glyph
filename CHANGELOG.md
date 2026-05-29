@@ -6,6 +6,60 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-05-29
+
+Soft wrap. `Alt+Z` wraps long logical lines onto multiple visual rows
+instead of horizontally scrolling. The gutter and line marker render
+once at the top of each logical row; continuation rows show a blank
+gutter plus a vertical bar so the reader can see at a glance where
+wraps happened. Every render decoration the editor draws — syntax
+spans, find-match marks, document-highlight bands, inlay hints,
+selection, multi-cursors, indent guides — slices through the wrap
+points so each sub-row paints the right contributions. Default off;
+add `soft_wrap = true` under `[editor]` in `~/.config/nook/config.toml`
+to start with soft wrap on.
+
+New pure-package primitive at `cmd/nook/internal/softwrap`:
+
+- `WrapPoints(line, width, tabWidth)` returns the byte indices where
+  each visual row of a single logical line begins. Prefers breaks at
+  the last whitespace boundary so trailing spaces consume into the
+  prior row, falls back to a hard-break before the overflowing rune,
+  and force-places a single rune wider than `width` followed by an
+  immediate wrap. Multi-byte runes are never split.
+- `LineRowCount(line, width, tabWidth)` is the count-only convenience
+  used by visual-row arithmetic.
+
+The editor pane gains `softWrap bool` plus a sub-row offset that
+preserves both logical and visual scroll precision: the existing
+logical-row `offset` stays the source of truth for fold / git-gutter
+/ blame lookups, and a separate `subOffset` indexes the wrapped
+sub-row within `offset` so the viewport can scroll partway through a
+wrapped line without sticking to logical-row granularity.
+`ensureVisible` and the scroll math gate on `softWrap` — when off,
+the v0.44 byte-for-byte behavior is preserved.
+
+Seven package-private slicing helpers in
+`editor_softwrap_render.go` translate the row-level decoration
+channels into per-sub-row contributions. Boundary rule: items at
+exactly the wrap point (col == subEnd) belong to the next sub-row,
+except EOL items (col == lineLen) which attach to the last sub-row.
+Selection tail propagates only onto the last visible sub-row. Indent
+guides paint on sub-row 0 only in v1.
+
+27 softwrap-package tests cover empty / single char / exact-width /
+wrap-at-last-space / no-space-hard-break / multibyte / leading-tabs /
+zero-and-negative tabWidth / single-rune-wider-than-width plus a
+fuzz pass over Greek and Japanese sample text × eight widths. 17
+editor-package tests cover defaults / accessors / contentWidth /
+visual-row math / cursorSubRow / logicalAtVisualOffset / scroll
+behavior / `Open()` reset. 15 slice-3 tests cover the seven slicing
+helpers and end-to-end View() integration (line-number-on-first-
+sub-row-only, sub-row count matches expected, subOffset skips
+leading sub-rows, empty + short rows don't crash). Config and
+bufman gain `SoftWrap` / `WithSoftWrap` propagation; the help
+overlay names `Alt+Z` under Settings.
+
 ## [0.44.1] — 2026-05-29
 
 Cross-platform fix for the v0.44.0 path-create edge case. `CreatePath`

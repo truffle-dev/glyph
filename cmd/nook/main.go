@@ -29,6 +29,7 @@
 //	alt+j      expand snippet at cursor (Tab cycles tabstops, Esc exits)
 //	alt+y      toggle gopls inlay hints (type annotations, parameter names)
 //	alt+b      toggle inline git blame on cursor row (GitLens-style)
+//	alt+z      toggle soft wrap (wrap long lines onto multiple visual rows)
 //	ctrl+]     LSP go to definition
 //	ctrl+space LSP completion popup (↑/↓ to navigate, enter to accept)
 //	alt+enter  LSP code actions at the cursor
@@ -301,6 +302,12 @@ type model struct {
 	// buffer and flips SetBlameVisible(true) on every open pane; the
 	// blame map is retained when toggled off so re-enabling is instant.
 	blameOn bool
+
+	// softWrapOn drives whether long logical lines wrap onto multiple
+	// visual rows instead of horizontally scrolling. Alt+z toggles.
+	// Default false (matches v0.44 behavior). Propagated to every open
+	// pane through bufman.WithSoftWrap on toggle and on config reload.
+	softWrapOn bool
 
 	// cfgPath is the resolved ~/.config/nook/config.toml location. Stored
 	// on the model so alt+, can re-read the same file without re-resolving
@@ -579,7 +586,7 @@ func newModel(root string, opens ...string) model {
 		root:           root,
 		width:          80,
 		height:         24,
-		bufs:           bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers).WithIndentGuides(cfg.Editor.IndentGuides),
+		bufs:           bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers).WithIndentGuides(cfg.Editor.IndentGuides).WithSoftWrap(cfg.Editor.SoftWrap),
 		gitPane:        git.NewPane(t, root),
 		termPane:       term.NewPane(t, root),
 		picker:         picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
@@ -610,6 +617,7 @@ func newModel(root string, opens ...string) model {
 		diagPane:       diagnostics.NewPane(t, root),
 		mdPane:         mdpreview.NewPane(t),
 		inlayHintsOn:   cfg.Editor.InlayHints,
+		softWrapOn:     cfg.Editor.SoftWrap,
 		cfgPath:        cfgPath,
 		cfgFinger:      configwatch.Snapshot(cfgPath),
 		prjCfgPath:     prjCfgPath,
@@ -674,7 +682,8 @@ func (m model) reloadConfig() model {
 	m.inlayHintsOn = cfg.Editor.InlayHints
 	m.tabWidth = cfg.Editor.TabWidth
 	m.themeName = cfg.Editor.Theme
-	m.bufs.WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers).WithIndentGuides(cfg.Editor.IndentGuides)
+	m.bufs.WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers).WithIndentGuides(cfg.Editor.IndentGuides).WithSoftWrap(cfg.Editor.SoftWrap)
+	m.softWrapOn = cfg.Editor.SoftWrap
 	if !m.inlayHintsOn {
 		m = m.clearInlayHints()
 	}
@@ -2278,6 +2287,22 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.refreshBlameCmd()
 			}
 			m.status = "inline blame: off"
+			return m, nil
+		case 'z':
+			// Alt+z toggles soft wrap on every open pane. When on, long
+			// logical rows wrap onto multiple visual rows at the editor's
+			// content width; when off, horizontal scrolling resumes. The
+			// underlying buffer is never mutated — only the render layer.
+			// Default off (matches v0.44 behavior). Mnemonic: "z" sits next
+			// to "x" / "c" / "v" — close enough to muscle memory without
+			// colliding with copy/paste.
+			m.softWrapOn = !m.softWrapOn
+			m.bufs.WithSoftWrap(m.softWrapOn)
+			if m.softWrapOn {
+				m.status = "soft wrap: on"
+			} else {
+				m.status = "soft wrap: off"
+			}
 			return m, nil
 		case ',':
 			// Alt+, reloads ~/.config/nook/config.toml. Editor toggles take

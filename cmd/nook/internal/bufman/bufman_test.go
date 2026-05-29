@@ -246,3 +246,22 @@ func TestWithSizePropagates(t *testing.T) {
 		t.Errorf("Count after WithSize = %d, want 2", m.Count())
 	}
 }
+
+func TestWithSoftWrapPropagatesToOpenAndNewPanes(t *testing.T) {
+	m := New(theme.Default)
+	a := writeTmp(t, "a.go", "package a\n")
+	m.OpenOrSwitch(a)
+	m.WithSoftWrap(true)
+	if !m.At(0).SoftWrap() {
+		t.Error("WithSoftWrap(true) did not propagate to open pane")
+	}
+	b := writeTmp(t, "b.go", "package b\n")
+	m.OpenOrSwitch(b)
+	if !m.At(1).SoftWrap() {
+		t.Error("subsequent OpenOrSwitch should pick up the manager's softWrap")
+	}
+	m.WithSoftWrap(false)
+	if m.At(0).SoftWrap() || m.At(1).SoftWrap() {
+		t.Error("WithSoftWrap(false) should clear soft wrap on every open pane")
+	}
+}

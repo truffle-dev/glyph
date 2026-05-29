@@ -21,12 +21,14 @@ type Manager struct {
 	// highlighter is shared across panes. nil disables highlighting.
 	highlighter highlight.Highlighter
 
-	// tabWidth, lineNumbers, and indentGuides are editor settings forwarded
-	// to every pane. Storing them on the manager keeps newly-opened buffers
-	// consistent with the current configuration even after a runtime reload.
+	// tabWidth, lineNumbers, indentGuides, and softWrap are editor settings
+	// forwarded to every pane. Storing them on the manager keeps newly-opened
+	// buffers consistent with the current configuration even after a runtime
+	// reload.
 	tabWidth     int
 	lineNumbers  bool
 	indentGuides bool
+	softWrap     bool
 }
 
 // New constructs an empty manager.
@@ -74,6 +76,16 @@ func (m *Manager) WithIndentGuides(b bool) *Manager {
 	m.indentGuides = b
 	for i := range m.panes {
 		m.panes[i] = m.panes[i].SetIndentGuides(b)
+	}
+	return m
+}
+
+// WithSoftWrap toggles soft wrap (wrap long lines onto multiple visual rows)
+// for every open pane and any pane opened later.
+func (m *Manager) WithSoftWrap(b bool) *Manager {
+	m.softWrap = b
+	for i := range m.panes {
+		m.panes[i] = m.panes[i].SetSoftWrap(b)
 	}
 	return m
 }
@@ -150,7 +162,7 @@ func (m *Manager) OpenOrSwitch(abs string) (int, OpenAction) {
 		m.Switch(i)
 		return i, Switched
 	}
-	p := editor.NewPane(m.theme).WithHighlighter(m.highlighter).WithSize(m.width, m.height).SetTabWidth(m.tabWidth).SetLineNumbers(m.lineNumbers).SetIndentGuides(m.indentGuides).Open(abs).Focus()
+	p := editor.NewPane(m.theme).WithHighlighter(m.highlighter).WithSize(m.width, m.height).SetTabWidth(m.tabWidth).SetLineNumbers(m.lineNumbers).SetIndentGuides(m.indentGuides).SetSoftWrap(m.softWrap).Open(abs).Focus()
 	if m.active >= 0 {
 		cur := m.panes[m.active]
 		if cur.Path() == "" && !cur.Dirty() {

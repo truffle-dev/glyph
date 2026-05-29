@@ -178,6 +178,7 @@ func Default() []Section {
 			{"alt+b", "Toggle inline blame on cursor row (GitLens-style)"},
 		}},
 		{Name: "Settings", Bindings: []Binding{
+			{"alt+z", "Toggle soft wrap (wrap long lines onto multiple visual rows)"},
 			{"alt+,", "Reload ~/.config/nook/config.toml"},
 		}},
 		{Name: "Global", Bindings: []Binding{

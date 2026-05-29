@@ -44,6 +44,10 @@ type EditorConfig struct {
 	// InlayHints toggles gopls type / parameter hint glyphs woven into
 	// the source. Default true. Alt+Y still toggles at runtime.
 	InlayHints bool `toml:"inlay_hints"`
+	// SoftWrap wraps long logical lines onto multiple visual rows instead
+	// of horizontally scrolling. Default false to match v0.44 behavior;
+	// alt+z toggles at runtime.
+	SoftWrap bool `toml:"soft_wrap"`
 	// Theme is the named palette to apply at startup. Must match one of
 	// the names registered in components/theme; unknown names fall back
 	// to "default" and surface a status hint.
@@ -186,6 +190,9 @@ func Merge(base, overlay Config, overlayMeta toml.MetaData) Config {
 	}
 	if overlayMeta.IsDefined("editor", "inlay_hints") {
 		out.Editor.InlayHints = overlay.Editor.InlayHints
+	}
+	if overlayMeta.IsDefined("editor", "soft_wrap") {
+		out.Editor.SoftWrap = overlay.Editor.SoftWrap
 	}
 	if overlayMeta.IsDefined("editor", "theme") {
 		out.Editor.Theme = overlay.Editor.Theme
