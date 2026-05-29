@@ -120,3 +120,74 @@ func Load(path string) (Config, error) {
 func EnsureDir(path string) error {
 	return os.MkdirAll(filepath.Dir(path), 0o755)
 }
+
+// ProjectPath returns the per-project config path: <root>/.nook/config.toml.
+// Used to layer a repo-local override on top of the user's global config.
+// A `.nook/` directory already houses `tasks.toml` (v0.19.0), so the
+// settings file lives alongside it for discoverability.
+func ProjectPath(root string) string {
+	return filepath.Join(root, ".nook", "config.toml")
+}
+
+// LoadRaw reads and decodes a config file WITHOUT applying Default() seeds
+// or the safety reapplies that Load performs. Returns the parsed Config —
+// every field at its Go zero value unless the file set it explicitly —
+// plus toml.MetaData so callers can distinguish "absent" from "explicit
+// zero" for bool/int fields. Returns ErrNotFound when the file doesn't
+// exist; any other read or parse error is surfaced as-is.
+//
+// This is the substrate for Merge. A per-project file decoded through
+// LoadRaw only carries the keys the project explicitly set, so the merge
+// only overlays those keys onto the user's choice.
+func LoadRaw(path string) (Config, toml.MetaData, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Config{}, toml.MetaData{}, ErrNotFound
+		}
+		return Config{}, toml.MetaData{}, err
+	}
+	var cfg Config
+	md, err := toml.Decode(string(data), &cfg)
+	if err != nil {
+		return Config{}, toml.MetaData{}, err
+	}
+	return cfg, md, nil
+}
+
+// Merge layers overlay on top of base. For each editor field, if the
+// overlay's TOML metadata reports the key as defined, the overlay value
+// wins; otherwise base passes through. Safety reapplies (TabWidth > 0,
+// Theme != "") run at the end so the result is always usable.
+//
+// Use this to layer a per-project .nook/config.toml on top of the user's
+// global ~/.config/nook/config.toml. Project values for keys it explicitly
+// sets win; keys it omits inherit the user's choice. The MetaData
+// parameter must come from the same LoadRaw that produced overlay; a
+// zero-value MetaData treats every overlay field as undefined and the
+// call collapses to a base passthrough plus safety reapply.
+func Merge(base, overlay Config, overlayMeta toml.MetaData) Config {
+	out := base
+	if overlayMeta.IsDefined("editor", "tab_width") {
+		out.Editor.TabWidth = overlay.Editor.TabWidth
+	}
+	if overlayMeta.IsDefined("editor", "format_on_save") {
+		out.Editor.FormatOnSave = overlay.Editor.FormatOnSave
+	}
+	if overlayMeta.IsDefined("editor", "line_numbers") {
+		out.Editor.LineNumbers = overlay.Editor.LineNumbers
+	}
+	if overlayMeta.IsDefined("editor", "inlay_hints") {
+		out.Editor.InlayHints = overlay.Editor.InlayHints
+	}
+	if overlayMeta.IsDefined("editor", "theme") {
+		out.Editor.Theme = overlay.Editor.Theme
+	}
+	if out.Editor.TabWidth <= 0 {
+		out.Editor.TabWidth = 4
+	}
+	if out.Editor.Theme == "" {
+		out.Editor.Theme = "default"
+	}
+	return out
+}

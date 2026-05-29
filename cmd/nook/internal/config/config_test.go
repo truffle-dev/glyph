@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestDefault(t *testing.T) {
@@ -248,6 +250,261 @@ func TestLoadAllRegisteredThemeNames(t *testing.T) {
 				t.Errorf("Theme = %q, want %q", cfg.Editor.Theme, name)
 			}
 		})
+	}
+}
+
+func TestProjectPath(t *testing.T) {
+	for _, tc := range []struct {
+		root string
+		want string
+	}{
+		{"/home/me/proj", filepath.Join("/home/me/proj", ".nook", "config.toml")},
+		{".", filepath.Join(".", ".nook", "config.toml")},
+		{"", filepath.Join("", ".nook", "config.toml")},
+	} {
+		if got := ProjectPath(tc.root); got != tc.want {
+			t.Errorf("ProjectPath(%q) = %q, want %q", tc.root, got, tc.want)
+		}
+	}
+}
+
+func TestLoadRawMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg, _, err := LoadRaw(filepath.Join(dir, "absent.toml"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LoadRaw missing err = %v, want ErrNotFound", err)
+	}
+	// LoadRaw does NOT seed Default() — every field stays at Go zero.
+	zero := Config{}
+	if cfg != zero {
+		t.Errorf("LoadRaw missing cfg = %+v, want zero Config", cfg)
+	}
+}
+
+func TestLoadRawDoesNotApplyDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[editor]\ntheme = \"light\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, md, err := LoadRaw(path)
+	if err != nil {
+		t.Fatalf("LoadRaw err = %v", err)
+	}
+	// theme was set; other fields stay at Go zero (NOT Default() values).
+	if cfg.Editor.Theme != "light" {
+		t.Errorf("Theme = %q, want %q", cfg.Editor.Theme, "light")
+	}
+	if cfg.Editor.TabWidth != 0 {
+		t.Errorf("TabWidth = %d, want 0 (LoadRaw does not seed Default)", cfg.Editor.TabWidth)
+	}
+	if cfg.Editor.FormatOnSave {
+		t.Error("FormatOnSave = true, want false (LoadRaw does not seed Default)")
+	}
+	// MetaData reports theme defined and the others absent.
+	if !md.IsDefined("editor", "theme") {
+		t.Error("metadata claims theme absent; want defined")
+	}
+	if md.IsDefined("editor", "tab_width") {
+		t.Error("metadata claims tab_width defined; want absent")
+	}
+}
+
+func TestLoadRawInvalidTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("not = = valid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := LoadRaw(path)
+	if err == nil {
+		t.Fatal("LoadRaw invalid TOML err = nil, want parse error")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("LoadRaw invalid TOML returned ErrNotFound, want parse error")
+	}
+}
+
+// loadRawFromBody is a test helper that writes a TOML body to a temp file
+// and runs it through LoadRaw so tests get a realistic toml.MetaData.
+func loadRawFromBody(t *testing.T, body string) (Config, toml.MetaData) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, md, err := LoadRaw(path)
+	if err != nil {
+		t.Fatalf("LoadRaw err = %v", err)
+	}
+	return cfg, md
+}
+
+func TestMergeEmptyOverlay(t *testing.T) {
+	// Empty file => MetaData reports nothing defined => base passes through
+	// untouched (plus safety reapply, which is a no-op on a valid base).
+	overlay, md := loadRawFromBody(t, "")
+	base := Default()
+	base.Editor.TabWidth = 2
+	base.Editor.Theme = "tokyo-night"
+	got := Merge(base, overlay, md)
+	if got.Editor.TabWidth != 2 {
+		t.Errorf("TabWidth = %d, want 2 (base passthrough)", got.Editor.TabWidth)
+	}
+	if got.Editor.Theme != "tokyo-night" {
+		t.Errorf("Theme = %q, want %q (base passthrough)", got.Editor.Theme, "tokyo-night")
+	}
+}
+
+func TestMergeFullOverlay(t *testing.T) {
+	overlay, md := loadRawFromBody(t, `[editor]
+tab_width = 8
+format_on_save = false
+line_numbers = false
+inlay_hints = false
+theme = "rose-pine"
+`)
+	base := Default()
+	got := Merge(base, overlay, md)
+	if got.Editor.TabWidth != 8 {
+		t.Errorf("TabWidth = %d, want 8", got.Editor.TabWidth)
+	}
+	if got.Editor.FormatOnSave {
+		t.Error("FormatOnSave = true, want false (overlay wins)")
+	}
+	if got.Editor.LineNumbers {
+		t.Error("LineNumbers = true, want false (overlay wins)")
+	}
+	if got.Editor.InlayHints {
+		t.Error("InlayHints = true, want false (overlay wins)")
+	}
+	if got.Editor.Theme != "rose-pine" {
+		t.Errorf("Theme = %q, want %q", got.Editor.Theme, "rose-pine")
+	}
+}
+
+func TestMergePartialOverlay(t *testing.T) {
+	overlay, md := loadRawFromBody(t, `[editor]
+theme = "light"
+`)
+	base := Default()
+	base.Editor.TabWidth = 2
+	base.Editor.FormatOnSave = false
+	base.Editor.LineNumbers = false
+	base.Editor.InlayHints = false
+	base.Editor.Theme = "tokyo-night"
+	got := Merge(base, overlay, md)
+	if got.Editor.Theme != "light" {
+		t.Errorf("Theme = %q, want %q (overlay wins for explicit field)", got.Editor.Theme, "light")
+	}
+	if got.Editor.TabWidth != 2 {
+		t.Errorf("TabWidth = %d, want 2 (base passes through)", got.Editor.TabWidth)
+	}
+	if got.Editor.FormatOnSave {
+		t.Error("FormatOnSave = true, want false (base passes through)")
+	}
+	if got.Editor.LineNumbers {
+		t.Error("LineNumbers = true, want false (base passes through)")
+	}
+	if got.Editor.InlayHints {
+		t.Error("InlayHints = true, want false (base passes through)")
+	}
+}
+
+func TestMergeOverlayExplicitFalseOverridesBaseTrue(t *testing.T) {
+	// The killer case for the metadata-driven merge: overlay explicitly
+	// sets format_on_save = false; base has it true. Without metadata
+	// this would look indistinguishable from "absent" and base would win.
+	overlay, md := loadRawFromBody(t, `[editor]
+format_on_save = false
+`)
+	base := Default() // FormatOnSave = true
+	got := Merge(base, overlay, md)
+	if got.Editor.FormatOnSave {
+		t.Error("FormatOnSave = true, want false (overlay's explicit false must win)")
+	}
+}
+
+func TestMergeOverlayExplicitZeroTabWidthSafetyReapplies(t *testing.T) {
+	// Overlay sets tab_width = 0 explicitly. Merge honors the overlay
+	// (so the underlying value moves to 0) and then the safety reapply
+	// at the end bumps it back to 4 — same behavior as Load.
+	overlay, md := loadRawFromBody(t, `[editor]
+tab_width = 0
+`)
+	base := Default() // TabWidth = 4
+	got := Merge(base, overlay, md)
+	if got.Editor.TabWidth != 4 {
+		t.Errorf("TabWidth = %d, want 4 (safety reapply)", got.Editor.TabWidth)
+	}
+}
+
+func TestMergeOverlayExplicitEmptyThemeSafetyReapplies(t *testing.T) {
+	overlay, md := loadRawFromBody(t, `[editor]
+theme = ""
+`)
+	base := Default()
+	base.Editor.Theme = "tokyo-night"
+	got := Merge(base, overlay, md)
+	if got.Editor.Theme != "default" {
+		t.Errorf("Theme = %q, want %q (safety reapply)", got.Editor.Theme, "default")
+	}
+}
+
+func TestMergeDoesNotMutateBase(t *testing.T) {
+	overlay, md := loadRawFromBody(t, `[editor]
+theme = "rose-pine"
+tab_width = 8
+`)
+	base := Default()
+	_ = Merge(base, overlay, md)
+	if base.Editor.Theme != "default" {
+		t.Errorf("base.Theme = %q, want %q (caller's base must stay untouched)", base.Editor.Theme, "default")
+	}
+	if base.Editor.TabWidth != 4 {
+		t.Errorf("base.TabWidth = %d, want 4 (caller's base must stay untouched)", base.Editor.TabWidth)
+	}
+}
+
+func TestMergeBaseAlreadyMergedTwoLayers(t *testing.T) {
+	// Demonstrates the host's intended use: user config loaded with
+	// Load (defaults applied), then merged with project config from
+	// LoadRaw. Project's explicit fields override the user's.
+	user, _ := loadRawFromBody(t, `[editor]
+tab_width = 2
+theme = "tokyo-night"
+format_on_save = true
+inlay_hints = true
+line_numbers = true
+`)
+	project, projectMeta := loadRawFromBody(t, `[editor]
+tab_width = 8
+format_on_save = false
+`)
+	// Bring user up to Default()'s safety baseline first (matches what
+	// Load does at the end of its decode path).
+	if user.Editor.TabWidth <= 0 {
+		user.Editor.TabWidth = 4
+	}
+	if user.Editor.Theme == "" {
+		user.Editor.Theme = "default"
+	}
+	got := Merge(user, project, projectMeta)
+	if got.Editor.TabWidth != 8 {
+		t.Errorf("TabWidth = %d, want 8 (project wins)", got.Editor.TabWidth)
+	}
+	if got.Editor.FormatOnSave {
+		t.Error("FormatOnSave = true, want false (project wins)")
+	}
+	if got.Editor.Theme != "tokyo-night" {
+		t.Errorf("Theme = %q, want %q (user passes through)", got.Editor.Theme, "tokyo-night")
+	}
+	if !got.Editor.InlayHints {
+		t.Error("InlayHints = false, want true (user passes through)")
+	}
+	if !got.Editor.LineNumbers {
+		t.Error("LineNumbers = false, want true (user passes through)")
 	}
 }
 
