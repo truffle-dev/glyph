@@ -21,16 +21,17 @@ type Manager struct {
 	// highlighter is shared across panes. nil disables highlighting.
 	highlighter highlight.Highlighter
 
-	// tabWidth and lineNumbers are editor settings forwarded to every pane.
-	// Storing them on the manager keeps newly-opened buffers consistent with
-	// the current configuration even after a runtime reload.
-	tabWidth    int
-	lineNumbers bool
+	// tabWidth, lineNumbers, and indentGuides are editor settings forwarded
+	// to every pane. Storing them on the manager keeps newly-opened buffers
+	// consistent with the current configuration even after a runtime reload.
+	tabWidth     int
+	lineNumbers  bool
+	indentGuides bool
 }
 
 // New constructs an empty manager.
 func New(t theme.Theme) *Manager {
-	return &Manager{theme: t, active: -1, tabWidth: 4, lineNumbers: true}
+	return &Manager{theme: t, active: -1, tabWidth: 4, lineNumbers: true, indentGuides: true}
 }
 
 // WithHighlighter sets the syntax highlighter applied to every new pane.
@@ -63,6 +64,16 @@ func (m *Manager) WithLineNumbers(b bool) *Manager {
 	m.lineNumbers = b
 	for i := range m.panes {
 		m.panes[i] = m.panes[i].SetLineNumbers(b)
+	}
+	return m
+}
+
+// WithIndentGuides toggles the indent-guide overlay for every open pane and
+// any pane opened later.
+func (m *Manager) WithIndentGuides(b bool) *Manager {
+	m.indentGuides = b
+	for i := range m.panes {
+		m.panes[i] = m.panes[i].SetIndentGuides(b)
 	}
 	return m
 }
@@ -139,7 +150,7 @@ func (m *Manager) OpenOrSwitch(abs string) (int, OpenAction) {
 		m.Switch(i)
 		return i, Switched
 	}
-	p := editor.NewPane(m.theme).WithHighlighter(m.highlighter).WithSize(m.width, m.height).SetTabWidth(m.tabWidth).SetLineNumbers(m.lineNumbers).Open(abs).Focus()
+	p := editor.NewPane(m.theme).WithHighlighter(m.highlighter).WithSize(m.width, m.height).SetTabWidth(m.tabWidth).SetLineNumbers(m.lineNumbers).SetIndentGuides(m.indentGuides).Open(abs).Focus()
 	if m.active >= 0 {
 		cur := m.panes[m.active]
 		if cur.Path() == "" && !cur.Dirty() {

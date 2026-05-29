@@ -27,6 +27,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/gitgutter"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/indentguide"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlineblame"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/semtok"
@@ -221,6 +222,12 @@ type Pane struct {
 	// lineNumbers controls whether the gutter prints the 1-based row number.
 	// Defaults to true. The marker column (git + diagnostic) renders regardless.
 	lineNumbers bool
+	// indentGuides controls whether vertical guide glyphs (│) paint at the
+	// tab-stop columns of each row's leading whitespace. Defaults to true. The
+	// glyph is suppressed under selection, search-match, doc-highlight, and
+	// cursor overlays — the guide is decoration, never the foreground signal.
+	// See cmd/nook/internal/indentguide for the visual model.
+	indentGuides bool
 
 	// Snippet mode: when snippetMode is true, Tab/Shift+Tab cycle the cursor
 	// between snippetStops in declaration order, Esc exits. Any edit key
@@ -266,7 +273,7 @@ type Range struct {
 
 // NewPane constructs an empty pane.
 func NewPane(t theme.Theme) Pane {
-	return Pane{theme: t, buf: NewBuffer(), width: 80, height: 24, searchCurrent: -1, tabWidth: 4, lineNumbers: true}
+	return Pane{theme: t, buf: NewBuffer(), width: 80, height: 24, searchCurrent: -1, tabWidth: 4, lineNumbers: true, indentGuides: true}
 }
 
 // SetTabWidth sets the rendered tab expansion. Values <= 0 clamp to 4.
@@ -296,6 +303,16 @@ func (p Pane) SetLineNumbers(b bool) Pane {
 
 // LineNumbers reports whether the row-number gutter is currently visible.
 func (p Pane) LineNumbers() bool { return p.lineNumbers }
+
+// SetIndentGuides toggles the vertical guide glyphs painted at tab-stop
+// columns of each row's leading whitespace.
+func (p Pane) SetIndentGuides(b bool) Pane {
+	p.indentGuides = b
+	return p
+}
+
+// IndentGuides reports whether indent guides are currently painted.
+func (p Pane) IndentGuides() bool { return p.indentGuides }
 
 // SetTheme swaps the palette used for syntax highlighting, the cursor cell,
 // the line-number gutter, and the inline-blame strip. No cached state to
@@ -2101,6 +2118,28 @@ func (p Pane) View() string {
 		tabW = 4
 	}
 
+	// Cursor's visual column on its own row, computed once per render so the
+	// active indent-guide highlight can find the zone the cursor sits in. -1
+	// when guides are disabled, the cursor row is out of range, or the buffer
+	// is empty.
+	cursorVisualCol := -1
+	if p.indentGuides && p.row >= 0 && p.row < len(p.buf.Lines) {
+		line := p.buf.Lines[p.row]
+		end := p.col
+		if end > len(line) {
+			end = len(line)
+		}
+		cvc := 0
+		for i := 0; i < end; i++ {
+			if line[i] == '\t' {
+				cvc += tabW
+			} else {
+				cvc++
+			}
+		}
+		cursorVisualCol = cvc
+	}
+
 	// Group every cursor (primary + extras) by row so renderHighlightedRow can
 	// paint one cell per cursor. Cursor cols are kept sorted ascending; the
 	// primary cursor's col is tracked separately so the ghost-text preview is
@@ -2199,6 +2238,14 @@ func (p Pane) View() string {
 		if p.docHighlights != nil {
 			dochiSpans = p.docHighlights[i]
 		}
+		var guideCols []int
+		activeGuideCol := -1
+		if p.indentGuides {
+			guideCols = indentguide.VisualGuideCols(raw, tabW)
+			if i == p.row && cursorVisualCol >= 0 {
+				activeGuideCol = indentguide.ActiveGuideCol(cursorVisualCol, tabW)
+			}
+		}
 		cols, hasCursors := cursorsByRow[i]
 		if hasCursors {
 			primaryCol := -1
@@ -2209,9 +2256,9 @@ func (p Pane) View() string {
 					ghost = p.ghostText
 				}
 			}
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol)
 		} else {
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail)
+			line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol)
 		}
 		if p.blameVisible && i == p.row {
 			if entry, ok := p.BlameAt(i); ok {
@@ -2417,13 +2464,19 @@ func (p Pane) matchesForRow(row int) ([]Range, int) {
 // textDocument/documentHighlight). Each rune inside a span gets a subtle
 // SurfaceStrong background painted UNDER the syntax color; matches and
 // selection still win when both apply (see flush precedence chain).
-func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, dochiSpans []dochi.Span, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int, selStart, selEnd int, selTail bool) string {
+func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, dochiSpans []dochi.Span, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int, selStart, selEnd int, selTail bool, guideCols []int, activeGuideCol int) string {
 	if tabWidth <= 0 {
 		tabWidth = 4
 	}
 	cur := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary)
 	muted := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true)
 	hintStyle := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true).Italic(true)
+	guideStyle := lipgloss.NewStyle().Foreground(t.TextMuted).Faint(true)
+	guideActiveStyle := lipgloss.NewStyle().Foreground(t.Primary).Faint(true)
+	guideSet := make(map[int]bool, len(guideCols))
+	for _, c := range guideCols {
+		guideSet[c] = true
+	}
 	// matchBG is the dim highlight applied to every match on the row;
 	// matchActiveBG is the stronger highlight on the currently-selected match.
 	matchBG := lipgloss.NewStyle().Background(t.SurfaceStrong)
@@ -2743,6 +2796,21 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		var dh bool
 		if i < len(runeDocHi) {
 			dh = runeDocHi[i]
+		}
+		// Indent guide: at a guide column, replace the leading-whitespace
+		// space with a vertical glyph. Suppressed under any overlay
+		// (selection, match, doc-highlight) so the guide never fights an
+		// active signal. The cursor cell is handled above and short-circuits
+		// before this branch.
+		if guideSet[i] && r == ' ' && m == matchNone && !sel && !dh {
+			flush(run, runKind, runMatch, runSel, runDocHi)
+			run = run[:0]
+			if i == activeGuideCol {
+				b.WriteString(guideActiveStyle.Render("│"))
+			} else {
+				b.WriteString(guideStyle.Render("│"))
+			}
+			continue
 		}
 		if len(run) > 0 && (k != runKind || m != runMatch || sel != runSel || dh != runDocHi) {
 			flush(run, runKind, runMatch, runSel, runDocHi)
