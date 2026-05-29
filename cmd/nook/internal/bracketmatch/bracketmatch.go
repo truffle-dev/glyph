@@ -41,7 +41,7 @@ const scanBudget = 1 << 20
 // Returns ok=false when there is no bracket anchor at either position, when
 // row is out of range, or when the matching bracket cannot be found within
 // the scan budget.
-func Match(lines [][]byte, row, col int) (anchor, match Pos, kind Pair, ok bool) {
+func Match(lines []string, row, col int) (anchor, match Pos, kind Pair, ok bool) {
 	var zero Pos
 	if row < 0 || row >= len(lines) {
 		return zero, zero, 0, false
@@ -111,7 +111,7 @@ func pairOf(b byte) Pair {
 // walk searches forward (when anchor is an opener) or backward (when anchor
 // is a closer) for the matching bracket, counting nested same-kind pairs.
 // Mismatched-kind brackets are ignored; only the matching kind affects depth.
-func walk(lines [][]byte, row, col int, anchor byte) (int, int, bool) {
+func walk(lines []string, row, col int, anchor byte) (int, int, bool) {
 	visited := 0
 	if isOpener(anchor) {
 		closer := closerOf(anchor)

@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/autopair"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/bracketmatch"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/clip"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/comment"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
@@ -2311,6 +2312,22 @@ func (p Pane) View() string {
 		}
 	}
 
+	// Bracket pair: when the cursor sits on (or just past) a bracket, look up
+	// its match and paint both ends. Suppressed during selection (the
+	// selection band would fight the pair) and during multi-cursor (a
+	// single highlighted pair would be ambiguous about which cursor it
+	// belonged to). bracketmatch.Match runs in pure Go off lines and is
+	// scan-budget capped so it can't stall first paint on a megabyte buffer.
+	var bracketAnchor, bracketMatchPos bracketmatch.Pos
+	hasBracketPair := false
+	if !selActive && len(p.extras) == 0 {
+		if a, m, _, ok := bracketmatch.Match(p.buf.Lines, p.row, p.col); ok {
+			bracketAnchor = a
+			bracketMatchPos = m
+			hasBracketPair = true
+		}
+	}
+
 	var rows []string
 	for i := p.offset; i < len(p.buf.Lines) && len(rows) < visible; i++ {
 		var gut string
@@ -2393,6 +2410,18 @@ func (p Pane) View() string {
 			}
 		}
 		cols, hasCursors := cursorsByRow[i]
+		var bracketCols []int
+		if hasBracketPair {
+			if bracketAnchor.Row == i {
+				bracketCols = append(bracketCols, bracketAnchor.Col)
+			}
+			if bracketMatchPos.Row == i {
+				bracketCols = append(bracketCols, bracketMatchPos.Col)
+			}
+			if len(bracketCols) > 1 {
+				sort.Ints(bracketCols)
+			}
+		}
 		if !p.softWrap {
 			if hasCursors {
 				primaryCol := -1
@@ -2403,9 +2432,9 @@ func (p Pane) View() string {
 						ghost = p.ghostText
 					}
 				}
-				line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol)
+				line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol, bracketCols)
 			} else {
-				line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol)
+				line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol, bracketCols)
 			}
 			if p.blameVisible && i == p.row {
 				if entry, ok := p.BlameAt(i); ok {
@@ -2439,6 +2468,7 @@ func (p Pane) View() string {
 			subHints := sliceHintsForSubrow(hints, subStart, subEnd, len(raw), isLastSub)
 			subSelStart, subSelEnd, subSelTail := sliceSelectionForSubrow(selStart, selEnd, selTail, subStart, subEnd, len(raw), isLastSub)
 			subCols := sliceCursorsForSubrow(cols, subStart, subEnd, len(raw), isLastSub)
+			subBrackets := sliceBracketsForSubrow(bracketCols, subStart, subEnd)
 			subPrimary := -1
 			subGhost := ""
 			if hasCursors && i == p.row {
@@ -2454,7 +2484,7 @@ func (p Pane) View() string {
 				subActiveGuide = activeGuideCol
 			}
 			drawCursor := hasCursors && (len(subCols) > 0 || subPrimary >= 0)
-			line = renderHighlightedRow(subRaw, subSpans, subMarks, subActiveIdx, subDochi, subCols, subPrimary, subGhost, subHints, contentWidth, t, drawCursor, tabW, subSelStart, subSelEnd, subSelTail, subGuides, subActiveGuide)
+			line = renderHighlightedRow(subRaw, subSpans, subMarks, subActiveIdx, subDochi, subCols, subPrimary, subGhost, subHints, contentWidth, t, drawCursor, tabW, subSelStart, subSelEnd, subSelTail, subGuides, subActiveGuide, subBrackets)
 			if p.blameVisible && i == p.row && isLastSub {
 				if entry, ok := p.BlameAt(i); ok {
 					line = appendBlameStrip(line, entry, contentWidth, t)
@@ -2666,7 +2696,11 @@ func (p Pane) matchesForRow(row int) ([]Range, int) {
 // textDocument/documentHighlight). Each rune inside a span gets a subtle
 // SurfaceStrong background painted UNDER the syntax color; matches and
 // selection still win when both apply (see flush precedence chain).
-func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, dochiSpans []dochi.Span, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int, selStart, selEnd int, selTail bool, guideCols []int, activeGuideCol int) string {
+// bracketCols is the (sorted, raw-byte) set of bracket runes on this row that
+// belong to the cursor's bracket pair (anchor and its match). The runes get a
+// subtle Primary-foreground SurfaceStrong-background bold band, suppressed
+// during selection and multi-cursor higher up the call stack.
+func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, activeMatch int, dochiSpans []dochi.Span, cursorCols []int, primaryCol int, ghost string, hints []inlayhint.Hint, width int, t theme.Theme, drawCursor bool, tabWidth int, selStart, selEnd int, selTail bool, guideCols []int, activeGuideCol int, bracketCols []int) string {
 	if tabWidth <= 0 {
 		tabWidth = 4
 	}
@@ -2688,6 +2722,17 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	matchActiveBG := lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Warning).Bold(true)
 	if string(t.Warning) == "" {
 		matchActiveBG = lipgloss.NewStyle().Foreground(t.TextInverse).Background(t.Primary).Bold(true)
+	}
+	// bracketStyle paints the cursor's bracket and its match. Primary fg over
+	// the SurfaceStrong band reads as "the editor knows what's under here"
+	// without competing with the cursor cell or an active search match.
+	bracketStyle := lipgloss.NewStyle().Foreground(t.Primary).Background(t.SurfaceStrong).Bold(true)
+	if string(t.SurfaceStrong) == "" {
+		bracketStyle = lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	}
+	bracketByteSet := make(map[int]bool, len(bracketCols))
+	for _, c := range bracketCols {
+		bracketByteSet[c] = true
 	}
 	// selBG paints the active text selection. Background is the primary
 	// accent (the same band the cursor cell wears) so a held Shift+motion
@@ -2713,6 +2758,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	var runeMatch []matchKind
 	var runeSel []bool
 	var runeDocHi []bool
+	var runeBracket []bool
 	rawToExpStart := make([]int, len(raw)+1) // raw byte offset -> first expanded rune idx
 	for i := 0; i < len(raw); i++ {
 		rawToExpStart[i] = len(expanded)
@@ -2743,6 +2789,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		}
 		sel := hasSel && i >= selStart && i < selEnd
 		dh := hasDochi && dochi.Covers(dochiSpans, i, len(raw))
+		br := bracketByteSet[i]
 		if c == '\t' {
 			for k := 0; k < tabWidth; k++ {
 				expanded = append(expanded, ' ')
@@ -2750,6 +2797,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 				runeMatch = append(runeMatch, mk)
 				runeSel = append(runeSel, sel)
 				runeDocHi = append(runeDocHi, dh)
+				runeBracket = append(runeBracket, br)
 			}
 			continue
 		}
@@ -2761,6 +2809,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		runeMatch = append(runeMatch, mk)
 		runeSel = append(runeSel, sel)
 		runeDocHi = append(runeDocHi, dh)
+		runeBracket = append(runeBracket, br)
 	}
 	rawToExpStart[len(raw)] = len(expanded)
 
@@ -2873,6 +2922,7 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 			runeMatch = runeMatch[:budget]
 			runeSel = runeSel[:budget]
 			runeDocHi = runeDocHi[:budget]
+			runeBracket = runeBracket[:budget]
 			ghostRunes = nil
 		} else {
 			remain := budget - len(expanded)
@@ -2896,19 +2946,23 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		dispHintsByCol[hi.col] = append(dispHintsByCol[hi.col], hi)
 	}
 
-	// Emit. Batch contiguous runes of the same (kind, matchKind, sel, dochi)
-	// tuple into one Style.Render call — per-rune emission inflates ANSI
-	// overhead and breaks substring asserts in tests because each rune
+	// Emit. Batch contiguous runes of the same (kind, matchKind, sel, dochi,
+	// bracket) tuple into one Style.Render call — per-rune emission inflates
+	// ANSI overhead and breaks substring asserts in tests because each rune
 	// gets surrounded by escape codes. The cursor cell breaks the run and
 	// is emitted separately. Precedence chain (strongest first):
-	//   matchActive > selection > matchOther > dochi > plain
+	//   matchActive > selection > bracket > matchOther > dochi > plain
 	// Selection takes precedence over the inactive match band but yields
 	// to the active search match (so a Ctrl+F hit stays salient while the
-	// user grows the selection toward it). Document highlights paint a
-	// subtle SurfaceStrong band, lower than the search overlays so a
-	// hovered identifier never out-shouts the user's active query.
+	// user grows the selection toward it). Bracket-pair highlight beats the
+	// muted overlays so the editor's "I see what's under the cursor" signal
+	// stays visible over passive bands; the caller already suppresses
+	// brackets entirely while a selection is active, so the rule never
+	// fights a held shift-motion. Document highlights paint a subtle
+	// SurfaceStrong band, lower than the search overlays so a hovered
+	// identifier never out-shouts the user's active query.
 	var b strings.Builder
-	flush := func(buf []rune, k highlight.Kind, m matchKind, sel bool, dh bool) {
+	flush := func(buf []rune, k highlight.Kind, m matchKind, sel bool, dh bool, br bool) {
 		if len(buf) == 0 {
 			return
 		}
@@ -2918,6 +2972,10 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		}
 		if sel {
 			b.WriteString(selBG.Render(string(buf)))
+			return
+		}
+		if br {
+			b.WriteString(bracketStyle.Render(string(buf)))
 			return
 		}
 		switch m {
@@ -2974,14 +3032,15 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 	var runMatch matchKind
 	var runSel bool
 	var runDocHi bool
+	var runBr bool
 	for i, r := range expanded {
 		if _, hasHint := dispHintsByCol[i]; hasHint {
-			flush(run, runKind, runMatch, runSel, runDocHi)
+			flush(run, runKind, runMatch, runSel, runDocHi, runBr)
 			run = nil
 			emitHintsAt(i)
 		}
 		if drawCursor && dispCursorSet[i] {
-			flush(run, runKind, runMatch, runSel, runDocHi)
+			flush(run, runKind, runMatch, runSel, runDocHi, runBr)
 			run = nil
 			b.WriteString(cur.Render(string(r)))
 			continue
@@ -2999,13 +3058,17 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 		if i < len(runeDocHi) {
 			dh = runeDocHi[i]
 		}
+		var br bool
+		if i < len(runeBracket) {
+			br = runeBracket[i]
+		}
 		// Indent guide: at a guide column, replace the leading-whitespace
 		// space with a vertical glyph. Suppressed under any overlay
-		// (selection, match, doc-highlight) so the guide never fights an
-		// active signal. The cursor cell is handled above and short-circuits
-		// before this branch.
-		if guideSet[i] && r == ' ' && m == matchNone && !sel && !dh {
-			flush(run, runKind, runMatch, runSel, runDocHi)
+		// (selection, match, doc-highlight, bracket) so the guide never
+		// fights an active signal. The cursor cell is handled above and
+		// short-circuits before this branch.
+		if guideSet[i] && r == ' ' && m == matchNone && !sel && !dh && !br {
+			flush(run, runKind, runMatch, runSel, runDocHi, runBr)
 			run = run[:0]
 			if i == activeGuideCol {
 				b.WriteString(guideActiveStyle.Render("│"))
@@ -3014,17 +3077,18 @@ func renderHighlightedRow(raw string, spans []highlight.Span, matches []Range, a
 			}
 			continue
 		}
-		if len(run) > 0 && (k != runKind || m != runMatch || sel != runSel || dh != runDocHi) {
-			flush(run, runKind, runMatch, runSel, runDocHi)
+		if len(run) > 0 && (k != runKind || m != runMatch || sel != runSel || dh != runDocHi || br != runBr) {
+			flush(run, runKind, runMatch, runSel, runDocHi, runBr)
 			run = run[:0]
 		}
 		runKind = k
 		runMatch = m
 		runSel = sel
 		runDocHi = dh
+		runBr = br
 		run = append(run, r)
 	}
-	flush(run, runKind, runMatch, runSel, runDocHi)
+	flush(run, runKind, runMatch, runSel, runDocHi, runBr)
 	// EOL hints (anchored at or past the last rune) render before ghost-text
 	// and the end-cursor cell so they sit naturally after the line content.
 	emitHintsAt(len(expanded))

@@ -1,18 +1,12 @@
 package bracketmatch
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 )
 
-func lines(s string) [][]byte {
-	parts := strings.Split(s, "\n")
-	out := make([][]byte, len(parts))
-	for i, p := range parts {
-		out[i] = []byte(p)
-	}
-	return out
+func lines(s string) []string {
+	return strings.Split(s, "\n")
 }
 
 func TestMatchParenSameLine(t *testing.T) {
@@ -237,7 +231,7 @@ func TestMatchAnchorPosByteAccurate(t *testing.T) {
 	body := "ñ(x)"
 	ls := lines(body)
 	// `(` lives at byte col 2 (ñ takes bytes 0-1).
-	cursor := bytes.IndexByte(ls[0], '(')
+	cursor := strings.IndexByte(ls[0], '(')
 	if cursor != 2 {
 		t.Fatalf("expected `(` at byte col 2, got %d", cursor)
 	}

@@ -136,6 +136,24 @@ func sliceHintsForSubrow(hints []inlayhint.Hint, subStart, subEnd, lineLen int, 
 	return out
 }
 
+// sliceBracketsForSubrow returns the subset of bracket cols that fall in
+// [subStart, subEnd), shifted into the sub-row's coordinate frame. Brackets
+// are always single-byte runes at valid line positions, so there is no EOL
+// case to handle.
+func sliceBracketsForSubrow(cols []int, subStart, subEnd int) []int {
+	if len(cols) == 0 || subStart >= subEnd {
+		return nil
+	}
+	out := make([]int, 0, len(cols))
+	for _, c := range cols {
+		if c < subStart || c >= subEnd {
+			continue
+		}
+		out = append(out, c-subStart)
+	}
+	return out
+}
+
 // sliceCursorsForSubrow returns cursor cols that fall in [subStart, subEnd).
 // A cursor at col == lineLen (EOL) belongs to the last sub-row only.
 func sliceCursorsForSubrow(cols []int, subStart, subEnd, lineLen int, isLastSub bool) []int {
