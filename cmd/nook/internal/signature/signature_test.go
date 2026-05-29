@@ -277,6 +277,150 @@ func TestViewParameterOffsetsOutOfRangeFallsBackPlain(t *testing.T) {
 	}
 }
 
+func TestNextOverloadAdvances(t *testing.T) {
+	t.Parallel()
+	info := lsp.SignatureInfo{
+		ActiveSignature: 0,
+		Signatures: []lsp.Signature{
+			{Label: "func A()"},
+			{Label: "func B()"},
+			{Label: "func C()"},
+		},
+	}
+	p := New().Open(info).NextOverload()
+	if p.Info().ActiveSignature != 1 {
+		t.Errorf("NextOverload from 0 → %d, want 1", p.Info().ActiveSignature)
+	}
+}
+
+func TestNextOverloadWrapsFromLast(t *testing.T) {
+	t.Parallel()
+	info := lsp.SignatureInfo{
+		ActiveSignature: 2,
+		Signatures: []lsp.Signature{
+			{Label: "func A()"},
+			{Label: "func B()"},
+			{Label: "func C()"},
+		},
+	}
+	p := New().Open(info).NextOverload()
+	if p.Info().ActiveSignature != 0 {
+		t.Errorf("NextOverload from last should wrap to 0, got %d", p.Info().ActiveSignature)
+	}
+}
+
+func TestPrevOverloadSteps(t *testing.T) {
+	t.Parallel()
+	info := lsp.SignatureInfo{
+		ActiveSignature: 2,
+		Signatures: []lsp.Signature{
+			{Label: "func A()"},
+			{Label: "func B()"},
+			{Label: "func C()"},
+		},
+	}
+	p := New().Open(info).PrevOverload()
+	if p.Info().ActiveSignature != 1 {
+		t.Errorf("PrevOverload from 2 → %d, want 1", p.Info().ActiveSignature)
+	}
+}
+
+func TestPrevOverloadWrapsFromFirst(t *testing.T) {
+	t.Parallel()
+	info := lsp.SignatureInfo{
+		ActiveSignature: 0,
+		Signatures: []lsp.Signature{
+			{Label: "func A()"},
+			{Label: "func B()"},
+		},
+	}
+	p := New().Open(info).PrevOverload()
+	if p.Info().ActiveSignature != 1 {
+		t.Errorf("PrevOverload from first should wrap to last, got %d", p.Info().ActiveSignature)
+	}
+}
+
+func TestNextOverloadOnSingleSignatureIsNoOp(t *testing.T) {
+	t.Parallel()
+	info := lsp.SignatureInfo{
+		ActiveSignature: 0,
+		Signatures:      []lsp.Signature{{Label: "func A()"}},
+	}
+	p := New().Open(info).NextOverload()
+	if p.Info().ActiveSignature != 0 {
+		t.Errorf("NextOverload on single sig should stay at 0, got %d", p.Info().ActiveSignature)
+	}
+}
+
+func TestPrevOverloadOnSingleSignatureIsNoOp(t *testing.T) {
+	t.Parallel()
+	info := lsp.SignatureInfo{
+		ActiveSignature: 0,
+		Signatures:      []lsp.Signature{{Label: "func A()"}},
+	}
+	p := New().Open(info).PrevOverload()
+	if p.Info().ActiveSignature != 0 {
+		t.Errorf("PrevOverload on single sig should stay at 0, got %d", p.Info().ActiveSignature)
+	}
+}
+
+func TestNextOverloadOnClosedPaneIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := New().NextOverload()
+	if p.IsOpen() {
+		t.Error("NextOverload should not open a closed pane")
+	}
+}
+
+func TestPrevOverloadOnClosedPaneIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := New().PrevOverload()
+	if p.IsOpen() {
+		t.Error("PrevOverload should not open a closed pane")
+	}
+}
+
+func TestOpenResetsAfterManualCycle(t *testing.T) {
+	t.Parallel()
+	info := lsp.SignatureInfo{
+		ActiveSignature: 0,
+		Signatures: []lsp.Signature{
+			{Label: "func A()"},
+			{Label: "func B()"},
+		},
+	}
+	p := New().Open(info).NextOverload()
+	if p.Info().ActiveSignature != 1 {
+		t.Fatalf("setup: NextOverload should land at 1, got %d", p.Info().ActiveSignature)
+	}
+	// A fresh server response with the same ActiveSignature should win;
+	// the manual selection doesn't persist across Open().
+	p = p.Open(info)
+	if p.Info().ActiveSignature != 0 {
+		t.Errorf("Open after NextOverload should reset to server's ActiveSignature, got %d",
+			p.Info().ActiveSignature)
+	}
+}
+
+func TestNextOverloadActiveSignatureRendersAtNewIndex(t *testing.T) {
+	t.Parallel()
+	info := lsp.SignatureInfo{
+		ActiveSignature: 0,
+		Signatures: []lsp.Signature{
+			{Label: "func A()"},
+			{Label: "func B()"},
+		},
+	}
+	p := New().Open(info).NextOverload()
+	out := p.View(th())
+	if !strings.Contains(out, "func B") {
+		t.Errorf("View after NextOverload should show second sig, got: %q", out)
+	}
+	if !strings.Contains(out, "2 of 2") {
+		t.Errorf("counter should track active sig, got: %q", out)
+	}
+}
+
 func TestActiveSignatureOnClosedPaneReturnsZeroValue(t *testing.T) {
 	t.Parallel()
 	p := New()

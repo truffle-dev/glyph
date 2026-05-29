@@ -8,9 +8,12 @@
 // — mirroring the outline / lookup pattern so the host pumps it as
 // `m.sigPane = m.sigPane.Open(info)` with no pointer aliasing surprises.
 //
-// Overload cycling (Alt+↓/↑ between multiple matching signatures) is
-// scoped out for v0.26; the LSP response carries ActiveSignature and we
-// honor it, but the user can't currently switch between overloads.
+// Overload cycling: NextOverload / PrevOverload step through Signatures
+// with wrap-around so the user can browse every matching overload from
+// inside the open overlay. The host binds these to Alt+Down / Alt+Up
+// while the pane is open. A fresh Open() resets to the server's
+// ActiveSignature so a follow-up SignatureHelp response doesn't fight
+// the user's manual selection.
 package signature
 
 import (
@@ -91,6 +94,29 @@ func (p Pane) IsOpen() bool { return p.open && len(p.info.Signatures) > 0 }
 
 // Info returns the underlying signature info. Useful for tests.
 func (p Pane) Info() lsp.SignatureInfo { return p.info }
+
+// NextOverload returns a copy of the pane advanced one overload, wrapping
+// from the last back to the first. No-op when the pane is closed or has a
+// single signature.
+func (p Pane) NextOverload() Pane {
+	n := len(p.info.Signatures)
+	if !p.open || n < 2 {
+		return p
+	}
+	p.info.ActiveSignature = (p.info.ActiveSignature + 1) % n
+	return p
+}
+
+// PrevOverload returns a copy of the pane stepped one overload back,
+// wrapping from the first to the last. No-op when closed or single.
+func (p Pane) PrevOverload() Pane {
+	n := len(p.info.Signatures)
+	if !p.open || n < 2 {
+		return p
+	}
+	p.info.ActiveSignature = (p.info.ActiveSignature - 1 + n) % n
+	return p
+}
 
 // ActiveSignature returns the active signature, or the zero value when
 // the pane is closed. Callers should gate on IsOpen first.
