@@ -1880,6 +1880,7 @@ func TestNewModelLoadsConfigOptions(t *testing.T) {
 tab_width = 2
 format_on_save = false
 line_numbers = false
+indent_guides = false
 inlay_hints = false
 theme = "tokyo-night"
 `)
@@ -1896,8 +1897,8 @@ theme = "tokyo-night"
 	if m.themeName != "tokyo-night" {
 		t.Errorf("themeName = %q, want %q", m.themeName, "tokyo-night")
 	}
-	// Sanity: a buffer opened after startup picks up the tab width and the
-	// line-numbers toggle from the manager.
+	// Sanity: a buffer opened after startup picks up the tab width, the
+	// line-numbers toggle, and the indent-guides toggle from the manager.
 	root := t.TempDir()
 	path := filepath.Join(root, "x.go")
 	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
@@ -1910,6 +1911,36 @@ theme = "tokyo-night"
 	}
 	if p.LineNumbers() {
 		t.Error("opened buffer LineNumbers = true, want false")
+	}
+	if p.IndentGuides() {
+		t.Error("opened buffer IndentGuides = true, want false")
+	}
+}
+
+func TestAltCommaReloadsIndentGuides(t *testing.T) {
+	cfg := writeNookConfig(t, `[editor]
+indent_guides = true
+`)
+	root := t.TempDir()
+	path := filepath.Join(root, "x.go")
+	if err := os.WriteFile(path, []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(t.TempDir())
+	m.bufs.OpenOrSwitch(path)
+	if !m.bufs.Active().IndentGuides() {
+		t.Fatal("startup state: indent guides should be on")
+	}
+	// Rewrite the same file with indent_guides=false, then fire alt+,.
+	if err := os.WriteFile(cfg, []byte(`[editor]
+indent_guides = false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}, Alt: true})
+	mm := updated.(model)
+	if mm.bufs.Active().IndentGuides() {
+		t.Error("reload did not turn off indent guides on the active buffer")
 	}
 }
 

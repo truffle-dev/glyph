@@ -21,6 +21,9 @@ func TestDefault(t *testing.T) {
 	if !cfg.Editor.LineNumbers {
 		t.Error("Default LineNumbers = false, want true")
 	}
+	if !cfg.Editor.IndentGuides {
+		t.Error("Default IndentGuides = false, want true")
+	}
 	if !cfg.Editor.InlayHints {
 		t.Error("Default InlayHints = false, want true")
 	}
@@ -75,6 +78,7 @@ func TestLoadValidTOML(t *testing.T) {
 tab_width = 2
 format_on_save = false
 line_numbers = false
+indent_guides = false
 inlay_hints = false
 theme = "tokyo-night"
 `
@@ -93,6 +97,9 @@ theme = "tokyo-night"
 	}
 	if cfg.Editor.LineNumbers {
 		t.Error("LineNumbers = true, want false")
+	}
+	if cfg.Editor.IndentGuides {
+		t.Error("IndentGuides = true, want false")
 	}
 	if cfg.Editor.InlayHints {
 		t.Error("InlayHints = true, want false")
@@ -362,6 +369,7 @@ func TestMergeFullOverlay(t *testing.T) {
 tab_width = 8
 format_on_save = false
 line_numbers = false
+indent_guides = false
 inlay_hints = false
 theme = "rose-pine"
 `)
@@ -376,11 +384,28 @@ theme = "rose-pine"
 	if got.Editor.LineNumbers {
 		t.Error("LineNumbers = true, want false (overlay wins)")
 	}
+	if got.Editor.IndentGuides {
+		t.Error("IndentGuides = true, want false (overlay wins)")
+	}
 	if got.Editor.InlayHints {
 		t.Error("InlayHints = true, want false (overlay wins)")
 	}
 	if got.Editor.Theme != "rose-pine" {
 		t.Errorf("Theme = %q, want %q", got.Editor.Theme, "rose-pine")
+	}
+}
+
+func TestMergeOverlayExplicitFalseIndentGuides(t *testing.T) {
+	// A project disables indent guides for a code base whose deep
+	// indentation makes the guide layer visually noisy. Base = Default
+	// (IndentGuides true); overlay's explicit false must win.
+	overlay, md := loadRawFromBody(t, `[editor]
+indent_guides = false
+`)
+	base := Default()
+	got := Merge(base, overlay, md)
+	if got.Editor.IndentGuides {
+		t.Error("IndentGuides = true, want false (overlay's explicit false must win)")
 	}
 }
 
@@ -392,6 +417,7 @@ theme = "light"
 	base.Editor.TabWidth = 2
 	base.Editor.FormatOnSave = false
 	base.Editor.LineNumbers = false
+	base.Editor.IndentGuides = false
 	base.Editor.InlayHints = false
 	base.Editor.Theme = "tokyo-night"
 	got := Merge(base, overlay, md)
@@ -406,6 +432,9 @@ theme = "light"
 	}
 	if got.Editor.LineNumbers {
 		t.Error("LineNumbers = true, want false (base passes through)")
+	}
+	if got.Editor.IndentGuides {
+		t.Error("IndentGuides = true, want false (base passes through)")
 	}
 	if got.Editor.InlayHints {
 		t.Error("InlayHints = true, want false (base passes through)")

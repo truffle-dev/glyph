@@ -568,7 +568,7 @@ func newModel(root string, opens ...string) model {
 		root:           root,
 		width:          80,
 		height:         24,
-		bufs:           bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers),
+		bufs:           bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers).WithIndentGuides(cfg.Editor.IndentGuides),
 		gitPane:        git.NewPane(t, root),
 		termPane:       term.NewPane(t, root),
 		picker:         picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
@@ -662,7 +662,7 @@ func (m model) reloadConfig() model {
 	m.inlayHintsOn = cfg.Editor.InlayHints
 	m.tabWidth = cfg.Editor.TabWidth
 	m.themeName = cfg.Editor.Theme
-	m.bufs.WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers)
+	m.bufs.WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers).WithIndentGuides(cfg.Editor.IndentGuides)
 	if !m.inlayHintsOn {
 		m = m.clearInlayHints()
 	}

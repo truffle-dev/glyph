@@ -38,6 +38,9 @@ type EditorConfig struct {
 	// LineNumbers controls whether the gutter prints the row number.
 	// Default true.
 	LineNumbers bool `toml:"line_numbers"`
+	// IndentGuides toggles the vertical indent-guide glyphs painted at
+	// tab-stop columns of each row's leading whitespace. Default true.
+	IndentGuides bool `toml:"indent_guides"`
 	// InlayHints toggles gopls type / parameter hint glyphs woven into
 	// the source. Default true. Alt+Y still toggles at runtime.
 	InlayHints bool `toml:"inlay_hints"`
@@ -56,6 +59,7 @@ func Default() Config {
 			TabWidth:     4,
 			FormatOnSave: true,
 			LineNumbers:  true,
+			IndentGuides: true,
 			InlayHints:   true,
 			Theme:        "default",
 		},
@@ -176,6 +180,9 @@ func Merge(base, overlay Config, overlayMeta toml.MetaData) Config {
 	}
 	if overlayMeta.IsDefined("editor", "line_numbers") {
 		out.Editor.LineNumbers = overlay.Editor.LineNumbers
+	}
+	if overlayMeta.IsDefined("editor", "indent_guides") {
+		out.Editor.IndentGuides = overlay.Editor.IndentGuides
 	}
 	if overlayMeta.IsDefined("editor", "inlay_hints") {
 		out.Editor.InlayHints = overlay.Editor.InlayHints
