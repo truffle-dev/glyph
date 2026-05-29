@@ -28,6 +28,20 @@ import (
 // Path is absolute (rooted at the pane's root).
 type OpenMsg struct{ Path string }
 
+// CreatePromptMsg is emitted when the user presses `a` on the focused
+// tree, asking the host to open a "new file or directory" prompt seeded
+// with the parent directory derived from the current selection. The
+// host runs the actual filesystem op via filetreeops.CreatePath once
+// the prompt is committed.
+type CreatePromptMsg struct {
+	// ParentDir is the absolute directory the new entry will live
+	// under. Mirrors the file-tree's selection rule: if the selected
+	// row is a directory, ParentDir is that directory; if it's a
+	// file, ParentDir is its parent; if nothing is selected,
+	// ParentDir is the pane's root.
+	ParentDir string
+}
+
 // Pane is nook's file-tree side pane.
 type Pane struct {
 	model         glyphtree.Model
@@ -165,12 +179,34 @@ func (p Pane) Selected() string {
 	return filepath.Join(p.root, filepath.FromSlash(s))
 }
 
+// createParentDir returns the absolute directory under which a new
+// entry should land when the user fires the create action. If the
+// selected row is a directory, that directory wins; if it's a file, its
+// parent directory wins; if nothing is selected, the pane's root wins.
+// Used by the 'a' key intercept in Update.
+func (p Pane) createParentDir() string {
+	sel := p.Selected()
+	if sel == "" {
+		return p.root
+	}
+	if node, ok := p.model.SelectedNode(); ok && node.IsDir() {
+		return sel
+	}
+	return filepath.Dir(sel)
+}
+
 // Update routes a message through the underlying glyph tree model and
 // rewrites its SelectMsg into a nook OpenMsg when the user opens a
 // file leaf.
 func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
-	if _, ok := msg.(tea.KeyMsg); ok && !p.focused {
-		return p, nil
+	if km, ok := msg.(tea.KeyMsg); ok {
+		if !p.focused {
+			return p, nil
+		}
+		if p.built && len(km.Runes) == 1 && km.Runes[0] == 'a' && !km.Alt {
+			parent := p.createParentDir()
+			return p, func() tea.Msg { return CreatePromptMsg{ParentDir: parent} }
+		}
 	}
 	var cmd tea.Cmd
 	p.model, cmd = p.model.Update(msg)

@@ -312,3 +312,83 @@ func stripANSI(s string) string {
 	}
 	return b.String()
 }
+
+func TestPane_CreateKeyOnFocusedFileEmitsPromptWithParentDir(t *testing.T) {
+	root := makeFixture(t)
+	p := newBuiltPane(t, root)
+	p.Focus()
+	p.model.SetCursor("a.go")
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if cmd == nil {
+		t.Fatal("`a` on focused tree produced no command")
+	}
+	msg := cmd()
+	cm, ok := msg.(CreatePromptMsg)
+	if !ok {
+		t.Fatalf("`a` produced %T; want CreatePromptMsg", msg)
+	}
+	if cm.ParentDir != root {
+		t.Errorf("ParentDir = %q; want %q (file selected → parent is project root)", cm.ParentDir, root)
+	}
+}
+
+func TestPane_CreateKeyOnFocusedDirSelectsThatDirAsParent(t *testing.T) {
+	root := makeFixture(t)
+	p := newBuiltPane(t, root)
+	p.Focus()
+	p.model.SetCursor("internal")
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if cmd == nil {
+		t.Fatal("`a` on focused tree produced no command")
+	}
+	cm, ok := cmd().(CreatePromptMsg)
+	if !ok {
+		t.Fatalf("`a` produced wrong message type")
+	}
+	want := filepath.Join(root, "internal")
+	if cm.ParentDir != want {
+		t.Errorf("ParentDir = %q; want %q (directory selected → parent is that dir)", cm.ParentDir, want)
+	}
+}
+
+func TestPane_CreateKeyOnBlurredTreeIgnored(t *testing.T) {
+	root := makeFixture(t)
+	p := newBuiltPane(t, root)
+	// Pane starts blurred.
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if cmd != nil {
+		t.Errorf("`a` on blurred tree produced a command; should be ignored")
+	}
+}
+
+func TestPane_CreateKeyBeforeBuildIgnored(t *testing.T) {
+	root := makeFixture(t)
+	p := New(theme.Default, root)
+	p.SetSize(40, 20)
+	p.Focus()
+	// Tree not built yet.
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if cmd != nil {
+		t.Errorf("`a` before tree built produced a command; should be ignored until built")
+	}
+}
+
+func TestPane_CreateKeyAltAModifierFallsThrough(t *testing.T) {
+	root := makeFixture(t)
+	p := newBuiltPane(t, root)
+	p.Focus()
+	// Alt+a should NOT trigger the create prompt — only plain `a` does.
+	// Verifies the modifier guard so other host keymaps can claim Alt+a.
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true})
+	if cmd != nil {
+		// Either nil cmd (glyph tree didn't bind alt+a) or a non-Create cmd
+		// is acceptable; firing CreatePromptMsg is not.
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(CreatePromptMsg); ok {
+				t.Errorf("Alt+a fired CreatePromptMsg; should be plain `a` only")
+			}
+		}
+	}
+}
