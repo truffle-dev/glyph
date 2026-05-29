@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.44.1] — 2026-05-29
+
+Cross-platform fix for the v0.44.0 path-create edge case. `CreatePath`
+now rejects a leading `/` as an absolute path even on Windows, where
+`filepath.IsAbs("/")` returns false. The previous build let the bare
+slash fall through to the empty-name branch, which made `TestCreatePathEmptyName`
+fail on the Windows runner. The runtime behavior on Linux and macOS is
+unchanged.
+
 ## [0.44.0] — 2026-05-29
 
 File operations in the tree. Focus the file tree (`Ctrl+B`), press `a`,

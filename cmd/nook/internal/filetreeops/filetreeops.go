@@ -56,7 +56,10 @@ func CreatePath(parentDir, input string) (CreateResult, error) {
 	if trimmed == "" {
 		return CreateResult{}, ErrEmptyName
 	}
-	if filepath.IsAbs(trimmed) {
+	// A leading slash always reads as "absolute" to a human user even on
+	// Windows where filepath.IsAbs("/") is false; treat both spellings as
+	// absolute so the rejection is consistent across platforms.
+	if filepath.IsAbs(trimmed) || trimmed[0] == '/' || trimmed[0] == filepath.Separator {
 		return CreateResult{}, ErrAbsolutePath
 	}
 
