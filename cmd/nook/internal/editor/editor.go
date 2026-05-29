@@ -32,6 +32,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/inlineblame"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/semtok"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/softwrap"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -229,6 +230,18 @@ type Pane struct {
 	// See cmd/nook/internal/indentguide for the visual model.
 	indentGuides bool
 
+	// softWrap controls whether long logical lines re-flow across multiple
+	// visual rows when they exceed the pane's content width. Defaults to
+	// false (no wrap; long lines extend past the pane). When true, p.offset
+	// remains a logical-row index and p.subOffset records how many of its
+	// leading visual sub-rows are scrolled above the top of the viewport,
+	// so scrollToShow can keep the cursor's visual row on-screen with
+	// sub-row precision even inside a long wrapped line. The pair
+	// (offset, subOffset) is unused when softWrap is false. See
+	// cmd/nook/internal/softwrap for the wrap-point computation.
+	softWrap  bool
+	subOffset int
+
 	// Snippet mode: when snippetMode is true, Tab/Shift+Tab cycle the cursor
 	// between snippetStops in declaration order, Esc exits. Any edit key
 	// (rune insert, backspace, enter) auto-exits. snippetStopIdx is the
@@ -313,6 +326,17 @@ func (p Pane) SetIndentGuides(b bool) Pane {
 
 // IndentGuides reports whether indent guides are currently painted.
 func (p Pane) IndentGuides() bool { return p.indentGuides }
+
+// SetSoftWrap toggles whether long logical lines re-flow across multiple
+// visual rows. When enabled, p.offset is interpreted as a visual-row offset
+// and scrollToShow/ensureVisible keep the cursor's visual row on-screen.
+func (p Pane) SetSoftWrap(b bool) Pane {
+	p.softWrap = b
+	return p
+}
+
+// SoftWrap reports whether soft wrap is currently active.
+func (p Pane) SoftWrap() bool { return p.softWrap }
 
 // SetTheme swaps the palette used for syntax highlighting, the cursor cell,
 // the line-number gutter, and the inline-blame strip. No cached state to
@@ -733,6 +757,7 @@ func (p Pane) Open(path string) Pane {
 	p.buf = b
 	p.path = path
 	p.row, p.col, p.offset = 0, 0, 0
+	p.subOffset = 0
 	p.anchorRow, p.anchorCol = 0, 0
 	p.selecting = false
 	p.extras = nil
@@ -1208,12 +1233,23 @@ func (p Pane) ApplySave() Pane {
 }
 
 func (p *Pane) ensureVisible() {
+	if p.softWrap {
+		p.scrollToShowVisual(p.row, p.col)
+		return
+	}
 	p.scrollToShow(p.row)
 }
 
-// scrollToShow adjusts p.offset so that the given row is within the visible
-// window, used by multi-cursor add operations to follow the newest cursor.
+// scrollToShow adjusts p.offset so that the given logical row is within the
+// visible window, used by multi-cursor add operations to follow the newest
+// cursor. Operates on logical-row indices; with soft wrap on, callers that
+// have a column should use scrollToShowVisual to keep the cursor on the
+// right visual sub-row of a wrapped logical line.
 func (p *Pane) scrollToShow(row int) {
+	if p.softWrap {
+		p.scrollToShowVisual(row, 0)
+		return
+	}
 	visible := p.height - 1
 	if visible < 1 {
 		visible = 1
@@ -1224,6 +1260,120 @@ func (p *Pane) scrollToShow(row int) {
 	if row >= p.offset+visible {
 		p.offset = row - visible + 1
 	}
+}
+
+// scrollToShowVisual is the soft-wrap-aware sibling of scrollToShow. It
+// computes the visual-row index of (row, col) — i.e., the cursor's position
+// counting wrapped sub-rows above it — and adjusts (p.offset, p.subOffset)
+// so that visual row stays inside [visualTop, visualTop+visible).
+func (p *Pane) scrollToShowVisual(row, col int) {
+	visible := p.height - 1
+	if visible < 1 {
+		visible = 1
+	}
+	visualCursor := p.visualRowsBefore(row) + p.cursorSubRow(row, col)
+	visualTop := p.visualRowsBefore(p.offset) + p.subOffset
+	if visualCursor < visualTop {
+		p.offset, p.subOffset = p.logicalAtVisualOffset(visualCursor)
+		return
+	}
+	if visualCursor >= visualTop+visible {
+		p.offset, p.subOffset = p.logicalAtVisualOffset(visualCursor - visible + 1)
+	}
+}
+
+// contentWidth returns the number of columns available for line content
+// (pane width minus the gutter and the two-character marker column). Used
+// by the visual-row math when soft wrap is active so the wrap points agree
+// with what View would emit.
+func (p Pane) contentWidth() int {
+	gw := numWidth(len(p.buf.Lines))
+	if !p.lineNumbers {
+		gw = 0
+	}
+	cw := p.width - gw - 2
+	if cw < 1 {
+		cw = 1
+	}
+	return cw
+}
+
+// cursorSubRow returns the 0-based index of the visual sub-row that holds
+// byte column col within logical line row. Returns 0 when soft wrap is off,
+// when row is out of range, or when col falls at or before the first wrap
+// point. Used by scrollToShowVisual to find which wrapped sub-row of a
+// long line the cursor lives on.
+func (p Pane) cursorSubRow(row, col int) int {
+	if !p.softWrap {
+		return 0
+	}
+	if row < 0 || row >= len(p.buf.Lines) {
+		return 0
+	}
+	cw := p.contentWidth()
+	tw := p.TabWidth()
+	points := softwrap.WrapPoints([]byte(p.buf.Lines[row]), cw, tw)
+	for i := len(points) - 1; i >= 0; i-- {
+		if points[i] <= col {
+			return i
+		}
+	}
+	return 0
+}
+
+// visualRowsBefore returns the count of visual rows occupied by all logical
+// lines strictly above row. When soft wrap is off the result is row itself
+// (one visual row per logical row); when on, the result sums LineRowCount
+// across [0, row).
+func (p Pane) visualRowsBefore(row int) int {
+	if row <= 0 {
+		return 0
+	}
+	if !p.softWrap {
+		if row > len(p.buf.Lines) {
+			return len(p.buf.Lines)
+		}
+		return row
+	}
+	cw := p.contentWidth()
+	tw := p.TabWidth()
+	acc := 0
+	limit := row
+	if limit > len(p.buf.Lines) {
+		limit = len(p.buf.Lines)
+	}
+	for i := 0; i < limit; i++ {
+		acc += softwrap.LineRowCount([]byte(p.buf.Lines[i]), cw, tw)
+	}
+	return acc
+}
+
+// logicalAtVisualOffset is the inverse of visualRowsBefore: given a target
+// visual-row index counted from the top of the buffer, return the logical
+// row and within-row sub-row index that together address that visual row.
+// When soft wrap is off the answer is (target, 0). When target lands past
+// the buffer's last visual row, return (lastRow, lastSub) clamped.
+func (p Pane) logicalAtVisualOffset(target int) (int, int) {
+	if target < 0 {
+		return 0, 0
+	}
+	if !p.softWrap {
+		if target > len(p.buf.Lines) {
+			return len(p.buf.Lines), 0
+		}
+		return target, 0
+	}
+	cw := p.contentWidth()
+	tw := p.TabWidth()
+	acc := 0
+	for r := 0; r < len(p.buf.Lines); r++ {
+		n := softwrap.LineRowCount([]byte(p.buf.Lines[r]), cw, tw)
+		if acc+n > target {
+			return r, target - acc
+		}
+		acc += n
+	}
+	return len(p.buf.Lines), 0
 }
 
 // ExtraCursorCount returns the number of editing cursors beyond the primary.
