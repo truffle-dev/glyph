@@ -6,6 +6,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.41.0] — 2026-05-28
+
+Signature-help overload cycling. When the floating parameter-hint
+overlay is open and the function has more than one matching overload
+(any function that the language server returns multiple `Signatures`
+for), `alt+↓` advances to the next overload and `alt+↑` steps back.
+Both wrap around the list. The status line below the signature already
+shows an "n of m" counter, so the user can see which overload they're
+on. Pressing `esc` still dismisses the overlay; pressing `)` still
+closes it.
+
+The pane stays a pure value type: `signature.Pane.NextOverload()` and
+`PrevOverload()` return Pane copies with `ActiveSignature` rotated
+modulo `len(Signatures)`. Closed-pane and single-signature panes
+short-circuit as no-ops, so the host can call the mutators
+unconditionally on the keypress without checking first.
+
+A fresh `Open()` call resets `ActiveSignature` to whatever the server
+nominated, so when typing past the current parameter triggers another
+`textDocument/signatureHelp` round-trip, the new response lands on the
+server's choice instead of fighting the user's previous manual
+selection.
+
+The host wires the arrows just after the existing `esc` dismissal
+block. The match is `m.sigPane.IsOpen() && km.Alt && km.Type == KeyDown
+| KeyUp`, so alt+arrow with no overlay open falls through to the
+editor as normal cursor motion.
+
 ## [0.40.0] — 2026-05-28
 
 Auto-pair brackets and quotes. Typing an opener — `(` `[` `{` `"` `'`

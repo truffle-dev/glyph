@@ -164,6 +164,7 @@ func Default() []Section {
 			{"ctrl+t", "Workspace symbol search (functions, types, vars)"},
 			{"ctrl+\\", "File outline (document symbols in current file)"},
 			{"(", "Signature help (parameter hints auto-fire on '(', close on ')' or esc)"},
+			{"alt+↓ / alt+↑", "Cycle overloads while signature help is open"},
 		}},
 		{Name: "Panes", Bindings: []Binding{
 			{"ctrl+b", "Toggle file tree (left)"},
