@@ -460,6 +460,85 @@ func TestGhostEscDismissesProposal(t *testing.T) {
 	}
 }
 
+func TestAltDownCyclesSignatureOverloadForward(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+
+	path := filepath.Join(root, "a.go")
+	m.bufs.OpenOrSwitch(path)
+
+	m.sigPane = m.sigPane.Open(nooklsp.SignatureInfo{
+		Signatures: []nooklsp.Signature{
+			{Label: "func A(x int)", ActiveParameter: -1},
+			{Label: "func B(x int, y int)", ActiveParameter: -1},
+			{Label: "func C()", ActiveParameter: -1},
+		},
+		ActiveSignature: 0,
+	})
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+	mm := updated.(model)
+	if got := mm.sigPane.Info().ActiveSignature; got != 1 {
+		t.Fatalf("expected ActiveSignature=1 after alt+down, got %d", got)
+	}
+	if !mm.sigPane.IsOpen() {
+		t.Fatal("expected pane still open after cycle")
+	}
+}
+
+func TestAltUpCyclesSignatureOverloadBackward(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+
+	path := filepath.Join(root, "a.go")
+	m.bufs.OpenOrSwitch(path)
+
+	m.sigPane = m.sigPane.Open(nooklsp.SignatureInfo{
+		Signatures: []nooklsp.Signature{
+			{Label: "func A(x int)", ActiveParameter: -1},
+			{Label: "func B(x int, y int)", ActiveParameter: -1},
+			{Label: "func C()", ActiveParameter: -1},
+		},
+		ActiveSignature: 0,
+	})
+
+	// Wrap from first back to last.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	mm := updated.(model)
+	if got := mm.sigPane.Info().ActiveSignature; got != 2 {
+		t.Fatalf("expected ActiveSignature=2 after alt+up wrap, got %d", got)
+	}
+}
+
+func TestAltDownDoesNotCycleWhenSigPaneClosed(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+
+	path := filepath.Join(root, "a.go")
+	m.bufs.OpenOrSwitch(path)
+	// Pane starts closed.
+	if m.sigPane.IsOpen() {
+		t.Fatal("expected sigPane closed at start of test")
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+	mm := updated.(model)
+	// With sigPane closed, alt+down falls through to the editor. The
+	// important thing is the sigPane is still closed.
+	if mm.sigPane.IsOpen() {
+		t.Fatal("expected sigPane to remain closed when alt+down arrives with no pane")
+	}
+}
+
 // forceEnabledManager builds a ghost.Manager that reports Enabled() but never
 // actually issues an AI request. The stub `claude` binary makes the client
 // non-nil; the tests inject SuggestMsg/AcceptMsg directly.

@@ -2293,6 +2293,20 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Overload cycling while the signature-help overlay is open. Alt+Down
+	// advances; Alt+Up steps back. Both wrap. Forwarding is short-
+	// circuited so the editor doesn't also see the arrow as cursor motion.
+	if m.sigPane.IsOpen() && km.Alt {
+		switch km.Type {
+		case tea.KeyDown:
+			m.sigPane = m.sigPane.NextOverload()
+			return m, nil
+		case tea.KeyUp:
+			m.sigPane = m.sigPane.PrevOverload()
+			return m, nil
+		}
+	}
+
 	// Ghost-text key handling: Tab accepts a pending proposal; Esc dismisses
 	// it (and doesn't propagate). Any other key invalidates the current
 	// proposal but otherwise falls through.
