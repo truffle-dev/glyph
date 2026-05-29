@@ -6,6 +6,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-05-29
+
+Indent guides. Every editor row paints faint vertical glyphs at the
+tab-stop columns of its leading whitespace (`│` at columns `tab_width`,
+`2*tab_width`, ...), and the cursor row's enclosing indent zone gets a
+brighter primary-color version of the same glyph. The result reads at
+a glance how Zed, VSCode, and Cursor render the same layer.
+
+The guide is decoration, never the foreground signal. Selection bands,
+search-match highlights, document-highlight bands, and the cursor cell
+all win their cell — the guide simply yields. Column 0 is never a
+guide site because the gutter already separates content from the file
+edge, so depth-1 rows stay visually quiet.
+
+New pure-package primitives under `cmd/nook/internal/indentguide`:
+
+- `VisualGuideCols(raw, tabWidth)` returns the display columns where
+  guide glyphs paint for a row. Walks the leading whitespace, expands
+  tabs to `tabWidth` columns, and emits every multiple of `tabWidth`
+  strictly less than the expanded width.
+- `LeadingWhitespaceVisualWidth(raw, tabWidth)` is the display-column
+  width of a row's leading whitespace after tab expansion. Used by
+  the guide computation and exposed for any caller that needs the
+  same number (e.g. picking the next snippet stop column).
+- `ActiveGuideCol(visualCol, tabWidth)` returns the column of the
+  guide that the cursor at `visualCol` currently sits within, or -1
+  when no guide should highlight. The rule is
+  `floor(visualCol / tabWidth) * tabWidth` when
+  `visualCol >= tabWidth`, else -1.
+
+The editor `Pane` gains an `indentGuides bool` field (defaults to
+true), accessible via `SetIndentGuides(bool)` / `IndentGuides()`.
+`bufman.WithIndentGuides(bool)` propagates the flag to every open
+pane and any opened later. `EditorConfig` gains `IndentGuides bool`
+(toml `indent_guides`, default true), so the user file, project
+file, and live reload all see the same toggle.
+
+24 indentguide-package tests cover paint rules, depth-1 quiet,
+all-whitespace rows, mixed tab + space leading whitespace, zero/
+negative tabWidth, tabWidth=2 / 4 / 8 variants, and ActiveGuideCol
+boundary behavior. 12 editor-package tests cover default-on, toggle,
+paint counts under tab characters, suppression under cursor /
+selection, and multi-row cursor moves. Config tests gain coverage
+of the new field across the Default / Load / Merge surfaces, and a
+new host test asserts alt+, flips the active buffer's guides off
+when the file changes.
+
 ## [0.42.0] — 2026-05-29
 
 Per-project config inheritance. A `.nook/config.toml` sitting at the
