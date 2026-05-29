@@ -301,6 +301,15 @@ type model struct {
 	// configwatch poller to detect a save. Re-armed via WatchCmd on every
 	// TickMsg so the loop runs without a long-lived goroutine.
 	cfgFinger configwatch.Fingerprint
+	// prjCfgPath is the per-project config path: <root>/.nook/config.toml
+	// (v0.42.0). Loaded after the user config so project values win on
+	// any field the project file explicitly sets. The host watches both
+	// paths independently via configwatch.WatchCmd so editing either
+	// file applies live.
+	prjCfgPath string
+	// prjCfgFinger is the most recent fingerprint of prjCfgPath. Tracked
+	// alongside cfgFinger so each tick re-arms with the right finger.
+	prjCfgFinger configwatch.Fingerprint
 	// themeName is the name of the currently-applied theme. Live-reload
 	// detects a change against this stored name and propagates SetTheme to
 	// every pane in m. v0.38.0 dropped the "restart to apply" hint that
@@ -501,6 +510,7 @@ func resolveTheme(name string) (theme.Theme, bool) {
 
 func newModel(root string, opens ...string) model {
 	cfgPath, _ := config.Path()
+	prjCfgPath := config.ProjectPath(root)
 	cfg := config.Default()
 	loadErr := error(nil)
 	loadMissing := false
@@ -514,6 +524,17 @@ func newModel(root string, opens ...string) model {
 		default:
 			loadErr = err
 		}
+	}
+	// Layer the per-project config on top of the user config. Project
+	// values for fields it explicitly sets win; absent fields fall through
+	// to the user choice. A missing project file is silent (.nook/
+	// config.toml is opt-in); a parse error surfaces the same way a user
+	// parse error does. v0.42.0.
+	prjLoadErr := error(nil)
+	if pc, md, err := config.LoadRaw(prjCfgPath); err == nil {
+		cfg = config.Merge(cfg, pc, md)
+	} else if !errors.Is(err, config.ErrNotFound) {
+		prjLoadErr = err
 	}
 
 	t, themeOK := resolveTheme(cfg.Editor.Theme)
@@ -534,6 +555,8 @@ func newModel(root string, opens ...string) model {
 	switch {
 	case loadErr != nil:
 		status = "config: " + loadErr.Error() + " (using defaults)"
+	case prjLoadErr != nil:
+		status = "project config: " + prjLoadErr.Error() + " (using user settings)"
 	case rulesErr != nil:
 		status = "rules: " + rulesErr.Error() + " (ai wedges unaffected)"
 	case !themeOK && !loadMissing:
@@ -577,6 +600,8 @@ func newModel(root string, opens ...string) model {
 		inlayHintsOn:   cfg.Editor.InlayHints,
 		cfgPath:        cfgPath,
 		cfgFinger:      configwatch.Snapshot(cfgPath),
+		prjCfgPath:     prjCfgPath,
+		prjCfgFinger:   configwatch.Snapshot(prjCfgPath),
 		themeName:      cfg.Editor.Theme,
 		tabWidth:       cfg.Editor.TabWidth,
 		snipLib:        snipLib,
@@ -614,20 +639,22 @@ func newModel(root string, opens ...string) model {
 	return m
 }
 
-// reloadConfig re-reads m.cfgPath and applies the runtime-mutable knobs.
-// Editor toggles (format-on-save, inlay hints, tab width, line numbers) take
-// effect immediately, and a theme change propagates live to every theme-
-// holding pane via SetTheme so the user sees the new palette on the next
-// render without a restart. Used by both the manual `alt+,` keybind and
-// the configwatch tick loop. Returns the updated model.
+// reloadConfig re-reads m.cfgPath and m.prjCfgPath, merges them (project
+// values win on any field the project file explicitly sets), and applies
+// the runtime-mutable knobs. Editor toggles (format-on-save, inlay hints,
+// tab width, line numbers) take effect immediately, and a theme change
+// propagates live to every theme-holding pane via SetTheme so the user
+// sees the new palette on the next render without a restart. Used by both
+// the manual `alt+,` keybind and the configwatch tick loop. Returns the
+// updated model.
 func (m model) reloadConfig() model {
 	if m.cfgPath == "" {
 		m.status = "config: no path resolved"
 		return m
 	}
-	cfg, err := config.Load(m.cfgPath)
-	if err != nil && !errors.Is(err, config.ErrNotFound) {
-		m.status = "config: " + err.Error() + " (kept current settings)"
+	cfg, userExists, projectExists, scopeErr := loadMergedConfig(m.cfgPath, m.prjCfgPath)
+	if scopeErr != nil {
+		m.status = scopeErr.Error() + " (kept current settings)"
 		return m
 	}
 	prevTheme := m.themeName
@@ -648,17 +675,72 @@ func (m model) reloadConfig() model {
 		m = m.applyTheme(t)
 	}
 
+	scope := scopeHint(userExists, projectExists)
 	switch {
-	case errors.Is(err, config.ErrNotFound):
+	case !userExists && !projectExists:
 		m.status = "config: no file at " + m.cfgPath + " (using defaults)"
 	case themeChanged && !themeFound:
-		m.status = "settings reloaded — theme " + cfg.Editor.Theme + " not found; using default"
+		m.status = "settings reloaded — theme " + cfg.Editor.Theme + " not found; using default" + scope
 	case themeChanged:
-		m.status = "theme switched to " + cfg.Editor.Theme
+		m.status = "theme switched to " + cfg.Editor.Theme + scope
 	default:
-		m.status = "settings reloaded"
+		m.status = "settings reloaded" + scope
 	}
 	return m
+}
+
+// loadMergedConfig reads the user config (with Default() seeding + safety
+// reapply), then overlays a per-project config if one exists. Returns the
+// merged Config plus presence flags for each scope so the caller can
+// compose a precise status message. A parse error in either file returns
+// the prefixed error so the caller surfaces "config:" vs "project config:"
+// distinguishably. ErrNotFound in either path is silent: the user config
+// falling back to Default() and the project layer being a no-op are both
+// expected shapes.
+func loadMergedConfig(userPath, projectPath string) (cfg config.Config, userExists, projectExists bool, err error) {
+	cfg = config.Default()
+	if userPath != "" {
+		c, e := config.Load(userPath)
+		switch {
+		case e == nil:
+			cfg = c
+			userExists = true
+		case errors.Is(e, config.ErrNotFound):
+			// silent: stay on Default()
+		default:
+			return config.Default(), false, false, errors.New("config: " + e.Error())
+		}
+	}
+	if projectPath != "" {
+		pc, md, e := config.LoadRaw(projectPath)
+		switch {
+		case e == nil:
+			cfg = config.Merge(cfg, pc, md)
+			projectExists = true
+		case errors.Is(e, config.ErrNotFound):
+			// silent: project file is opt-in
+		default:
+			return config.Default(), false, false, errors.New("project config: " + e.Error())
+		}
+	}
+	return cfg, userExists, projectExists, nil
+}
+
+// scopeHint composes the suffix that disambiguates which config scopes
+// are active in a "settings reloaded" message. Returns the empty string
+// when neither scope is active; that branch is handled separately by the
+// caller so "settings reloaded" never appears without context.
+func scopeHint(userExists, projectExists bool) string {
+	switch {
+	case userExists && projectExists:
+		return " (user + project)"
+	case userExists:
+		return " (user)"
+	case projectExists:
+		return " (project)"
+	default:
+		return ""
+	}
 }
 
 // applyTheme propagates a new palette to every pane on m that holds a
@@ -696,6 +778,12 @@ func (m model) Init() tea.Cmd {
 	// The host's Update handler re-arms WatchCmd on every tick so the loop
 	// runs without a long-lived goroutine. Nil when cfgPath is empty.
 	if cmd := configwatch.WatchCmd(m.cfgPath, m.cfgFinger); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	// v0.42.0: parallel watch on the per-project config file. Each TickMsg
+	// carries Path so the Update handler routes back to the right finger
+	// and re-arms with the right path.
+	if cmd := configwatch.WatchCmd(m.prjCfgPath, m.prjCfgFinger); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 	// If files were pre-opened from the CLI, fire the same auxiliary
@@ -1486,16 +1574,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case configwatch.TickMsg:
-		// Discard stale ticks if the host re-resolved its config path
-		// (currently never, but the guard keeps the contract stable).
-		if msg.Path != m.cfgPath {
+		// Two paths are watched in v0.42.0: the user config and the
+		// per-project config. Each TickMsg carries Path, so we route to
+		// the matching finger and re-arm with the same path. Either
+		// file changing triggers a full reload, which merges both files
+		// every time so the result reflects the union of both scopes.
+		switch msg.Path {
+		case m.cfgPath:
+			if msg.Changed() {
+				m = m.reloadConfig()
+			}
+			m.cfgFinger = msg.Cur
+			return m, configwatch.WatchCmd(m.cfgPath, m.cfgFinger)
+		case m.prjCfgPath:
+			if msg.Changed() {
+				m = m.reloadConfig()
+			}
+			m.prjCfgFinger = msg.Cur
+			return m, configwatch.WatchCmd(m.prjCfgPath, m.prjCfgFinger)
+		default:
+			// Stale tick from a path the host no longer watches; drop.
 			return m, nil
 		}
-		if msg.Changed() {
-			m = m.reloadConfig()
-		}
-		m.cfgFinger = msg.Cur
-		return m, configwatch.WatchCmd(m.cfgPath, m.cfgFinger)
 
 	case filetree.OpenMsg:
 		_, action := m.bufs.OpenOrSwitch(msg.Path)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/truffle-dev/glyph/cmd/nook/internal/ai"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/composer"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/configwatch"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/diagnostics"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/edit"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/editor"
@@ -2017,6 +2018,150 @@ theme = "tokyo-night"
 	}
 	if !strings.Contains(mm.status, "tokyo-night") {
 		t.Errorf("status = %q, want it to mention the new theme", mm.status)
+	}
+}
+
+// writeProjectConfig writes the given TOML body to <root>/.nook/config.toml
+// and returns the resolved path. Use in v0.42.0 host tests that exercise
+// project-config inheritance.
+func writeProjectConfig(t *testing.T, root, body string) string {
+	t.Helper()
+	dir := filepath.Join(root, ".nook")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestNewModelLayersProjectConfigOnTopOfUser(t *testing.T) {
+	// User config sets tab_width=2 + theme=tokyo-night. Project config
+	// overrides only tab_width=8 + format_on_save=false. Result must be
+	// project's tab_width and format_on_save, user's theme, defaults for
+	// everything else.
+	writeNookConfig(t, `[editor]
+tab_width = 2
+theme = "tokyo-night"
+`)
+	root := t.TempDir()
+	writeProjectConfig(t, root, `[editor]
+tab_width = 8
+format_on_save = false
+`)
+	m := newModel(root)
+	if m.tabWidth != 8 {
+		t.Errorf("tabWidth = %d, want 8 (project wins)", m.tabWidth)
+	}
+	if m.formatOnSave {
+		t.Error("formatOnSave = true, want false (project's explicit false must win)")
+	}
+	if m.themeName != "tokyo-night" {
+		t.Errorf("themeName = %q, want %q (user passes through)", m.themeName, "tokyo-night")
+	}
+	if !m.inlayHintsOn {
+		t.Error("inlayHintsOn = false, want true (Default passes through)")
+	}
+}
+
+func TestNewModelProjectOnlyConfigApplies(t *testing.T) {
+	// No user file. Project file sets theme + tab_width. Result must
+	// equal Default merged with the project layer.
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	root := t.TempDir()
+	writeProjectConfig(t, root, `[editor]
+tab_width = 8
+theme = "rose-pine"
+`)
+	m := newModel(root)
+	if m.tabWidth != 8 {
+		t.Errorf("tabWidth = %d, want 8", m.tabWidth)
+	}
+	if m.themeName != "rose-pine" {
+		t.Errorf("themeName = %q, want %q", m.themeName, "rose-pine")
+	}
+}
+
+func TestNewModelMalformedProjectConfigSurfacesError(t *testing.T) {
+	writeNookConfig(t, `[editor]
+tab_width = 4
+`)
+	root := t.TempDir()
+	writeProjectConfig(t, root, "this is = = not toml")
+	m := newModel(root)
+	if !strings.HasPrefix(m.status, "project config:") {
+		t.Errorf("status = %q, want it to start with %q", m.status, "project config:")
+	}
+	// User config still applied — defaults must still be sane.
+	if m.tabWidth != 4 {
+		t.Errorf("tabWidth = %d, want 4 (user fallback)", m.tabWidth)
+	}
+}
+
+func TestAltCommaReloadsMergedConfigOnProjectEdit(t *testing.T) {
+	writeNookConfig(t, `[editor]
+tab_width = 2
+inlay_hints = true
+`)
+	root := t.TempDir()
+	prj := writeProjectConfig(t, root, `[editor]
+tab_width = 4
+`)
+	m := newModel(root)
+	if m.tabWidth != 4 {
+		t.Fatalf("startup tabWidth = %d, want 4 (project wins)", m.tabWidth)
+	}
+	// Rewrite the project file; alt+, picks up the new value via the
+	// merged reload path.
+	if err := os.WriteFile(prj, []byte("[editor]\ntab_width = 8\ninlay_hints = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}, Alt: true})
+	mm := updated.(model)
+	if mm.tabWidth != 8 {
+		t.Errorf("tabWidth = %d, want 8 (project edit picked up)", mm.tabWidth)
+	}
+	if mm.inlayHintsOn {
+		t.Error("inlayHintsOn = true, want false (project's explicit false wins)")
+	}
+	if !strings.Contains(mm.status, "user + project") {
+		t.Errorf("status = %q, want scope hint mentioning user + project", mm.status)
+	}
+}
+
+func TestProjectTickMsgRoutesAndReloads(t *testing.T) {
+	// Simulates the configwatch goroutine landing a TickMsg for the
+	// project path. The handler should refetch + reload + re-arm
+	// independently of the user-path tick.
+	writeNookConfig(t, "[editor]\ntab_width = 2\n")
+	root := t.TempDir()
+	prj := writeProjectConfig(t, root, "[editor]\ntab_width = 4\n")
+	m := newModel(root)
+	if m.tabWidth != 4 {
+		t.Fatalf("startup tabWidth = %d, want 4", m.tabWidth)
+	}
+	if err := os.WriteFile(prj, []byte("[editor]\ntab_width = 8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Same-second writes on ext4-relatime can keep mtime + size identical.
+	// Forcing Last to a zero fingerprint guarantees Changed() == true so
+	// the test asserts the routing + reload contract, not the underlying
+	// mtime granularity.
+	tick := configwatch.TickMsg{
+		Path: m.prjCfgPath,
+		Last: configwatch.Fingerprint{},
+		Cur:  configwatch.Snapshot(m.prjCfgPath),
+	}
+	updated, _ := m.Update(tick)
+	mm := updated.(model)
+	if mm.tabWidth != 8 {
+		t.Errorf("after project TickMsg tabWidth = %d, want 8", mm.tabWidth)
+	}
+	if mm.prjCfgFinger != tick.Cur {
+		t.Error("prjCfgFinger not advanced after project TickMsg")
 	}
 }
 
