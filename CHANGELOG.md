@@ -6,6 +6,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-05-29
+
+File operations in the tree. Focus the file tree (`Ctrl+B`), press `a`,
+and a small modal asks for a path relative to the selection. Type
+`bar.go` for a file, `internal/foo/` for a directory, or
+`internal/foo/leaf.go` for a leaf inside fresh intermediate
+directories. Enter commits the create; the tree refreshes and reveals
+the new entry; if it's a file, it opens in a buffer. Esc cancels with
+no filesystem touch.
+
+Parent-directory resolution mirrors VSCode and Zed: if the selected
+row is a directory, the new entry lands inside it; if it's a file, the
+entry lands next to it; if nothing is selected, the entry lands at the
+workspace root.
+
+New pure-package primitive at `cmd/nook/internal/filetreeops`:
+
+- `CreatePath(parentDir, input)` runs the create with `O_EXCL` for files
+  and `os.MkdirAll` for directories (and for any parent dirs along a
+  nested input). Rejects absolute paths, ".." traversal, empty names;
+  refuses to overwrite an existing entry. Returns a typed
+  `CreateResult{Path, IsDir}` plus a sentinel-friendly error set
+  (`ErrEmptyName`, `ErrAbsolutePath`, `ErrInvalidName`, `ErrPathExists`).
+
+The file-tree pane intercepts `a` when focused and emits
+`filetree.CreatePromptMsg{ParentDir}` with the resolved parent. The
+host opens a new `cmd/nook/internal/createprompt.Prompt` modal seeded
+with the parent label; the prompt accepts path-legal runes (letters,
+digits, dot, underscore, hyphen, slash, plus printable Unicode) and
+rejects control characters and NUL. Collisions and validation errors
+keep the prompt open with a terse label mapped from the filetreeops
+sentinels.
+
+13 filetreeops-package tests cover file, directory trailing-slash,
+nested file, nested dir, collision (file and dir), empty / whitespace,
+absolute path refusal, "../" traversal at multiple positions, trim,
+dotfile names, and double-slash collapse. 17 createprompt-package
+tests cover open / close / re-open, all path-rune classes, control-char
+rejection, backspace and cursor moves, error clear-on-input, and view
+rendering. 8 host tests cover prompt arming from `CreatePromptMsg`,
+"." parent label at root, file create + buffer open path, dir create
++ tree refresh path, Esc cancel without filesystem touch, empty value
+keeps the prompt open, collision error keeps it open without
+overwriting, and nested file materializing parent directories.
+
 ## [0.43.0] — 2026-05-29
 
 Indent guides. Every editor row paints faint vertical glyphs at the
