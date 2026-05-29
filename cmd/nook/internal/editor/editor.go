@@ -2250,10 +2250,6 @@ func (p Pane) View() string {
 	if visible < 1 {
 		visible = 1
 	}
-	end := p.offset + visible
-	if end > len(p.buf.Lines) {
-		end = len(p.buf.Lines)
-	}
 
 	gw := numWidth(len(p.buf.Lines))
 	if !p.lineNumbers {
@@ -2316,7 +2312,7 @@ func (p Pane) View() string {
 	}
 
 	var rows []string
-	for i := p.offset; i < end; i++ {
+	for i := p.offset; i < len(p.buf.Lines) && len(rows) < visible; i++ {
 		var gut string
 		if p.lineNumbers {
 			num := fmt.Sprintf("%*d", gw, i+1)
@@ -2397,25 +2393,81 @@ func (p Pane) View() string {
 			}
 		}
 		cols, hasCursors := cursorsByRow[i]
-		if hasCursors {
-			primaryCol := -1
-			ghost := ""
-			if i == p.row {
-				primaryCol = p.col
-				if p.ghostText != "" && p.focused {
-					ghost = p.ghostText
+		if !p.softWrap {
+			if hasCursors {
+				primaryCol := -1
+				ghost := ""
+				if i == p.row {
+					primaryCol = p.col
+					if p.ghostText != "" && p.focused {
+						ghost = p.ghostText
+					}
+				}
+				line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol)
+			} else {
+				line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol)
+			}
+			if p.blameVisible && i == p.row {
+				if entry, ok := p.BlameAt(i); ok {
+					line = appendBlameStrip(line, entry, contentWidth, t)
 				}
 			}
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, cols, primaryCol, ghost, hints, contentWidth, t, true, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol)
-		} else {
-			line = renderHighlightedRow(raw, spans, marks, activeIdx, dochiSpans, nil, -1, "", hints, contentWidth, t, false, tabW, selStart, selEnd, selTail, guideCols, activeGuideCol)
+			rows = append(rows, gut+marker+" "+line)
+			continue
 		}
-		if p.blameVisible && i == p.row {
-			if entry, ok := p.BlameAt(i); ok {
-				line = appendBlameStrip(line, entry, contentWidth, t)
+		// Soft wrap on: emit one sub-row per wrap segment, gutter+marker on
+		// the first sub-row of the logical line and blank on continuations.
+		points := softwrap.WrapPoints([]byte(raw), contentWidth, tabW)
+		skipSub := 0
+		if i == p.offset {
+			skipSub = p.subOffset
+		}
+		blankGut := gutterStyle.Render(strings.Repeat(" ", gw))
+		for k := skipSub; k < len(points) && len(rows) < visible; k++ {
+			subStart := points[k]
+			var subEnd int
+			if k+1 < len(points) {
+				subEnd = points[k+1]
+			} else {
+				subEnd = len(raw)
 			}
+			isLastSub := k == len(points)-1
+			subRaw := raw[subStart:subEnd]
+			subSpans := sliceSpansForSubrow(spans, subStart, subEnd)
+			subMarks, subActiveIdx := sliceMatchesForSubrow(marks, activeIdx, subStart, subEnd)
+			subDochi := sliceDochiForSubrow(dochiSpans, subStart, subEnd, len(raw))
+			subHints := sliceHintsForSubrow(hints, subStart, subEnd, len(raw), isLastSub)
+			subSelStart, subSelEnd, subSelTail := sliceSelectionForSubrow(selStart, selEnd, selTail, subStart, subEnd, len(raw), isLastSub)
+			subCols := sliceCursorsForSubrow(cols, subStart, subEnd, len(raw), isLastSub)
+			subPrimary := -1
+			subGhost := ""
+			if hasCursors && i == p.row {
+				subPrimary = subRowPrimaryCol(p.col, subStart, subEnd, len(raw), isLastSub)
+				if subPrimary >= 0 && p.ghostText != "" && p.focused {
+					subGhost = p.ghostText
+				}
+			}
+			var subGuides []int
+			subActiveGuide := -1
+			if k == 0 {
+				subGuides = guideCols
+				subActiveGuide = activeGuideCol
+			}
+			drawCursor := hasCursors && (len(subCols) > 0 || subPrimary >= 0)
+			line = renderHighlightedRow(subRaw, subSpans, subMarks, subActiveIdx, subDochi, subCols, subPrimary, subGhost, subHints, contentWidth, t, drawCursor, tabW, subSelStart, subSelEnd, subSelTail, subGuides, subActiveGuide)
+			if p.blameVisible && i == p.row && isLastSub {
+				if entry, ok := p.BlameAt(i); ok {
+					line = appendBlameStrip(line, entry, contentWidth, t)
+				}
+			}
+			prefix := ""
+			if k == 0 {
+				prefix = gut + marker + " "
+			} else {
+				prefix = blankGut + " │ "
+			}
+			rows = append(rows, prefix+line)
 		}
-		rows = append(rows, gut+marker+" "+line)
 	}
 	for len(rows) < visible {
 		rows = append(rows, gutterStyle.Render(strings.Repeat(" ", gw))+" │ "+muted.Render("~"))

@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/truffle-dev/glyph/cmd/nook/internal/dochi"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/highlight"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/inlayhint"
 	"github.com/truffle-dev/glyph/components/theme"
 )
 
@@ -240,5 +243,253 @@ func TestSoftWrapVisualRowsBeforeNeverExceedsLineCount(t *testing.T) {
 	p.buf.Lines = []string{"a", "b"}
 	if got := p.visualRowsBefore(1000); got <= 0 {
 		t.Fatalf("visualRowsBefore clamp returned %d", got)
+	}
+}
+
+// --- slice 3: sub-row slicing helpers -----------------------------------
+
+func TestSliceSpansForSubrowFiltersAndShifts(t *testing.T) {
+	spans := []highlight.Span{
+		{Start: 0, End: 4, Kind: highlight.KindKeyword},
+		{Start: 6, End: 10, Kind: highlight.KindString},
+		{Start: 12, End: 18, Kind: highlight.KindFunction},
+	}
+	got := sliceSpansForSubrow(spans, 5, 15)
+	if len(got) != 2 {
+		t.Fatalf("got %d spans want 2: %+v", len(got), got)
+	}
+	if got[0].Start != 1 || got[0].End != 5 || got[0].Kind != highlight.KindString {
+		t.Fatalf("got[0] = %+v", got[0])
+	}
+	if got[1].Start != 7 || got[1].End != 10 || got[1].Kind != highlight.KindFunction {
+		t.Fatalf("got[1] = %+v", got[1])
+	}
+}
+
+func TestSliceSpansForSubrowEmpty(t *testing.T) {
+	if out := sliceSpansForSubrow(nil, 0, 10); out != nil {
+		t.Fatalf("nil input returned %v", out)
+	}
+	if out := sliceSpansForSubrow([]highlight.Span{{Start: 0, End: 5}}, 5, 5); out != nil {
+		t.Fatalf("zero-width window returned %v", out)
+	}
+}
+
+func TestSliceMatchesForSubrowRemapsActiveIdx(t *testing.T) {
+	marks := []Range{
+		{Row: 0, Start: 0, End: 3},
+		{Row: 0, Start: 5, End: 8},
+		{Row: 0, Start: 12, End: 14},
+	}
+	got, active := sliceMatchesForSubrow(marks, 1, 4, 10)
+	if len(got) != 1 {
+		t.Fatalf("got %d marks want 1: %+v", len(got), got)
+	}
+	if got[0].Start != 1 || got[0].End != 4 {
+		t.Fatalf("got[0] = %+v", got[0])
+	}
+	if active != 0 {
+		t.Fatalf("active = %d want 0 (the originally-active mark remapped)", active)
+	}
+}
+
+func TestSliceMatchesForSubrowActiveOutsideReturnsMinusOne(t *testing.T) {
+	marks := []Range{
+		{Row: 0, Start: 0, End: 3},
+		{Row: 0, Start: 5, End: 8},
+	}
+	_, active := sliceMatchesForSubrow(marks, 0, 0, 4)
+	if active != 0 {
+		t.Fatalf("active for sub-row containing mark 0 = %d want 0", active)
+	}
+	_, active = sliceMatchesForSubrow(marks, 0, 4, 10)
+	if active != -1 {
+		t.Fatalf("active for sub-row NOT containing mark 0 = %d want -1", active)
+	}
+}
+
+func TestSliceDochiForSubrowEndMinusOneExtends(t *testing.T) {
+	spans := []dochi.Span{
+		{Start: 2, End: -1},
+	}
+	got := sliceDochiForSubrow(spans, 0, 8, 20)
+	if len(got) != 1 {
+		t.Fatalf("got %d want 1: %+v", len(got), got)
+	}
+	if got[0].Start != 2 || got[0].End != 8 {
+		t.Fatalf("got[0] = %+v want {Start:2 End:8}", got[0])
+	}
+}
+
+func TestSliceHintsForSubrowBoundaryRule(t *testing.T) {
+	hints := []inlayhint.Hint{
+		{Row: 0, Col: 0, Label: "a"},
+		{Row: 0, Col: 5, Label: "b"},
+		{Row: 0, Col: 8, Label: "c"},
+		{Row: 0, Col: 12, Label: "d"},
+	}
+	got := sliceHintsForSubrow(hints, 0, 8, 20, false)
+	if len(got) != 2 {
+		t.Fatalf("sub-row [0,8) on non-last got %d want 2: %+v", len(got), got)
+	}
+	got = sliceHintsForSubrow(hints, 8, 12, 20, false)
+	if len(got) != 1 || got[0].Col != 0 {
+		t.Fatalf("hint at boundary col=8 should land on next sub-row at col=0: %+v", got)
+	}
+	got = sliceHintsForSubrow([]inlayhint.Hint{{Row: 0, Col: 20, Label: "eol"}}, 12, 20, 20, true)
+	if len(got) != 1 || got[0].Col != 8 {
+		t.Fatalf("EOL hint on last sub-row should land at end: %+v", got)
+	}
+}
+
+func TestSliceCursorsForSubrowBoundary(t *testing.T) {
+	cols := []int{0, 5, 10}
+	got := sliceCursorsForSubrow(cols, 0, 8, 12, false)
+	if len(got) != 2 || got[0] != 0 || got[1] != 5 {
+		t.Fatalf("sub-row [0,8) cursors = %v", got)
+	}
+	got = sliceCursorsForSubrow([]int{12}, 8, 12, 12, true)
+	if len(got) != 1 || got[0] != 4 {
+		t.Fatalf("EOL cursor on last sub-row = %v want [4]", got)
+	}
+	got = sliceCursorsForSubrow([]int{12}, 8, 12, 12, false)
+	if len(got) != 0 {
+		t.Fatalf("EOL cursor on non-last sub-row should be empty: %v", got)
+	}
+}
+
+func TestSliceSelectionForSubrowOverlap(t *testing.T) {
+	s, e, tail := sliceSelectionForSubrow(2, 6, false, 0, 8, 8, true)
+	if s != 2 || e != 6 || tail {
+		t.Fatalf("overlap within = (%d,%d,%v) want (2,6,false)", s, e, tail)
+	}
+}
+
+func TestSliceSelectionForSubrowSelTailOnlyOnLast(t *testing.T) {
+	_, _, tailNonLast := sliceSelectionForSubrow(0, 20, true, 0, 8, 20, false)
+	_, _, tailLast := sliceSelectionForSubrow(0, 20, true, 12, 20, 20, true)
+	if tailNonLast {
+		t.Fatalf("selTail should NOT propagate on non-last sub-row")
+	}
+	if !tailLast {
+		t.Fatalf("selTail SHOULD propagate on last sub-row when parent selTail")
+	}
+}
+
+func TestSliceSelectionForSubrowNoOverlap(t *testing.T) {
+	s, e, tail := sliceSelectionForSubrow(10, 12, false, 0, 5, 20, false)
+	if s != -1 || e != -1 || tail {
+		t.Fatalf("no overlap = (%d,%d,%v) want (-1,-1,false)", s, e, tail)
+	}
+}
+
+func TestSubRowPrimaryColEOLOnLastSub(t *testing.T) {
+	if got := subRowPrimaryCol(20, 12, 20, 20, true); got != 8 {
+		t.Fatalf("EOL primary on last sub = %d want 8", got)
+	}
+	if got := subRowPrimaryCol(20, 0, 8, 20, false); got != -1 {
+		t.Fatalf("EOL primary on non-last sub = %d want -1", got)
+	}
+	if got := subRowPrimaryCol(4, 0, 8, 20, false); got != 4 {
+		t.Fatalf("mid primary = %d want 4", got)
+	}
+}
+
+// --- slice 3: View() integration ----------------------------------------
+
+func TestViewSoftWrapOffEmitsOneRowPerLogical(t *testing.T) {
+	p := newSoftWrapPane(t)
+	p.buf.Lines = []string{"alpha", "beta", "gamma"}
+	out := p.View()
+	rows := strings.Split(out, "\n")
+	if len(rows) != p.height {
+		t.Fatalf("softwrap off should emit p.height=%d rows, got %d", p.height, len(rows))
+	}
+	r1 := plain(rows[1])
+	r2 := plain(rows[2])
+	if !strings.Contains(r1, "alpha") || !strings.Contains(r2, "beta") {
+		t.Fatalf("logical rows misplaced:\n%s", strings.Join(rows[:4], "\n"))
+	}
+}
+
+func TestViewSoftWrapOnEmitsMultipleSubRowsPerLogical(t *testing.T) {
+	p := newSoftWrapPane(t).SetSoftWrap(true)
+	long := strings.Repeat("a", 100)
+	p.buf.Lines = []string{long}
+	p.height = 8
+	out := p.View()
+	rows := strings.Split(out, "\n")
+	visible := p.height - 1
+	cw := p.contentWidth()
+	expected := (100 + cw - 1) / cw
+	if expected > visible {
+		expected = visible
+	}
+	aRows := 0
+	for _, r := range rows[1:] {
+		if strings.Contains(r, "a") {
+			aRows++
+		}
+	}
+	if aRows < expected {
+		t.Fatalf("expected at least %d sub-rows containing 'a', got %d:\n%s", expected, aRows, out)
+	}
+}
+
+func TestViewSoftWrapOnLineNumberOnlyOnFirstSubRow(t *testing.T) {
+	p := newSoftWrapPane(t).SetSoftWrap(true)
+	long := strings.Repeat("a", 100)
+	p.buf.Lines = []string{long, "next"}
+	p.height = 8
+	out := p.View()
+	rows := strings.Split(out, "\n")
+	lineNumberRows := 0
+	for _, r := range rows[1:] {
+		clean := plain(r)
+		if strings.Contains(clean, "1") && strings.Contains(clean, "a") {
+			lineNumberRows++
+		}
+	}
+	if lineNumberRows != 1 {
+		t.Fatalf("line number '1' should appear on exactly one sub-row, found %d:\n%s", lineNumberRows, out)
+	}
+}
+
+func TestViewSoftWrapOnSubOffsetSkipsLeadingSubRows(t *testing.T) {
+	p := newSoftWrapPane(t).SetSoftWrap(true)
+	long := strings.Repeat("a", 200)
+	p.buf.Lines = []string{long}
+	p.height = 6
+	p.subOffset = 2
+	out := p.View()
+	rows := strings.Split(out, "\n")
+	visible := p.height - 1
+	cw := p.contentWidth()
+	totalSubs := (200 + cw - 1) / cw
+	remaining := totalSubs - 2
+	if remaining > visible {
+		remaining = visible
+	}
+	aRows := 0
+	for _, r := range rows[1:] {
+		if strings.Contains(r, "a") {
+			aRows++
+		}
+	}
+	if aRows != remaining {
+		t.Fatalf("subOffset=2 should leave %d sub-rows visible, got %d:\n%s", remaining, aRows, out)
+	}
+}
+
+func TestViewSoftWrapOnRenderHandlesEmptyAndShortLines(t *testing.T) {
+	p := newSoftWrapPane(t).SetSoftWrap(true)
+	p.buf.Lines = []string{"", "x", ""}
+	out := p.View()
+	rows := strings.Split(out, "\n")
+	if len(rows) != p.height {
+		t.Fatalf("View should pad to p.height=%d, got %d", p.height, len(rows))
+	}
+	if !strings.Contains(rows[2], "x") {
+		t.Fatalf("short line missing:\n%s", out)
 	}
 }
