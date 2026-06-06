@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `components/pagination-bar` — single-line page indicator with prev/next
+  chevrons, a 1-indexed `page of total` label, and an optional
+  `(N items)` suffix. `Page()` is 0-indexed for code; `PageNumber()` is
+  1-indexed for display. `PageChangedMsg` fires only when the page
+  actually changes, so consumers can listen without filtering no-ops at
+  either edge. `WithPerPage(k)` + `WithTotalItems(n)` derive `Total()`
+  automatically and let `VisibleRange()` return the `[start, end)` item
+  indices for the current page. `WithWrap(true)` wraps motion in both
+  directions; the default is no wrap. Edge chevrons dim to the muted
+  color when motion would be a no-op.
 - `components/accordion` — vertical stack of titled, collapsible sections
   with a focused-cursor model. Single-expanded by default (opening a new
   section closes the previous), or independent via

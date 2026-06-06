@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "pagination-bar",
+  "type": "glyph:component",
+  "title": "Pagination Bar",
+  "description": "Single-line page indicator with prev/next chevrons, a 1-indexed 'page of total' label, and an optional '(N items)' suffix. WithPerPage + WithTotalItems derive the page count and visible item range automatically.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/pagination-bar/pagination-bar.go",
+      "type": "glyph:component",
+      "target": "@components/pagination-bar/pagination-bar.go"
+    },
+    {
+      "path": "components/pagination-bar/pagination-bar_test.go",
+      "type": "glyph:test",
+      "target": "@components/pagination-bar/pagination-bar_test.go"
+    }
+  ],
+  "docs": "Construct with New().WithTotal(n).WithPage(i). Left/h moves to the previous page, Right/l to the next, Home/g jumps to the first, End/G to the last. Page() is 0-indexed; PageNumber() returns the 1-indexed value for display. PageChangedMsg fires only when the page actually changes, so consumers can listen without filtering no-ops. WithPerPage(k) + WithTotalItems(n) derive Total() automatically and let VisibleRange() return the [start, end) item indices for the current page. WithWrap(true) wraps motion at both ends; the default is no wrap.",
+  "categories": ["navigation", "primitive"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-06"
+  }
+}
