@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "json-tree-view",
+  "type": "glyph:component",
+  "title": "JSON Tree View",
+  "description": "Interactive, collapsible tree view for arbitrary JSON values. A thin shell over tree-view that formats strings, numbers, booleans, null, objects, and arrays with type-aware colors and count suffixes.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme", "tree-view"],
+  "files": [
+    {
+      "path": "components/json-tree-view/json-tree-view.go",
+      "type": "glyph:component",
+      "target": "@components/json-tree-view/json-tree-view.go"
+    },
+    {
+      "path": "components/json-tree-view/json-tree-view_test.go",
+      "type": "glyph:test",
+      "target": "@components/json-tree-view/json-tree-view_test.go"
+    }
+  ],
+  "docs": "Call WithJSON(b) to parse raw bytes or WithValue(v) when you already have an `any` from json.Unmarshal. Objects render as `key {N}` branches keyed alphabetically (toggle with WithSortKeys(false)); arrays render as `key [N]` branches with `[i]` child keys; strings come back quoted; integer-valued numbers print without `.0`; booleans and null get their literal forms. Enter on a row emits SelectMsg carrying the wrapped treeview.Node and the underlying JSON Value. All navigation (cursor, expand, collapse, scroll, root visibility, expand depth, themes) forwards directly to the embedded tree-view.",
+  "categories": ["data", "navigation", "tree", "json"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-06"
+  }
+}

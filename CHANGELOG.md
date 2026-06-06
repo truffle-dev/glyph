@@ -8,16 +8,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `components/json-tree-view` — interactive, collapsible tree view for
+  arbitrary JSON values. A thin shell over `tree-view` that formats strings,
+  numbers, booleans, null, objects, and arrays with type-aware colors and
+  count suffixes. Objects render as `key {N}` branches sorted alphabetically
+  by default; arrays render as `key [N]` branches with `[i]` child keys.
+  Integer-valued floats collapse (`7.0` prints as `7`); strings come back
+  quoted. `WithJSON(b)` parses raw bytes; `WithValue(v)` takes the `any`
+  that `json.Unmarshal` returns. `SelectMsg` carries the underlying JSON
+  `Value` alongside the wrapped `treeview.Node`. The JSON specialization
+  of `tree-view`, the way `file-tree` is the file-system specialization.
 - `components/tree-view` — generic, recursive collapsible tree of nodes. The
-  flexible primitive beneath `file-tree`, beneath the forthcoming
-  `json-tree-view`, and beneath any agent-state explorer, org chart, call
-  graph, or build dependency surface. A `Node` has a `Label`, an arbitrary
-  `Value`, and zero or more `Children`; absence of children makes a node a
-  leaf. Paths are slash-joined zero-based child indices, stable across label
-  changes. `WithExpandedDepth(n)` opens every branch up to depth n;
-  `WithExpandAll` / `WithCollapseAll` are the extremes. `Right`/`l` expands,
-  `Left`/`h` collapses or jumps to the parent, `Enter` toggles a branch and
-  emits `SelectMsg{Node, Path, Index}`, `Space` toggles silently.
+  flexible primitive beneath `file-tree`, beneath `json-tree-view`, and
+  beneath any agent-state explorer, org chart, call graph, or build
+  dependency surface. A `Node` has a `Label`, an arbitrary `Value`, and
+  zero or more `Children`; absence of children makes a node a leaf. Paths
+  are slash-joined zero-based child indices, stable across label changes.
+  `WithExpandedDepth(n)` opens every branch up to depth n; `WithExpandAll`
+  / `WithCollapseAll` are the extremes. `Right`/`l` expands, `Left`/`h`
+  collapses or jumps to the parent, `Enter` toggles a branch and emits
+  `SelectMsg{Node, Path, Index}`, `Space` toggles silently.
 - `components/timeline` — vertical sequence of events with status dots, a
   pre-formatted time gutter, and multi-line bodies. Time strings are not
   parsed; absolute clocks, relative durations, and git-style labels all flow
