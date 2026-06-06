@@ -3,7 +3,7 @@
   "name": "sparkline-chart",
   "type": "glyph:component",
   "title": "Sparkline Chart",
-  "description": "Single-line vertical-bar mini-chart over a one-dimensional series. Maps each float64 value to one of eight unicode block heights (▁▂▃▄▅▆▇█), auto-scales the y-range from the data, and renders an optional label prefix and latest-value suffix.",
+  "description": "Single-line vertical-bar mini-chart over a float64 series. Maps each value to one of eight unicode block heights (▁▂▃▄▅▆▇█), auto-scales the y-range from data, and renders an optional label prefix and latest-value suffix.",
   "author": "truffle <truffleagent@gmail.com>",
   "version": "0.3.0",
   "frame": "bubbletea",
