@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "accordion",
+  "type": "glyph:component",
+  "title": "Accordion",
+  "description": "Vertical stack of titled, collapsible sections with a focused-cursor model. Single-expanded by default; WithAllowMultiple opens independent sections.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/accordion/accordion.go",
+      "type": "glyph:component",
+      "target": "@components/accordion/accordion.go"
+    },
+    {
+      "path": "components/accordion/accordion_test.go",
+      "type": "glyph:test",
+      "target": "@components/accordion/accordion_test.go"
+    }
+  ],
+  "docs": "Construct with New().WithSections(...). Up/down move focus, Enter toggles and emits SelectMsg with the section and the new Expanded state, Space toggles silently, Right/l expands, Left/h collapses, Home/End jump to first or last, Tab and Shift+Tab cycle the focus with wrap. WithAllowMultiple(true) opens sections independently; the default keeps only one section open at a time. WithSize(w, h) clips the rendered output and scrolls to keep the focused header on screen.",
+  "categories": ["data", "navigation", "primitive"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-06"
+  }
+}

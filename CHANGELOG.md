@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `components/accordion` — vertical stack of titled, collapsible sections
+  with a focused-cursor model. Single-expanded by default (opening a new
+  section closes the previous), or independent via
+  `WithAllowMultiple(true)`. Up / down move focus, `Enter` toggles and
+  emits `SelectMsg{Section, Index, Expanded}`, `Space` toggles silently,
+  `Right`/`l` expands, `Left`/`h` collapses, `Home`/`End` jump to first
+  or last, `Tab`/`Shift+Tab` cycle with wrap. `WithSize(w, h)` clips both
+  axes and scrolls so the focused header stays on screen. Switching from
+  multiple to single mode keeps the focused section open if it was
+  expanded, falling back to the first expanded sibling. Empty section
+  list shows a customizable placeholder.
 - `components/json-tree-view` — interactive, collapsible tree view for
   arbitrary JSON values. A thin shell over `tree-view` that formats strings,
   numbers, booleans, null, objects, and arrays with type-aware colors and
