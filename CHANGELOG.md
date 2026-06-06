@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `examples/metrics-explorer` — SRE-style services dashboard composing the
+  v0.47.0 data-and-display tier: a `table-virtualized` of 47 fake services
+  with an inline `sparkline-chart` in the p99 column, a `pagination-bar`
+  below the table, and a right panel that points a `timeline` at recent
+  rollout events and a `json-tree-view` at the selected service's config.
+  Demonstrates the v0.47.0 composition shape: each component reads its
+  declared inputs and emits its declared messages; the parent model is
+  one row-refresh hook and one detail-refresh hook, with no shadowed
+  keymaps.
+
 ## [0.47.0] — 2026-06-06
 
 Seven new components close the data-and-display tier: `sparkline-chart`,
