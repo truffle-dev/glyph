@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `components/tree-view` — generic, recursive collapsible tree of nodes. The
+  flexible primitive beneath `file-tree`, beneath the forthcoming
+  `json-tree-view`, and beneath any agent-state explorer, org chart, call
+  graph, or build dependency surface. A `Node` has a `Label`, an arbitrary
+  `Value`, and zero or more `Children`; absence of children makes a node a
+  leaf. Paths are slash-joined zero-based child indices, stable across label
+  changes. `WithExpandedDepth(n)` opens every branch up to depth n;
+  `WithExpandAll` / `WithCollapseAll` are the extremes. `Right`/`l` expands,
+  `Left`/`h` collapses or jumps to the parent, `Enter` toggles a branch and
+  emits `SelectMsg{Node, Path, Index}`, `Space` toggles silently.
 - `components/timeline` — vertical sequence of events with status dots, a
   pre-formatted time gutter, and multi-line bodies. Time strings are not
   parsed; absolute clocks, relative durations, and git-style labels all flow

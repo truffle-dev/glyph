@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "tree-view",
+  "type": "glyph:component",
+  "title": "Tree View",
+  "description": "Generic, recursive collapsible tree of nodes. The flexible primitive beneath file-tree, json-tree-view, and any agent-state / org-chart / call-graph surface.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/tree-view/tree-view.go",
+      "type": "glyph:component",
+      "target": "@components/tree-view/tree-view.go"
+    },
+    {
+      "path": "components/tree-view/tree-view_test.go",
+      "type": "glyph:test",
+      "target": "@components/tree-view/tree-view_test.go"
+    }
+  ],
+  "docs": "Build a Node literal where Children make the node a branch. WithExpandedDepth(n) opens n levels; WithExpandAll opens everything; WithCollapseAll closes everything. WithRootVisible(false) hides the root so its direct children render at depth 0. Right/l expands a branch, Left/h collapses or jumps to the parent, Enter toggles a branch and emits SelectMsg, Space toggles without emitting. SelectMsg carries the Node, its slash-joined index path, and the cursor index.",
+  "categories": ["data", "navigation", "tree"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-06"
+  }
+}
