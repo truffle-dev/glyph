@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `components/timeline` — vertical sequence of events with status dots, a
+  pre-formatted time gutter, and multi-line bodies. Time strings are not
+  parsed; absolute clocks, relative durations, and git-style labels all flow
+  through the same gutter. Status colors the dot only. Up/Down navigates by
+  one event; PgUp/PgDn by half the visible height; Enter emits
+  `SelectMsg{Event, Index}`. Drop in for deploy history, audit logs, oncall
+  feeds, and agent-run replays.
 - `components/table-virtualized` — column-aligned table over a `RowProvider`
   (`Len() int` plus `At(i int) Row`), with `O(visible)` render cost regardless
   of source size. Caller declares column widths; sort is the caller's

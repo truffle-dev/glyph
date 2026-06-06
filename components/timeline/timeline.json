@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "timeline",
+  "type": "glyph:component",
+  "title": "Timeline",
+  "description": "Vertical sequence of events with status dots, an optional pre-formatted time gutter, and multi-line bodies. Drop in for deploy history, audit logs, oncall feeds, and agent-run replays.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/timeline/timeline.go",
+      "type": "glyph:component",
+      "target": "@components/timeline/timeline.go"
+    },
+    {
+      "path": "components/timeline/timeline_test.go",
+      "type": "glyph:test",
+      "target": "@components/timeline/timeline_test.go"
+    }
+  ],
+  "docs": "Build []Event with pre-formatted Time strings (the component does not parse times, so you can mix absolute clocks, relative durations, or git-style 'X ago' uniformly). Status colors the dot, Body lines render under the title in the gutter style, Value is the caller's payload returned in SelectMsg.",
+  "categories": ["data", "feed", "history"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-06"
+  }
+}
