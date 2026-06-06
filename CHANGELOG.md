@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `components/sparkline-chart` — single-line vertical-bar mini-chart over a
+  one-dimensional float64 series. Maps each value to one of eight unicode
+  block heights (▁▂▃▄▅▆▇█) and auto-scales the y-range from the data;
+  pin either side with `WithMin(v)` or `WithMax(v)` for a fixed scale.
+  When the series exceeds `WithWidth` the rightmost width values render
+  as a fixed-width window over recent data. `WithLatest(true)` appends
+  the most recent value after the bars, formatted via `WithLatestFormat`
+  with a units suffix from `WithLatestSuffix`. `WithLabel` adds a muted
+  prefix; `WithColor` overrides the bar tint when status colors read
+  more clearly than the theme's Primary. Pure-render value type with no
+  `Update`; redraw by constructing a new chart with the new values.
 - `components/pagination-bar` — single-line page indicator with prev/next
   chevrons, a 1-indexed `page of total` label, and an optional
   `(N items)` suffix. `Page()` is 0-indexed for code; `PageNumber()` is

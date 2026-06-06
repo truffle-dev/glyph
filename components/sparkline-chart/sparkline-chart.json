@@ -1,0 +1,32 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "sparkline-chart",
+  "type": "glyph:component",
+  "title": "Sparkline Chart",
+  "description": "Single-line vertical-bar mini-chart over a one-dimensional series. Maps each float64 value to one of eight unicode block heights (▁▂▃▄▅▆▇█), auto-scales the y-range from the data, and renders an optional label prefix and latest-value suffix.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/sparkline-chart/sparkline_chart.go",
+      "type": "glyph:component",
+      "target": "@components/sparkline-chart/sparkline_chart.go"
+    },
+    {
+      "path": "components/sparkline-chart/sparkline_chart_test.go",
+      "type": "glyph:test",
+      "target": "@components/sparkline-chart/sparkline_chart_test.go"
+    }
+  ],
+  "docs": "Construct with New(theme.Default). Feed data with WithValues([]float64{...}). The chart auto-scales the y-range from the data; pin either side with WithMin(v) or WithMax(v). When the series is longer than WithWidth the rightmost width values render so the chart reads as a fixed-width window over recent data. WithLatest(true) appends the most-recent value after the bars; format with WithLatestFormat and add units via WithLatestSuffix. WithLabel sets a muted prefix. Latest() returns the last value plus a non-empty bool. Range() returns the effective (lo, hi) used to scale values. The chart is a value type with no Update; redraw by replacing the chart and rendering View().",
+  "categories": ["data", "display", "primitive"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-06"
+  }
+}
