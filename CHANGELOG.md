@@ -17,6 +17,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   declared inputs and emits its declared messages; the parent model is
   one row-refresh hook and one detail-refresh hook, with no shadowed
   keymaps.
+- `examples/release-explorer` — interactive release browser composing
+  `list` + `tabs` + `markdown-viewer` + `status-bar` + `key-hints` +
+  `theme`. Left pane lists releases with publish-date hints; right pane
+  routes through Body (rendered markdown), Assets (formatted asset list),
+  and Meta (release metadata). Ships with a 7-release synthetic fixture
+  modeled on glyph's own history so the surfaces stay legible without a
+  network call or `gh` authentication. A smaller composition than
+  metrics-explorer: every component takes its declared inputs via
+  `With*` builders, the parent owns the layout normalizer and three
+  small panel formatters.
 
 ## [0.47.0] — 2026-06-06
 
