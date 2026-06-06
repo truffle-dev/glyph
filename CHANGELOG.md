@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-06-06
+
+Seven new components close the data-and-display tier: `sparkline-chart`,
+`pagination-bar`, `accordion`, `json-tree-view`, `tree-view`, `timeline`,
+and `table-virtualized`. The pure-render primitives (sparkline) stay
+value-typed; the keyboard-driven primitives (tree, accordion, table,
+timeline, pagination) are `tea.Model` with explicit `*Msg` types for
+selection and motion. `tree-view` and `json-tree-view` ship together so
+the generic recursive shape and the JSON specialization land in the
+same release; `table-virtualized` ships alongside the existing `table`
+so the in-memory and `O(visible)` shapes are both available without
+either being load-bearing for the other.
+
 ### Added
 
 - `components/sparkline-chart` — single-line vertical-bar mini-chart over a
