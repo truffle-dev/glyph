@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `components/table-virtualized` — column-aligned table over a `RowProvider`
+  (`Len() int` plus `At(i int) Row`), with `O(visible)` render cost regardless
+  of source size. Caller declares column widths; sort is the caller's
+  responsibility. The model handles cursor, scroll window, scroll affordance,
+  and the render of the visible band. Drop in for log explorers, query result
+  viewers, and any surface where the row count outgrows the screen by orders
+  of magnitude. Sibling to `components/table`, which keeps its finite,
+  in-memory shape with auto-fit and built-in sort.
+
 ## [0.46.0] — 2026-05-29
 
 Bracket-pair highlight. The cursor sits on or just past a `(`, `[`, or `{`

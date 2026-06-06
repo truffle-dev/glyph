@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "table-virtualized",
+  "type": "glyph:component",
+  "title": "Virtualized Table",
+  "description": "Column-aligned table over a RowProvider, with O(visible) render cost regardless of source size. Drop in for log explorers, query result viewers, or any surface where the row count outgrows the screen by orders of magnitude.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.3.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/table-virtualized/table_virtualized.go",
+      "type": "glyph:component",
+      "target": "@components/table-virtualized/table_virtualized.go"
+    },
+    {
+      "path": "components/table-virtualized/table_virtualized_test.go",
+      "type": "glyph:test",
+      "target": "@components/table-virtualized/table_virtualized_test.go"
+    }
+  ],
+  "docs": "Implement RowProvider (Len + At) over your source — slice, channel-fed buffer, sqlite cursor, mmap'd file — and pass it to WithRows. Columns require explicit Width (no auto-fit pass over the source). Sort is the caller's responsibility. The model handles cursor, scroll window, scroll affordance, and the render of the visible band.",
+  "categories": ["data", "navigation"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-06"
+  }
+}
