@@ -24,6 +24,13 @@ glyph add chat-thread
 
 That's the whole onboarding. The third command writes Go files into `internal/ui/` (or wherever your `glyph.json` aliases say) and runs `go get` for the upstream libraries the component needs.
 
+> [!NOTE]
+> `go install` writes the binary to `$(go env GOPATH)/bin`. If you get `command not found: glyph` after install, that directory isn't on your `PATH`. Add it to your shell rc:
+> ```bash
+> echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.zshrc
+> ```
+> Reload your shell and the binary resolves. The same note applies to `nook` below.
+
 ## Components
 
 Twenty-three components ship today: sixteen primitives from v0.1 and seven
