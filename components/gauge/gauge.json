@@ -1,0 +1,32 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "gauge",
+  "type": "glyph:component",
+  "title": "Gauge",
+  "description": "Read-only horizontal bar showing where a value sits inside a [min, max] range. Optional warning/critical threshold colors, leading label, units suffix, and numeric readout. Use for CPU, disk capacity, signal strength, queue depth.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/gauge/gauge.go",
+      "type": "glyph:component",
+      "target": "@components/gauge/gauge.go"
+    },
+    {
+      "path": "components/gauge/gauge_test.go",
+      "type": "glyph:test",
+      "target": "@components/gauge/gauge_test.go"
+    }
+  ],
+  "docs": "Construct with New(theme.Default).WithMin(0).WithMax(100).WithValue(v). WithWidth sets the bar width in cells. WithLabel adds a leading label, WithUnits adds a trailing suffix on the readout. WithThresholds(warnFrac, critFrac) enables tiered coloring: values below warnFrac render in success color, between warnFrac and critFrac in warning, at or above critFrac in error. Set both to 0 to use Primary instead. WithReadout(false) suppresses the trailing number. WithFillRune and WithEmptyRune override the default glyphs. Percent() returns the clamped position in [0, 1] for downstream composition; Value() returns the raw input.",
+  "categories": ["display", "chart"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-08"
+  }
+}
