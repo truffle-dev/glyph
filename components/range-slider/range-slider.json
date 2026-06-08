@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "range-slider",
+  "type": "glyph:component",
+  "title": "Range Slider",
+  "description": "Single-line horizontal slider over a numeric range. Keyboard motion with left/right/h/l, home/end/g/G, and PgUp/PgDn/J/K for 10×step jumps. Supports integer or fractional ranges, a custom formatter, a units suffix, and a disabled state.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/range-slider/range-slider.go",
+      "type": "glyph:component",
+      "target": "@components/range-slider/range-slider.go"
+    },
+    {
+      "path": "components/range-slider/range-slider_test.go",
+      "type": "glyph:test",
+      "target": "@components/range-slider/range-slider_test.go"
+    }
+  ],
+  "docs": "Construct with New().WithMin(0).WithMax(100).WithStep(1).WithValue(v). Left/h steps down, right/l steps up, home/g jumps to min, end/G jumps to max, PgUp/K and PgDn/J jump by 10×step. Motion clamps; nothing wraps. Value() returns the current numeric value. Percent() returns the position in [0, 1] for downstream rendering. WithPrecision controls displayed decimal digits; WithFormatter replaces the default formatter; WithUnits appends a unit suffix like \"%\". WithDisabled(true) ignores key input and renders muted. ValueChangedMsg fires only when the value actually changes.",
+  "categories": ["input", "primitive"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-08"
+  }
+}
