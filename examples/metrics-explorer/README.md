@@ -1,8 +1,8 @@
 # metrics-explorer
 
-An SRE-style services dashboard composed from **five v0.47.0 data-and-display
-components**: table-virtualized, sparkline-chart, pagination-bar, timeline,
-and json-tree-view.
+An SRE-style services dashboard composed from **six data-and-display
+components**: table-virtualized, sparkline-chart, gauge, pagination-bar,
+timeline, and json-tree-view.
 
 ```bash
 go run ./examples/metrics-explorer/
@@ -17,6 +17,7 @@ go run ./examples/metrics-explorer/
 | `sparkline-chart` | inline in the p99 column of each table row |
 | `pagination-bar` | below the table: page x of y, total items |
 | `timeline` | right top: recent rollout events for the selected service |
+| `gauge` | right middle: three SLO headroom bars for the selected service |
 | `json-tree-view` | right bottom: collapsible config for the selected service |
 | `key-hints` | bottom: row / page / first-last / refresh / quit |
 | `theme` | every color in the layout |
@@ -44,10 +45,17 @@ q / Ctrl-C         quit
 `refreshTableRows` rebuilds the row provider for the current page slice.
 For each visible service it renders a sparkline-chart with the service's
 status color and pushes the result into the third cell. `refreshRightPanel`
-re-points the timeline and the json-tree-view at the cursor's service —
-timeline gets the synthesized rollout sequence, jsontreeview gets a
-`map[string]any` config that includes nested limits, rollout strategy, and
-SLO.
+re-points the timeline, the three gauges, and the json-tree-view at the
+cursor's service — timeline gets the synthesized rollout sequence, the
+gauges recompute SLO headroom (p99 as a percent of the service's declared
+`slo.p99_ms`, error count out of an arbitrary 5-per-bucket budget, replicas
+of a 10-pod ceiling), and jsontreeview gets a `map[string]any` config that
+includes nested limits, rollout strategy, and SLO.
+
+The gauge primitives use `WithThresholds(0.6, 0.8)` so the bar shifts
+through theme `Success`, `Warning`, and `Error` colors as the reading
+climbs through the range — the kind of at-a-glance signal SRE dashboards
+default to without forcing the operator to read the readout.
 
 The pagination-bar's own h/l bindings would collide with the table's
 vim-style cursor, so the parent model binds `[ ]` for page navigation and

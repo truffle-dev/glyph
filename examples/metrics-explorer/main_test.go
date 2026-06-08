@@ -30,6 +30,7 @@ func TestViewRendersAllSurfaces(t *testing.T) {
 		"rows 1",
 		"page",
 		"RECENT ROLLOUTS",
+		"SLO HEADROOM",
 		"CONFIG",
 	} {
 		if !strings.Contains(out, want) {

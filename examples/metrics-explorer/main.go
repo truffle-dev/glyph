@@ -1,18 +1,19 @@
 // Command metrics-explorer is an SRE-style services dashboard composed
-// from five v0.47.0 data-and-display components: table-virtualized,
-// sparkline-chart, pagination-bar, timeline, and json-tree-view.
+// from six data-and-display components: table-virtualized,
+// sparkline-chart, gauge, pagination-bar, timeline, and json-tree-view.
 //
 // The shape is the kind of operator surface every platform team
 // eventually builds: a paginated list of services with an inline p99
 // trend per row, plus a right panel that shows the selected service's
-// recent rollout events on top and its current config below.
+// recent rollout events at the top, SLO headroom gauges in the middle,
+// and current config at the bottom.
 //
 // Layout (60-column left + 38-column right; assumes ~120-col terminal):
 //
 //	┌ status-bar (mode, total services, page) ───────────────────────┐
 //	├ table-virtualized (Name / Status / p99 / Errors)  │ timeline   │
 //	│   - 47 fake services across 3 pages of 20         │            │
-//	│   - p99 column renders a 14-cell sparkline-chart  │            │
+//	│   - p99 column renders a 14-cell sparkline-chart  ├ slo gauges │
 //	├─────────────────────────────────────────────────  │ json-tree  │
 //	├ pagination-bar (page x of y, total items)         │            │
 //	├ key-hints ─────────────────────────────────────────────────────┤
@@ -35,6 +36,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/truffle-dev/glyph/components/gauge"
 	jsontreeview "github.com/truffle-dev/glyph/components/json-tree-view"
 	keyhints "github.com/truffle-dev/glyph/components/key-hints"
 	paginationbar "github.com/truffle-dev/glyph/components/pagination-bar"
@@ -49,10 +51,12 @@ const (
 	perPage     = 20
 	totalSvcs   = 47
 	sparkWidth  = 14
+	gaugeWidth  = 22
 	leftWidth   = 60
 	rightWidth  = 38
 	tableHeight = 18
-	rightHeight = 18
+	tlHeight    = 7
+	cfgHeight   = 6
 	winSeed     = 1748102400
 )
 
@@ -84,6 +88,9 @@ type model struct {
 	bar       paginationbar.Model
 	tl        timeline.Model
 	jtv       jsontreeview.Model
+	sloP99    gauge.Gauge
+	sloErr    gauge.Gauge
+	sloRepl   gauge.Gauge
 	hints     keyhints.Bar
 	statusbar statusbar.Bar
 }
@@ -116,14 +123,32 @@ func newModel() model {
 
 	tl := timeline.New().
 		WithTheme(th).
-		WithSize(rightWidth, rightHeight/2).
+		WithSize(rightWidth, tlHeight).
 		WithHighlightCursor(false)
 
 	jtv := jsontreeview.New().
 		WithTheme(th).
-		WithSize(rightWidth, rightHeight/2).
+		WithSize(rightWidth, cfgHeight).
 		WithRootKey("config").
 		WithHighlightCursor(false)
+
+	sloP99 := gauge.New(th).
+		WithMin(0).WithMax(150).
+		WithWidth(gaugeWidth).
+		WithLabel("p99 ").
+		WithUnits("%").
+		WithThresholds(0.6, 0.8)
+
+	sloErr := gauge.New(th).
+		WithMin(0).WithMax(5).
+		WithWidth(gaugeWidth).
+		WithLabel("err ").
+		WithThresholds(0.6, 0.8)
+
+	sloRepl := gauge.New(th).
+		WithMin(0).WithMax(10).
+		WithWidth(gaugeWidth).
+		WithLabel("repl")
 
 	hints := keyhints.New(th).WithHints([]keyhints.Hint{
 		{Key: "↑/↓ j/k", Desc: "row"},
@@ -142,6 +167,9 @@ func newModel() model {
 		bar:       bar,
 		tl:        tl,
 		jtv:       jtv,
+		sloP99:    sloP99,
+		sloErr:    sloErr,
+		sloRepl:   sloRepl,
 		hints:     hints,
 		statusbar: sb,
 	}
@@ -230,6 +258,11 @@ func (m model) View() string {
 		titleLine("recent rollouts", m.th),
 		m.tl.View(),
 		"",
+		titleLine("slo headroom", m.th),
+		m.sloP99.View(),
+		m.sloErr.View(),
+		m.sloRepl.View(),
+		"",
 		titleLine("config", m.th),
 		m.jtv.View(),
 	)
@@ -314,6 +347,18 @@ func (m model) refreshRightPanel() model {
 	s := slice[idx]
 	m.tl = m.tl.WithEvents(s.events...).WithSelectedEvent(0)
 	m.jtv = m.jtv.WithValue(s.config).WithExpandedDepth(2)
+
+	p99Pct := 0.0
+	if v, ok := s.config["slo"].(map[string]any); ok {
+		if sloMs, ok := v["p99_ms"].(float64); ok && sloMs > 0 {
+			p99Pct = s.p99[len(s.p99)-1] / sloMs * 100
+		}
+	}
+	m.sloP99 = m.sloP99.WithValue(p99Pct)
+	m.sloErr = m.sloErr.WithValue(s.errors[len(s.errors)-1])
+	if replicas, ok := s.config["replicas"].(float64); ok {
+		m.sloRepl = m.sloRepl.WithValue(replicas)
+	}
 	return m
 }
 
