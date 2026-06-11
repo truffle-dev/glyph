@@ -6,8 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-06-11
+
+The value-in-a-range pair: `gauge` reads a measurement, `range-slider`
+edits one. The gauge is a stateless render of where a reading sits in
+`[min, max]` with threshold-zone color transitions; the slider owns the
+value, the bounds, the step, and the keyboard. They land together so the
+read-only and interactive shapes of the same question ship in the same
+release. Two composition examples — `metrics-explorer` and
+`release-explorer` — exercise the v0.47.0 data-and-display tier end to
+end, and the README documents the `go install` PATH step for
+non-default `GOPATH` setups.
+
 ### Added
 
+- `components/gauge` — read-only horizontal bar showing where a numeric
+  value sits inside a `[min, max]` range: CPU usage, disk capacity,
+  signal strength, queue depth. Optional threshold zones recolor the
+  fill as the reading crosses configured boundaries; `WithLabel` adds a
+  muted prefix and the numeric readout takes a units suffix. Stateless
+  with no `Update` — pair with a parent model that recomputes `Value`
+  on every tick. Differs from `progress-bar` (task progress as a 0–1
+  ratio with a single fill color) and from `range-slider`
+  (interactive): reach for gauge when the value is a measurement in a
+  range, not a percentage of completion.
+- `components/range-slider` — single-line horizontal slider over a
+  continuous numeric range with keyboard navigation. Owns the current
+  value, the `[min, max]` bounds, the step size, and the keys:
+  `left`/`h` and `right`/`l` step by one, `home`/`g` and `end`/`G` jump
+  to the bounds, `pgup`/`K` and `pgdown`/`J` step by 10×. Motion clamps
+  at both ends; each motion that changes the value emits
+  `ValueChangedMsg`. `WithPrecision` and `WithFormatter` control the
+  readout, `WithShowValue` toggles it, and `WithDisabled` freezes the
+  bar and mutes the track.
 - `examples/metrics-explorer` — SRE-style services dashboard composing the
   v0.47.0 data-and-display tier: a `table-virtualized` of 47 fake services
   with an inline `sparkline-chart` in the p99 column, a `pagination-bar`
@@ -27,6 +58,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   metrics-explorer: every component takes its declared inputs via
   `With*` builders, the parent owns the layout normalizer and three
   small panel formatters.
+
+### Changed
+
+- README — documented that `$(go env GOPATH)/bin` must be on `PATH`
+  after `go install`, not just `~/go/bin`, which differs when `GOPATH`
+  is customized.
 
 ## [0.47.0] — 2026-06-06
 
