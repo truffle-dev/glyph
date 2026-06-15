@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `components/toggle` — single-line boolean switch with keyboard
+  control: space and enter flip the state, left/h/n force off,
+  right/l/y force on. The knob sits on the right and recolors to the
+  theme Success accent when on, on the left and muted when off.
+  Optional leading label and custom on/off captions; `WithDisabled`
+  renders muted and drops keys. `ToggleChangedMsg` fires only on
+  actual changes. Completes the form-input family alongside
+  `text-input` (string), `select` (one-of-N), and `range-slider`
+  (numeric) with the missing boolean primitive.
+
 ## [0.48.0] — 2026-06-11
 
 The value-in-a-range pair: `gauge` reads a measurement, `range-slider`

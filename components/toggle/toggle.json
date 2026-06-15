@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "toggle",
+  "type": "glyph:component",
+  "title": "Toggle",
+  "description": "Single-line boolean switch with keyboard control. Space and enter flip the state, left/h/n force off, right/l/y force on. Supports a leading label, custom on/off captions, and a disabled state.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/toggle/toggle.go",
+      "type": "glyph:component",
+      "target": "@components/toggle/toggle.go"
+    },
+    {
+      "path": "components/toggle/toggle_test.go",
+      "type": "glyph:test",
+      "target": "@components/toggle/toggle_test.go"
+    }
+  ],
+  "docs": "Construct with New().WithOn(true). Space and enter flip the current state; left/h/n force off; right/l/y force on. A key that lands on the value already held emits nothing. On() returns the current state. WithLabel sets a leading label like \"Wrap: \". WithOnLabel and WithOffLabel override the trailing captions (defaults \"On\" and \"Off\"); WithShowText(false) hides them. WithDisabled(true) ignores key input and renders muted. The knob sits on the right and recolors to Success when on, on the left and muted when off. ToggleChangedMsg fires only when the value actually changes.",
+  "categories": ["input", "primitive"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-15"
+  }
+}
