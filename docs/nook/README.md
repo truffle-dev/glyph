@@ -71,6 +71,7 @@ not found on PATH" in place of streaming.
 ## Files
 
 - [`spec.md`](spec.md) — the product spec and architecture (read this first)
+- [`roadmap.md`](roadmap.md) — shipped ledger, standing constraints, and open candidates (the living status doc)
 - [`research/00-synthesis-and-spec.md`](research/00-synthesis-and-spec.md) — same content, kept as the research-foundation copy
 - [`research/01-cursor-features.md`](research/01-cursor-features.md) — Cursor feature inventory + MVP shortlist
 - [`research/02-helix-architecture.md`](research/02-helix-architecture.md) — Helix architecture deep-dive (compositor, picker, LSP, selection model)
