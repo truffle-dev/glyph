@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-06-16
+
+The status primitive. A badge is the small colored pill that marks a
+row `LIVE`, a build `PASS`, or a job `WARN`. The display family already
+had `stat-card` (a number with a trend) and `status-bar` (a full row of
+segments), but nothing for the atom in between: a single labelled chip
+that carries one piece of semantic state. `badge` fills that gap, and
+it sits next to `kbd` as the library's second stateless display
+primitive.
+
+### Added
+
+- `components/badge` — value-based stateless status pill. Six semantic
+  variants (`Neutral`, `Primary`, `Success`, `Warning`, `Error`,
+  `Info`) selected by convenience setters or `WithVariant`, each mapped
+  to the matching theme accent. `Filled` paints the accent as the
+  background, `Outline` draws a rounded border in the accent instead;
+  `Uppercase` folds the label. `Neutral` is special-cased to a quiet
+  surface chip so a default badge stays calm. An empty label renders to
+  `""`, so a conditional badge needs no call-site guard. Like `kbd`, it
+  is a package-level immutable builder, not a `tea.Model`: theme-aware,
+  no state, one `Render()` call. Sits between `stat-card` and
+  `status-bar` in the display family.
+
 ## [0.49.0] — 2026-06-16
 
 The boolean primitive that completes the form-input family. Until now
