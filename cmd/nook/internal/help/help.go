@@ -118,6 +118,7 @@ func Default() []Section {
 			{"↑ ↓", "Navigate rows"},
 			{"pgup / pgdn", "Page through entries"},
 			{"home / end", "Jump to first / last row"},
+			{"f", "Cycle severity filter (all / errors / errors+warnings)"},
 			{"enter", "Open file at the diagnostic's source"},
 			{"esc", "Close panel"},
 		}},

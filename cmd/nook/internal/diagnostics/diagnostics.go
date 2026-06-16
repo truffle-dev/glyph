@@ -52,6 +52,22 @@ func (s Severity) Mark() string {
 	return "?"
 }
 
+// FilterLabel describes the diagnostics view when this severity is used
+// as the inclusive worst-severity filter threshold. SeverityHint (the
+// unfiltered state) returns "all"; the others name the band they admit.
+func (s Severity) FilterLabel() string {
+	switch s {
+	case SeverityError:
+		return "errors only"
+	case SeverityWarning:
+		return "errors + warnings"
+	case SeverityInfo:
+		return "errors + warnings + info"
+	default:
+		return "all"
+	}
+}
+
 // Color returns the theme-token color for the severity. Falls back to
 // muted for unknown values rather than panicking.
 func (s Severity) Color(t theme.Theme) lipgloss.Color {
@@ -158,8 +174,10 @@ type CancelMsg struct{}
 type Pane struct {
 	theme   theme.Theme
 	root    string
-	entries []Entry // sorted at WithEntries time
-	cursor  int
+	entries []Entry  // full set, sorted at WithEntries time
+	shown   []Entry  // entries passing the active severity filter
+	minSev  Severity // inclusive worst-severity threshold to show; SeverityHint shows all
+	cursor  int      // index into shown
 	focused bool
 	width   int
 	height  int
@@ -169,7 +187,7 @@ type Pane struct {
 // root is used to display paths relative to the project, falling back
 // to absolute paths when no Rel is possible.
 func NewPane(t theme.Theme, root string) Pane {
-	return Pane{theme: t, root: root, width: 80, height: 20}
+	return Pane{theme: t, root: root, width: 80, height: 20, minSev: SeverityHint}
 }
 
 // WithSize sets the rendered overlay size. Width is the column count of
@@ -190,22 +208,70 @@ func (p Pane) WithSize(w, h int) Pane {
 // severity dots, and selected row. Next View() picks up the new colors.
 func (p Pane) SetTheme(t theme.Theme) Pane { p.theme = t; return p }
 
-// WithEntries replaces the entry list. The new list is sorted; the
-// cursor clamps to a valid row.
+// WithEntries replaces the entry list. The new list is sorted, the
+// active severity filter is reapplied, and the cursor clamps to a valid
+// row in the filtered view.
 func (p Pane) WithEntries(entries []Entry) Pane {
 	p.entries = Sort(entries)
+	return p.recompute()
+}
+
+// filterBySeverity returns the entries at least as severe as minSev.
+// Severity values are LSP-ordered (Error=1 is worst), so "at least as
+// severe" means Severity <= minSev. A minSev of SeverityHint (4) admits
+// every severity, i.e. no filtering. The result is a fresh slice so the
+// caller can hold a stable snapshot.
+func filterBySeverity(entries []Entry, minSev Severity) []Entry {
+	if minSev >= SeverityHint {
+		out := make([]Entry, len(entries))
+		copy(out, entries)
+		return out
+	}
+	out := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		if e.Severity <= minSev {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// recompute rebuilds the filtered view from entries+minSev and clamps the
+// cursor to a valid row in that view.
+func (p Pane) recompute() Pane {
+	p.shown = filterBySeverity(p.entries, p.minSev)
 	if p.cursor < 0 {
 		p.cursor = 0
 	}
-	if p.cursor >= len(p.entries) {
-		if len(p.entries) == 0 {
+	if p.cursor >= len(p.shown) {
+		if len(p.shown) == 0 {
 			p.cursor = 0
 		} else {
-			p.cursor = len(p.entries) - 1
+			p.cursor = len(p.shown) - 1
 		}
 	}
 	return p
 }
+
+// CycleFilter advances the severity filter: all -> errors only ->
+// errors+warnings -> all. The cursor resets to the top of the newly
+// filtered list so the first visible problem is selected.
+func (p Pane) CycleFilter() Pane {
+	switch p.minSev {
+	case SeverityHint: // all -> errors only
+		p.minSev = SeverityError
+	case SeverityError: // errors -> errors+warnings
+		p.minSev = SeverityWarning
+	default: // warnings (or any other) -> all
+		p.minSev = SeverityHint
+	}
+	p.cursor = 0
+	return p.recompute()
+}
+
+// Filter returns the active worst-severity threshold. SeverityHint means
+// no filter (all severities shown).
+func (p Pane) Filter() Severity { return p.minSev }
 
 // Focus marks the pane as accepting key input.
 func (p Pane) Focus() Pane { p.focused = true; return p }
@@ -217,22 +283,28 @@ func (p Pane) Blur() Pane { p.focused = false; return p }
 // IsFocused returns whether the pane currently consumes key input.
 func (p Pane) IsFocused() bool { return p.focused }
 
-// Count returns the number of entries.
+// Count returns the total number of entries, independent of the active
+// filter.
 func (p Pane) Count() int { return len(p.entries) }
+
+// Shown returns the number of entries passing the active severity filter.
+// Equals Count when unfiltered.
+func (p Pane) Shown() int { return len(p.shown) }
 
 // Cursor returns the current selected index for tests.
 func (p Pane) Cursor() int { return p.cursor }
 
-// Selected returns the entry under the cursor and ok=true; ok=false
-// when the entry list is empty.
+// Selected returns the entry under the cursor and ok=true; ok=false when
+// the filtered view is empty. The cursor indexes into the filtered view,
+// so Enter acts on what the user can actually see.
 func (p Pane) Selected() (Entry, bool) {
-	if len(p.entries) == 0 {
+	if len(p.shown) == 0 {
 		return Entry{}, false
 	}
-	if p.cursor < 0 || p.cursor >= len(p.entries) {
+	if p.cursor < 0 || p.cursor >= len(p.shown) {
 		return Entry{}, false
 	}
-	return p.entries[p.cursor], true
+	return p.shown[p.cursor], true
 }
 
 // Update handles key input when focused. Returns the updated pane and a
@@ -259,7 +331,7 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 		}
 		return p, nil
 	case tea.KeyDown:
-		if p.cursor < len(p.entries)-1 {
+		if p.cursor < len(p.shown)-1 {
 			p.cursor++
 		}
 		return p, nil
@@ -267,8 +339,8 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 		p.cursor = 0
 		return p, nil
 	case tea.KeyEnd:
-		if len(p.entries) > 0 {
-			p.cursor = len(p.entries) - 1
+		if len(p.shown) > 0 {
+			p.cursor = len(p.shown) - 1
 		}
 		return p, nil
 	case tea.KeyPgUp:
@@ -281,12 +353,17 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 	case tea.KeyPgDown:
 		step := p.visibleRows()
 		p.cursor += step
-		if p.cursor >= len(p.entries) {
-			if len(p.entries) > 0 {
-				p.cursor = len(p.entries) - 1
+		if p.cursor >= len(p.shown) {
+			if len(p.shown) > 0 {
+				p.cursor = len(p.shown) - 1
 			} else {
 				p.cursor = 0
 			}
+		}
+		return p, nil
+	case tea.KeyRunes:
+		if len(km.Runes) == 1 && km.Runes[0] == 'f' {
+			return p.CycleFilter(), nil
 		}
 		return p, nil
 	}
@@ -323,11 +400,16 @@ func (p Pane) body() string {
 
 	header := p.renderHeader(innerWidth)
 
-	if len(p.entries) == 0 {
+	if len(p.shown) == 0 {
+		msg := "no diagnostics in workspace."
+		if len(p.entries) > 0 {
+			// Entries exist but the active filter hides them all.
+			msg = "no diagnostics match the " + p.minSev.FilterLabel() + " filter."
+		}
 		empty := lipgloss.NewStyle().
 			Foreground(p.theme.TextMuted).
 			Italic(true).
-			Render("no diagnostics in workspace.")
+			Render(msg)
 		return header + "\n\n" + empty
 	}
 
@@ -340,8 +422,8 @@ func (p Pane) body() string {
 		start = 0
 	}
 	end := start + rows
-	if end > len(p.entries) {
-		end = len(p.entries)
+	if end > len(p.shown) {
+		end = len(p.shown)
 		start = end - rows
 		if start < 0 {
 			start = 0
@@ -357,10 +439,16 @@ func (p Pane) body() string {
 
 func (p Pane) renderHeader(width int) string {
 	errs, warns, info, hints := p.counts()
+	titleText := "workspace diagnostics"
+	if p.minSev < SeverityHint {
+		// Surface the active filter so a short list never looks like the
+		// whole picture. Trailing the count of what is hidden.
+		titleText += "  (" + p.minSev.FilterLabel() + ")"
+	}
 	title := lipgloss.NewStyle().
 		Foreground(p.theme.Primary).
 		Bold(true).
-		Render("workspace diagnostics")
+		Render(titleText)
 	summary := lipgloss.NewStyle().
 		Foreground(p.theme.TextMuted).
 		Render(fmt.Sprintf("%d errors  %d warnings  %d info  %d hints", errs, warns, info, hints))
@@ -388,7 +476,7 @@ func (p Pane) counts() (errs, warns, info, hints int) {
 }
 
 func (p Pane) renderRow(idx, width int) string {
-	e := p.entries[idx]
+	e := p.shown[idx]
 	mark := lipgloss.NewStyle().
 		Foreground(e.Severity.Color(p.theme)).
 		Bold(true).

@@ -492,3 +492,187 @@ func TestRenderRowShowsCode(t *testing.T) {
 		t.Errorf("rendered row %q does not contain the source:code tag", got)
 	}
 }
+
+func TestSeverityFilterLabel(t *testing.T) {
+	cases := map[Severity]string{
+		SeverityError:   "errors only",
+		SeverityWarning: "errors + warnings",
+		SeverityInfo:    "errors + warnings + info",
+		SeverityHint:    "all",
+		Severity(99):    "all",
+	}
+	for sev, want := range cases {
+		if got := sev.FilterLabel(); got != want {
+			t.Errorf("Severity(%d).FilterLabel() = %q, want %q", sev, got, want)
+		}
+	}
+}
+
+// mixedEntries is one of each severity plus a second error, so a filter
+// at each threshold admits a distinct, predictable count: errors-only=2,
+// errors+warnings=3, all=5.
+func mixedEntries() []Entry {
+	return []Entry{
+		{Path: "a.go", Severity: SeverityError, Message: "err-a"},
+		{Path: "b.go", Severity: SeverityError, Message: "err-b"},
+		{Path: "c.go", Severity: SeverityWarning, Message: "warn-c"},
+		{Path: "d.go", Severity: SeverityInfo, Message: "info-d"},
+		{Path: "e.go", Severity: SeverityHint, Message: "hint-e"},
+	}
+}
+
+func TestNewPaneStartsUnfiltered(t *testing.T) {
+	p := NewPane(theme.Default, "/work").WithSize(80, 20).WithEntries(mixedEntries())
+	if p.Filter() != SeverityHint {
+		t.Errorf("new pane Filter() = %v, want SeverityHint (unfiltered)", p.Filter())
+	}
+	if p.Count() != 5 {
+		t.Errorf("Count() = %d, want 5", p.Count())
+	}
+	if p.Shown() != 5 {
+		t.Errorf("Shown() = %d, want 5 (all visible when unfiltered)", p.Shown())
+	}
+}
+
+func TestCycleFilterCyclesThresholds(t *testing.T) {
+	p := NewPane(theme.Default, "/work").
+		WithSize(80, 20).
+		WithEntries(mixedEntries()).
+		Focus()
+
+	pressF := func() {
+		p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	}
+
+	pressF() // all -> errors only
+	if p.Filter() != SeverityError {
+		t.Errorf("after 1st f, Filter() = %v, want SeverityError", p.Filter())
+	}
+	if p.Shown() != 2 {
+		t.Errorf("errors-only Shown() = %d, want 2", p.Shown())
+	}
+
+	pressF() // errors -> errors+warnings
+	if p.Filter() != SeverityWarning {
+		t.Errorf("after 2nd f, Filter() = %v, want SeverityWarning", p.Filter())
+	}
+	if p.Shown() != 3 {
+		t.Errorf("errors+warnings Shown() = %d, want 3", p.Shown())
+	}
+
+	pressF() // errors+warnings -> all
+	if p.Filter() != SeverityHint {
+		t.Errorf("after 3rd f, Filter() = %v, want SeverityHint (all)", p.Filter())
+	}
+	if p.Shown() != 5 {
+		t.Errorf("all Shown() = %d, want 5", p.Shown())
+	}
+
+	// Count never changes regardless of filter.
+	if p.Count() != 5 {
+		t.Errorf("Count() drifted to %d under filtering, want 5", p.Count())
+	}
+}
+
+func TestFilterScopesSelectedToVisible(t *testing.T) {
+	p := NewPane(theme.Default, "/work").
+		WithSize(80, 20).
+		WithEntries(mixedEntries()).
+		Focus()
+
+	// Move the cursor down into the hint band first.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	if e, _ := p.Selected(); e.Severity != SeverityHint {
+		t.Fatalf("End should select the hint row, got %v", e.Severity)
+	}
+
+	// Filter to errors only: cursor resets to the top of the filtered view,
+	// and every visible row is an error.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if p.Cursor() != 0 {
+		t.Errorf("CycleFilter should reset cursor to 0, got %d", p.Cursor())
+	}
+	e, ok := p.Selected()
+	if !ok {
+		t.Fatal("Selected ok=false after filtering to errors")
+	}
+	if e.Severity != SeverityError {
+		t.Errorf("filtered Selected severity = %v, want SeverityError", e.Severity)
+	}
+
+	// Walking to the end of the filtered view must stay within the error band.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	if p.Cursor() != 1 {
+		t.Errorf("End in errors-only view: cursor = %d, want 1", p.Cursor())
+	}
+	e, _ = p.Selected()
+	if e.Severity != SeverityError {
+		t.Errorf("end-of-filtered Selected severity = %v, want SeverityError", e.Severity)
+	}
+
+	// Down past the filtered end clamps; it must not reach hidden rows.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if p.Cursor() != 1 {
+		t.Errorf("Down past filtered end should clamp at 1, got %d", p.Cursor())
+	}
+}
+
+func TestFilterIgnoredWhenBlurred(t *testing.T) {
+	p := NewPane(theme.Default, "/work").
+		WithSize(80, 20).
+		WithEntries(mixedEntries()) // not focused
+	p, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if p.Filter() != SeverityHint {
+		t.Errorf("blurred pane changed filter to %v, want SeverityHint", p.Filter())
+	}
+	if cmd != nil {
+		t.Error("blurred pane should return nil cmd for 'f'")
+	}
+}
+
+func TestViewFilteredEmptyStateMessage(t *testing.T) {
+	// Only warnings and below; filtering to errors-only hides everything.
+	p := NewPane(theme.Default, "/work").
+		WithSize(80, 20).
+		WithEntries([]Entry{
+			{Path: "a.go", Severity: SeverityWarning, Message: "warn"},
+			{Path: "b.go", Severity: SeverityInfo, Message: "info"},
+		}).
+		Focus()
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}) // errors only
+	if p.Shown() != 0 {
+		t.Fatalf("errors-only Shown() = %d, want 0", p.Shown())
+	}
+	v := p.View()
+	if !strings.Contains(v, "no diagnostics match the errors only filter") {
+		t.Errorf("filtered-empty view missing filter-aware message:\n%s", v)
+	}
+	// The blanket "no diagnostics in workspace" copy must not appear when
+	// entries exist but are filtered out.
+	if strings.Contains(v, "no diagnostics in workspace") {
+		t.Errorf("filtered-empty view wrongly shows the empty-workspace copy:\n%s", v)
+	}
+}
+
+func TestViewHeaderShowsFilterLabel(t *testing.T) {
+	p := NewPane(theme.Default, "/work").
+		WithSize(80, 20).
+		WithEntries(mixedEntries()).
+		Focus()
+	// Unfiltered: no parenthetical filter label in the title.
+	if v := p.View(); strings.Contains(v, "(errors only)") {
+		t.Errorf("unfiltered header should not carry a filter label:\n%s", v)
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}) // errors only
+	v := p.View()
+	if !strings.Contains(v, "errors only") {
+		t.Errorf("filtered header missing 'errors only' label:\n%s", v)
+	}
+	// Counts in the summary stay over the full set, not the filtered view.
+	if !strings.Contains(v, "2 errors") {
+		t.Errorf("header summary should report total counts, got:\n%s", v)
+	}
+	if !strings.Contains(v, "1 hints") {
+		t.Errorf("header summary should still report hidden hints, got:\n%s", v)
+	}
+}

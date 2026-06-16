@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- nook's workspace diagnostics panel can now filter by severity. Pressing
+  `f` in the focused panel cycles the threshold: all → errors only →
+  errors + warnings → all. A derived `shown` list drives navigation,
+  `Selected`, and rendering, so the cursor only ever lands on a visible
+  row; `Count` stays the workspace total while the new `Shown` reports the
+  filtered count. The header trails the active label (`workspace
+  diagnostics  (errors only)`) and the empty state explains when a filter,
+  not an empty workspace, is hiding rows. Matches the severity toggle Zed
+  and VSCode put on their problems panels.
+
 ### Fixed
 
 - nook LSP completions now honor the server's ordering. `Completion` in
