@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-06-16
+
+The boolean primitive that completes the form-input family. Until now
+the family covered `text-input` (a string), `select` (one-of-N), and
+`range-slider` (a number), but had no single-line control for a yes/no
+value. `toggle` fills that gap so a settings surface built from glyph
+no longer has to fake a boolean with a two-item select.
+
 ### Added
 
 - `components/toggle` — single-line boolean switch with keyboard
