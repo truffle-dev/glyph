@@ -1,0 +1,32 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "badge",
+  "type": "glyph:component",
+  "title": "Badge",
+  "description": "Compact status pill. Six semantic variants (Neutral, Primary, Success, Warning, Error, Info) in a filled or outline appearance, with optional uppercase folding. Value-based and stateless: build with chained options and call Render.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.1.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/badge/badge.go",
+      "type": "glyph:component",
+      "target": "@components/badge/badge.go"
+    },
+    {
+      "path": "components/badge/badge_test.go",
+      "type": "glyph:test",
+      "target": "@components/badge/badge_test.go"
+    }
+  ],
+  "docs": "Construct with New(\"LIVE\"). The badge is an immutable value; chain options and call Render(). Variant convenience setters read at the call site: New(\"PASS\").Success(), New(\"FAIL\").Error(), plus Primary, Warning, Info, and Neutral (the zero value). WithVariant sets it directly. Filled (default) fills the variant color and writes the label in TextInverse; Outline() draws a rounded border in the variant color with no fill. Uppercase() folds the label at render time. An empty label renders as the empty string so conditional badges need no call-site guard. Neutral renders as a quiet surface chip rather than inverse-on-accent. Label() returns the pre-folding label.",
+  "categories": ["display", "primitive"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-16"
+  }
+}
