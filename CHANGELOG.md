@@ -16,6 +16,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so the popup now lands on the most relevant candidate instead of whatever
   order the wire happened to deliver. Matches the LSP spec's client-sort
   requirement that VSCode and Zed both follow.
+- nook's workspace diagnostics panel now shows the diagnostic code, not
+  just the source. `collectDiagnosticEntries` was dropping the LSP `Code`
+  field on the floor, so a `[gopls]` row never told you *which* check
+  fired. `diagnostics.Entry` gains a `Code`, a `CodeString` helper converts
+  the spec's `int32 | string` wire value, and rows now render `[gopls:
+  SA1019]` / `[rustc: E0277]` — the provenance label degrades cleanly to
+  source-only or code-only when a server sends just one. Matches how Zed
+  and VSCode surface the code so it can be looked up or suppressed.
 
 ## [0.50.0] — 2026-06-16
 

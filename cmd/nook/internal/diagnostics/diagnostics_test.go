@@ -435,3 +435,60 @@ func TestTruncateCellsLongTruncatesWithEllipsis(t *testing.T) {
 		t.Errorf("truncated string should end with ellipsis, got %q", got)
 	}
 }
+
+// TestCodeStringHandlesWireTypes verifies the interface{} code value from the
+// LSP wire renders correctly for each shape the spec allows (string | number),
+// and collapses to "" for the omitted-code case.
+func TestCodeStringHandlesWireTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"string code", "SA1019", "SA1019"},
+		{"int code", 277, "277"},
+		{"int32 code", int32(277), "277"},
+		{"int64 code", int64(277), "277"},
+		{"json float code", float64(277), "277"},
+		{"nil code", nil, ""},
+		{"unsupported type", []string{"x"}, ""},
+	}
+	for _, c := range cases {
+		if got := CodeString(c.in); got != c.want {
+			t.Errorf("%s: CodeString(%v) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// TestSourceCodeTag verifies the provenance label degrades cleanly when either
+// the source or the code is absent, so a code-only diagnostic (rustc) and a
+// source-only diagnostic (a vet check with no code) both render, and the
+// no-provenance case produces no bracket at all.
+func TestSourceCodeTag(t *testing.T) {
+	cases := []struct {
+		source, code, want string
+	}{
+		{"gopls", "SA1019", "gopls: SA1019"},
+		{"gopls", "", "gopls"},
+		{"", "E0277", "E0277"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := sourceCodeTag(c.source, c.code); got != c.want {
+			t.Errorf("sourceCodeTag(%q,%q) = %q, want %q", c.source, c.code, got, c.want)
+		}
+	}
+}
+
+// TestRenderRowShowsCode verifies the rendered row carries the diagnostic code
+// through to the visible output, not just the source.
+func TestRenderRowShowsCode(t *testing.T) {
+	p := NewPane(theme.Default, "/work").WithSize(120, 20)
+	p = p.WithEntries([]Entry{
+		{Path: "/work/a.go", Row: 4, Col: 2, Severity: SeverityError, Source: "gopls", Code: "SA1019", Message: "deprecated"},
+	})
+	got := stripStyle(p.renderRow(0, 116))
+	if !strings.Contains(got, "gopls: SA1019") {
+		t.Errorf("rendered row %q does not contain the source:code tag", got)
+	}
+}

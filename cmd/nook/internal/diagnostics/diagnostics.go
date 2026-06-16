@@ -75,7 +75,51 @@ type Entry struct {
 	Col      int // 0-indexed
 	Severity Severity
 	Source   string // "gopls", "rust-analyzer", etc.
+	Code     string // diagnostic code, e.g. "SA1019" (staticcheck), "E0277" (rustc)
 	Message  string
+}
+
+// CodeString renders an LSP diagnostic code into a display string. The LSP
+// spec types the code as `int32 | string`, so the wire value arrives as an
+// untyped interface: a string passes through verbatim, a numeric code is
+// formatted in decimal, and anything else (including nil, the common case
+// where a server omits the code) collapses to "".
+func CodeString(code any) string {
+	switch v := code.(type) {
+	case string:
+		return v
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int32:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		// JSON numbers decode to float64 through encoding/json; render an
+		// integral value without a trailing ".0".
+		return fmt.Sprintf("%d", int64(v))
+	default:
+		return ""
+	}
+}
+
+// sourceCodeTag builds the bracketed provenance label that trails a
+// diagnostic message, e.g. "gopls: SA1019". Either field may be empty: a
+// code with no source renders as just the code, a source with no code as
+// just the source, and both empty as "" so the caller can skip the bracket
+// entirely. This keeps the staticcheck/rustc code visible the way Zed and
+// VSCode surface it, instead of dropping it on the floor.
+func sourceCodeTag(source, code string) string {
+	switch {
+	case source != "" && code != "":
+		return source + ": " + code
+	case source != "":
+		return source
+	case code != "":
+		return code
+	default:
+		return ""
+	}
 }
 
 // Sort returns the input sorted by (severity ASC, path ASC, row ASC,
@@ -354,11 +398,11 @@ func (p Pane) renderRow(idx, width int) string {
 		Foreground(p.theme.TextMuted).
 		Render(location)
 	source := ""
-	if e.Source != "" {
+	if tag := sourceCodeTag(e.Source, e.Code); tag != "" {
 		source = lipgloss.NewStyle().
 			Foreground(p.theme.TextMuted).
 			Italic(true).
-			Render(" [" + e.Source + "]")
+			Render(" [" + tag + "]")
 	}
 	msg := lipgloss.NewStyle().Foreground(p.theme.Text).Render(e.Message)
 

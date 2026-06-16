@@ -4875,6 +4875,7 @@ func (m model) collectDiagnosticEntries() []diagnostics.Entry {
 				Col:      int(d.Range.Start.Character),
 				Severity: diagnostics.Severity(d.Severity),
 				Source:   d.Source,
+				Code:     diagnostics.CodeString(d.Code),
 				Message:  strings.ReplaceAll(d.Message, "\n", " "),
 			})
 		}
