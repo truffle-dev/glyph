@@ -1434,3 +1434,60 @@ func TestCompletionKindToProtocolRoundTrip(t *testing.T) {
 		t.Errorf("CompletionKindText should map to 0 (omitempty), got %v", got)
 	}
 }
+
+// TestSortCompletionsByKeyAndPreselect verifies the spec-mandated ordering:
+// preselect wins outright, then items sort by SortText, with Label as the
+// fallback key when SortText is empty, and ties stay in input order.
+func TestSortCompletionsByKeyAndPreselect(t *testing.T) {
+	t.Parallel()
+	in := []CompletionItem{
+		{Label: "Zeta", SortText: "00003"},
+		{Label: "Alpha", SortText: "00001"},
+		{Label: "Mid", SortText: "00002"},
+		{Label: "Chosen", SortText: "00009", Preselect: true},
+	}
+	sortCompletions(in)
+	want := []string{"Chosen", "Alpha", "Mid", "Zeta"}
+	for i, w := range want {
+		if in[i].Label != w {
+			t.Errorf("position %d: want %q, got %q", i, w, in[i].Label)
+		}
+	}
+}
+
+// TestSortCompletionsLabelFallback verifies items with no SortText fall back
+// to Label ordering rather than collapsing to one bucket.
+func TestSortCompletionsLabelFallback(t *testing.T) {
+	t.Parallel()
+	in := []CompletionItem{
+		{Label: "banana"},
+		{Label: "apple"},
+		{Label: "cherry"},
+	}
+	sortCompletions(in)
+	want := []string{"apple", "banana", "cherry"}
+	for i, w := range want {
+		if in[i].Label != w {
+			t.Errorf("position %d: want %q, got %q", i, w, in[i].Label)
+		}
+	}
+}
+
+// TestSortCompletionsStableOnTie verifies items that tie on the effective key
+// keep their original server order (stable sort), which matters when a server
+// emits duplicate-keyed candidates it wants shown in its own sequence.
+func TestSortCompletionsStableOnTie(t *testing.T) {
+	t.Parallel()
+	in := []CompletionItem{
+		{Label: "first", SortText: "00001"},
+		{Label: "second", SortText: "00001"},
+		{Label: "third", SortText: "00001"},
+	}
+	sortCompletions(in)
+	want := []string{"first", "second", "third"}
+	for i, w := range want {
+		if in[i].Label != w {
+			t.Errorf("position %d: want %q, got %q", i, w, in[i].Label)
+		}
+	}
+}

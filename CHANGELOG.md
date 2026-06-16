@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- nook LSP completions now honor the server's ordering. `Completion` in
+  `cmd/nook/internal/lsp` captures each item's `SortText` and `Preselect`
+  and sorts before returning: preselect wins outright, then items order by
+  `SortText` with `Label` as the fallback key when a server omits it, and
+  ties stay stable in server order. gopls packs relevance into `SortText`,
+  so the popup now lands on the most relevant candidate instead of whatever
+  order the wire happened to deliver. Matches the LSP spec's client-sort
+  requirement that VSCode and Zed both follow.
+
 ## [0.50.0] — 2026-06-16
 
 The status primitive. A badge is the small colored pill that marks a

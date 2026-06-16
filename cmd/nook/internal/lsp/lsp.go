@@ -446,7 +446,10 @@ const (
 // LSP requires we round-trip through completionItem/resolve verbatim.
 // InsertTextFormat names whether InsertText is a literal string (1) or a
 // VSCode-format snippet template (2). Zero means the server didn't say,
-// which by spec means plain text.
+// which by spec means plain text. SortText is the opaque ordering key the
+// server wants the client to sort by (the LSP spec says fall back to Label
+// when it's empty); Preselect marks the one item the server wants the popup
+// to land on by default.
 type CompletionItem struct {
 	Label            string
 	InsertText       string
@@ -455,6 +458,8 @@ type CompletionItem struct {
 	Kind             CompletionKind
 	Data             json.RawMessage
 	InsertTextFormat int
+	SortText         string
+	Preselect        bool
 }
 
 // InsertTextFormat constants mirror the LSP enum.
@@ -606,13 +611,43 @@ func (c *Client) Completion(ctx context.Context, path string, line, col int) ([]
 			Kind:             completionKindOf(it.Kind),
 			Data:             marshalRaw(it.Data),
 			InsertTextFormat: int(it.InsertTextFormat),
+			SortText:         it.SortText,
+			Preselect:        it.Preselect,
 		}
 		if ci.InsertText == "" {
 			ci.InsertText = it.Label
 		}
 		out = append(out, ci)
 	}
+	sortCompletions(out)
 	return out, nil
+}
+
+// sortCompletions orders completion items the way the LSP spec asks clients
+// to: by the server's opaque SortText key, falling back to Label when a given
+// item has no SortText. gopls leans on this heavily — it packs relevance into
+// SortText (e.g. "00000" for an exact prefix match, higher digits for weaker
+// candidates) while every Label stays human-readable, so raw server order is
+// already correct but only because gopls happens to emit items pre-sorted.
+// Other servers don't promise that, and resolve/refresh paths can reorder, so
+// we sort explicitly. Preselect wins outright: a server that flags one item as
+// the default choice means the popup should land there regardless of key. The
+// sort is stable so items that tie on key keep server order.
+func sortCompletions(items []CompletionItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.Preselect != b.Preselect {
+			return a.Preselect
+		}
+		ka, kb := a.SortText, b.SortText
+		if ka == "" {
+			ka = a.Label
+		}
+		if kb == "" {
+			kb = b.Label
+		}
+		return ka < kb
+	})
 }
 
 // ResolveCompletion sends completionItem/resolve for one item and returns the
