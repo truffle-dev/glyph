@@ -226,6 +226,16 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 		p.cursor = len(p.rows) - 1
 		p = p.skipSeparators(-1)
 		return p, nil
+	case tea.KeyRunes:
+		if len(km.Runes) == 1 {
+			switch km.Runes[0] {
+			case ']':
+				return p.jumpFragment(+1), nil
+			case '[':
+				return p.jumpFragment(-1), nil
+			}
+		}
+		return p, nil
 	}
 	return p, nil
 }
@@ -250,6 +260,27 @@ func (p Pane) moveBy(n int) Pane {
 			break
 		}
 		p.cursor = nx
+	}
+	return p
+}
+
+// jumpFragment moves the cursor to the nearest fragment header in the
+// given direction (+1 forward, -1 backward). From the middle of a section
+// the upward jump lands on that section's own header and the downward jump
+// lands on the next section's header — the same asymmetry vim's [[ and ]]
+// use, so a single key walks file-to-file through the multibuffer instead
+// of line-by-line. If no header exists in that direction the cursor stays.
+func (p Pane) jumpFragment(dir int) Pane {
+	if len(p.rows) == 0 {
+		return p
+	}
+	nx := p.cursor + dir
+	for nx >= 0 && nx < len(p.rows) {
+		if p.rows[nx].kind == rowHeader {
+			p.cursor = nx
+			return p
+		}
+		nx += dir
 	}
 	return p
 }

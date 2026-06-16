@@ -750,3 +750,120 @@ func TestLoadDiff_ContextCanceled(t *testing.T) {
 		t.Errorf("got %T, want FragmentsMsg", msg)
 	}
 }
+
+// threeFragmentPane builds a pane with three two-line fragments. The
+// resulting rows are: header(0) content(1) content(2) sep(3) header(4)
+// content(5) content(6) sep(7) header(8) content(9) content(10), so the
+// fragment headers sit at rows 0, 4, and 8.
+func threeFragmentPane(t *testing.T) Pane {
+	t.Helper()
+	frags := []Fragment{
+		{Path: "a.go", StartLine: 1, EndLine: 2, Lines: []Line{
+			{Marker: Context, FileLine: 1, Text: "a1"},
+			{Marker: Added, FileLine: 2, Text: "a2"},
+		}},
+		{Path: "b.go", StartLine: 10, EndLine: 11, Lines: []Line{
+			{Marker: Context, FileLine: 10, Text: "b1"},
+			{Marker: Added, FileLine: 11, Text: "b2"},
+		}},
+		{Path: "c.go", StartLine: 20, EndLine: 21, Lines: []Line{
+			{Marker: Context, FileLine: 20, Text: "c1"},
+			{Marker: Added, FileLine: 21, Text: "c2"},
+		}},
+	}
+	p := NewPane(theme.Default, "/repo").WithSize(80, 20).SetFragments(frags, nil)
+	if p.rows[0].kind != rowHeader || p.rows[4].kind != rowHeader || p.rows[8].kind != rowHeader {
+		t.Fatalf("precondition: headers expected at 0/4/8, got kinds %v/%v/%v",
+			p.rows[0].kind, p.rows[4].kind, p.rows[8].kind)
+	}
+	return p
+}
+
+func TestPane_JumpFragmentForwardWalksHeaders(t *testing.T) {
+	t.Parallel()
+	p := threeFragmentPane(t) // cursor at header 0
+	p = p.jumpFragment(+1)
+	if p.cursor != 4 {
+		t.Fatalf("first ]: cursor = %d, want 4", p.cursor)
+	}
+	p = p.jumpFragment(+1)
+	if p.cursor != 8 {
+		t.Fatalf("second ]: cursor = %d, want 8", p.cursor)
+	}
+	// No header past the last one: cursor stays.
+	p = p.jumpFragment(+1)
+	if p.cursor != 8 {
+		t.Errorf("] past last header should stay at 8, got %d", p.cursor)
+	}
+}
+
+func TestPane_JumpFragmentBackwardWalksHeaders(t *testing.T) {
+	t.Parallel()
+	p := threeFragmentPane(t)
+	p.cursor = 8 // last header
+	p = p.jumpFragment(-1)
+	if p.cursor != 4 {
+		t.Fatalf("first [: cursor = %d, want 4", p.cursor)
+	}
+	p = p.jumpFragment(-1)
+	if p.cursor != 0 {
+		t.Fatalf("second [: cursor = %d, want 0", p.cursor)
+	}
+	// No header before the first: cursor stays.
+	p = p.jumpFragment(-1)
+	if p.cursor != 0 {
+		t.Errorf("[ before first header should stay at 0, got %d", p.cursor)
+	}
+}
+
+func TestPane_JumpFragmentFromContentRow(t *testing.T) {
+	t.Parallel()
+	p := threeFragmentPane(t)
+	// From a content row inside frag 1 (row 5), forward jumps to the next
+	// section header (8), backward jumps to this section's own header (4) —
+	// the [[ / ]] asymmetry.
+	p.cursor = 5
+	if got := p.jumpFragment(+1).cursor; got != 8 {
+		t.Errorf("] from content row 5: cursor = %d, want 8", got)
+	}
+	if got := p.jumpFragment(-1).cursor; got != 4 {
+		t.Errorf("[ from content row 5: cursor = %d, want 4 (current section head)", got)
+	}
+}
+
+func TestPane_UpdateBracketKeysJumpFragments(t *testing.T) {
+	t.Parallel()
+	p := threeFragmentPane(t).Focus()
+	p, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if p.cursor != 4 {
+		t.Errorf("] key: cursor = %d, want 4", p.cursor)
+	}
+	if cmd != nil {
+		t.Error("] key should not emit a cmd")
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	if p.cursor != 0 {
+		t.Errorf("[ key: cursor = %d, want 0", p.cursor)
+	}
+}
+
+func TestPane_UpdateUnknownRuneIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := threeFragmentPane(t).Focus()
+	start := p.cursor
+	p, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if p.cursor != start {
+		t.Errorf("unknown rune moved cursor to %d, want %d", p.cursor, start)
+	}
+	if cmd != nil {
+		t.Error("unknown rune should not emit a cmd")
+	}
+}
+
+func TestPane_JumpFragmentEmptyIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := NewPane(theme.Default, "/repo")
+	if got := p.jumpFragment(+1).cursor; got != 0 {
+		t.Errorf("jumpFragment on empty pane moved cursor to %d, want 0", got)
+	}
+}

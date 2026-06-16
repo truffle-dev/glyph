@@ -17,6 +17,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   diagnostics  (errors only)`) and the empty state explains when a filter,
   not an empty workspace, is hiding rows. Matches the severity toggle Zed
   and VSCode put on their problems panels.
+- nook's multibuffer can now jump file-to-file. `]` moves the cursor to
+  the next fragment header and `[` to the previous one, so reviewing a
+  large diff no longer means holding the arrow key through every line of
+  one file to reach the next. From the middle of a section the upward jump
+  lands on that section's own header and the downward jump on the next
+  section's, the same `[[` / `]]` asymmetry vim uses. Matches Zed's
+  excerpt-to-excerpt navigation in its multibuffer.
 
 ### Fixed
 

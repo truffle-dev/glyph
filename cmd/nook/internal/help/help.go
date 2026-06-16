@@ -108,6 +108,7 @@ func Default() []Section {
 		{Name: "Multibuffer", Bindings: []Binding{
 			{"alt+m", "Open uncommitted changes as one scrollable surface"},
 			{"↑ ↓", "Navigate rows (separators auto-skipped)"},
+			{"[ ]", "Jump to previous / next file section"},
 			{"pgup / pgdn", "Page through fragments"},
 			{"home / end", "Jump to first / last row"},
 			{"enter", "Open file at the row's line"},
