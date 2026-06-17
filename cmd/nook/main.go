@@ -114,6 +114,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tabbar"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tasks"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/term"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/themepicker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/welcome"
 )
 
@@ -138,6 +139,7 @@ const (
 	overlayOutline
 	overlayCreate
 	overlaySettings
+	overlayThemePicker
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -346,6 +348,11 @@ type model struct {
 	// every pane in m. v0.38.0 dropped the "restart to apply" hint that
 	// preceded live-reskin support.
 	themeName string
+	// themePicker is the live theme switcher overlay (alt+T). themePickerOrig
+	// remembers the theme active when it opened, so esc restores it after the
+	// cursor-move live previews. Session-only: the disk config is untouched.
+	themePicker     themepicker.Picker
+	themePickerOrig string
 	// tabWidth is the editor's hard-tab expansion. Sourced from config at
 	// startup and reload; forwarded to bufman and lookup.FormattingCmd.
 	tabWidth int
@@ -1946,6 +1953,39 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Theme picker swallows navigation: ↑/k and ↓/j move the highlight and
+	// preview that theme live across every pane; enter keeps it for the
+	// session; esc (or a second alt+T) restores the theme that was active
+	// when the picker opened. The choice never touches config.toml on disk.
+	if m.overlay == overlayThemePicker {
+		preview := func() (model, tea.Cmd) {
+			if t, ok := resolveTheme(m.themePicker.Selected()); ok {
+				m = m.applyTheme(t)
+			}
+			return m, nil
+		}
+		switch {
+		case km.Type == tea.KeyUp || (km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == 'k'):
+			m.themePicker = m.themePicker.Up()
+			return preview()
+		case km.Type == tea.KeyDown || (km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == 'j'):
+			m.themePicker = m.themePicker.Down()
+			return preview()
+		case km.Type == tea.KeyEnter:
+			m.themeName = m.themePicker.Selected()
+			m.overlay = overlayNone
+			m.status = fmt.Sprintf("theme: %s (session only)", m.themeName)
+			return m, nil
+		case km.Type == tea.KeyEsc, km.Alt && km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == 'T':
+			if t, ok := resolveTheme(m.themePickerOrig); ok {
+				m = m.applyTheme(t)
+			}
+			m.overlay = overlayNone
+			return m, nil
+		}
+		return m, nil
+	}
+
 	// Hover overlay also swallows its own keys: any keypress dismisses
 	// (matches the modeless tooltip pattern in mainstream editors —
 	// click/move/type away and the popup goes). Esc is reserved as the
@@ -2356,6 +2396,17 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// result in force. The two keys sit next to each other so the
 			// pairing reads off the keyboard.
 			m.overlay = overlaySettings
+			return m, nil
+		case 'T':
+			// Alt+shift+T opens the live theme switcher — the discoverable
+			// counterpart to editing `theme` in config.toml and pressing
+			// alt+, to reload. Lowercase alt+t is the task runner, so the
+			// theme picker takes the shifted key (mirrors alt+k / alt+K).
+			// Cursor moves preview each theme live; enter keeps it for the
+			// session, esc restores the theme active when the picker opened.
+			m.themePicker = themepicker.New(theme.Names(), m.themeName)
+			m.themePickerOrig = m.themeName
+			m.overlay = overlayThemePicker
 			return m, nil
 		case 'j':
 			// Alt+j expands a VSCode-format snippet whose prefix the user has
@@ -4273,6 +4324,11 @@ func (m model) View() string {
 	}
 	if m.overlay == overlaySettings {
 		card := settings.View(t, m.width, m.cfg, m.cfgPath, m.prjCfgPath, m.cfgUserExists, m.cfgProjectExists)
+		float := centerOverlay(m.width, m.height-1, card)
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlayThemePicker {
+		card := themepicker.View(t, m.width, m.themePicker)
 		float := centerOverlay(m.width, m.height-1, card)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}

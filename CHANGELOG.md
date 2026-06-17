@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- nook now has a live theme switcher. `alt+shift+T` opens a list of every
+  built-in theme; moving the cursor previews each one live across every
+  pane, `enter` keeps the highlighted theme for the session, and `esc`
+  restores whatever was active when the picker opened. It's the
+  discoverable counterpart to editing `theme` in config.toml and pressing
+  `alt+,` to reload: no need to leave the editor or know the exact theme
+  name. The choice is session-only (config on disk is read-only and stays
+  untouched), and the card says so. Mirrors Zed's `theme selector`
+  (cmd-k cmd-t).
 - nook's workspace diagnostics panel can now filter by severity. Pressing
   `f` in the focused panel cycles the threshold: all → errors only →
   errors + warnings → all. A derived `shown` list drives navigation,
