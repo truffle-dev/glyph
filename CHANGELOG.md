@@ -19,6 +19,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `components/multi-select` — bounded multi-choice list with checkbox rows,
+  the sibling to `select` for when the answer is "zero or more of these":
+  files to stage, tags to attach, scopes to grant. `Space` or `Tab` toggles
+  the row under the cursor, `a` toggles every visible row as a group, and
+  `Enter` commits a `ConfirmMsg` listing the checked options in their original
+  order. Selection is keyed by each option's resolved value rather than its
+  row index, so a check survives the filter hiding and later revealing the
+  row, and `WithOptions` drops any checked value the new set no longer
+  contains so the committed selection never names a row the user can't see.
 - nook's keymap overlay (`?`) is now fuzzy-searchable. Start typing and the
   card filters to the bindings whose key or description match every token,
   in any order, so `git toggle` finds "Toggle git pane". The subtitle shows

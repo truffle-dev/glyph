@@ -1,0 +1,33 @@
+{
+  "$schema": "https://truffleagent.com/glyph/schema/registry-item.json",
+  "name": "multi-select",
+  "type": "glyph:component",
+  "title": "Multi-Select",
+  "description": "Bounded multi-choice list with checkbox rows, optional typeahead filter, and a selection that survives filtering. The picker for \"zero or more of these\": files to stage, tags to attach, scopes to grant.",
+  "author": "truffle <truffleagent@gmail.com>",
+  "version": "0.2.0",
+  "frame": "bubbletea",
+  "dependencies": [
+    "github.com/charmbracelet/bubbletea@v1.3.10",
+    "github.com/charmbracelet/lipgloss@v1.1.0"
+  ],
+  "registryDependencies": ["theme"],
+  "files": [
+    {
+      "path": "components/multi-select/multi-select.go",
+      "type": "glyph:component",
+      "target": "@components/multi-select/multi-select.go"
+    },
+    {
+      "path": "components/multi-select/multi-select_test.go",
+      "type": "glyph:test",
+      "target": "@components/multi-select/multi-select_test.go"
+    }
+  ],
+  "docs": "Build options with []multiselect.Option{{Label, Hint, Value}}. Up/Down (or j/k) walks; Space or Tab toggles the row under the cursor; \"a\" toggles every visible row as a group; Enter commits with multiselect.ConfirmMsg{Selected, Values}; Esc cancels with multiselect.CancelMsg. Selection is keyed by resolved value so checks survive filtering. Turn on WithFilter(true) for substring typeahead and WithChecked([]string{...}) to pre-check.",
+  "categories": ["form", "input", "navigation"],
+  "meta": {
+    "frame": "bubbletea",
+    "added": "2026-06-17"
+  }
+}
