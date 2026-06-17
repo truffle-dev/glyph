@@ -192,10 +192,55 @@ func Default() []Section {
 	}
 }
 
-// View renders the help card. Width is the available column count from the
-// host (the card clamps to ~74 columns so the inner ladder lines up nicely
-// regardless of terminal width).
+// Filter narrows a keymap to the bindings matching query. Matching is
+// case-insensitive and token-AND: the query is split on whitespace and a
+// binding is kept only if every token is a substring of its "key desc"
+// haystack, so "git toggle" finds "Toggle git pane" regardless of word
+// order. An empty (or whitespace-only) query returns the keymap unchanged.
+// Sections with no surviving bindings are dropped so the card shows only
+// groups that still have content.
+func Filter(sections []Section, query string) []Section {
+	tokens := strings.Fields(strings.ToLower(query))
+	if len(tokens) == 0 {
+		return sections
+	}
+	var out []Section
+	for _, sec := range sections {
+		var kept []Binding
+		for _, b := range sec.Bindings {
+			hay := strings.ToLower(b.Key + " " + b.Desc)
+			match := true
+			for _, tok := range tokens {
+				if !strings.Contains(hay, tok) {
+					match = false
+					break
+				}
+			}
+			if match {
+				kept = append(kept, b)
+			}
+		}
+		if len(kept) > 0 {
+			out = append(out, Section{Name: sec.Name, Bindings: kept})
+		}
+	}
+	return out
+}
+
+// View renders the full help card with no active search. It is the
+// query-less case of ViewQuery and exists so callers that never filter
+// stay simple.
 func View(t theme.Theme, width int) string {
+	return ViewQuery(t, width, "")
+}
+
+// ViewQuery renders the help card filtered by query. When query is empty
+// the card is identical to View: the canonical keymap under the standard
+// dismiss hint. When query is non-empty the subtitle becomes a live search
+// line (the query, the match count, and how esc behaves) and only matching
+// bindings are shown, so typing turns an 80-line wall into the two or three
+// rows the user was hunting for.
+func ViewQuery(t theme.Theme, width int, query string) string {
 	inner := 74
 	if width < inner+4 {
 		inner = width - 4
@@ -208,10 +253,10 @@ func View(t theme.Theme, width int) string {
 		Foreground(t.Primary).
 		Bold(true).
 		Render("nook keymap")
-	subtitle := lipgloss.NewStyle().
+
+	subtitleStyle := lipgloss.NewStyle().
 		Foreground(t.TextMuted).
-		Italic(true).
-		Render("press ? or esc to dismiss")
+		Italic(true)
 
 	sectionStyle := lipgloss.NewStyle().
 		Foreground(t.TextMuted).
@@ -222,12 +267,34 @@ func View(t theme.Theme, width int) string {
 	descStyle := lipgloss.NewStyle().
 		Foreground(t.Text)
 
+	trimmed := strings.TrimSpace(query)
+	filtered := Filter(Default(), query)
+
+	var subtitle string
+	if trimmed == "" {
+		subtitle = subtitleStyle.Render("type to search  ·  press ? or esc to dismiss")
+	} else {
+		n := 0
+		for _, sec := range filtered {
+			n += len(sec.Bindings)
+		}
+		plural := "matches"
+		if n == 1 {
+			plural = "match"
+		}
+		subtitle = subtitleStyle.Render(fmt.Sprintf("search: %s  ·  %d %s  ·  esc clears", query, n, plural))
+	}
+
 	var body []string
 	body = append(body, title)
 	body = append(body, subtitle)
 	body = append(body, "")
 
-	for i, sec := range Default() {
+	if trimmed != "" && len(filtered) == 0 {
+		body = append(body, descStyle.Render(fmt.Sprintf("no binding matches %q", trimmed)))
+	}
+
+	for i, sec := range filtered {
 		if i > 0 {
 			body = append(body, "")
 		}

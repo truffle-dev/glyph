@@ -19,6 +19,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- nook's keymap overlay (`?`) is now fuzzy-searchable. Start typing and the
+  card filters to the bindings whose key or description match every token,
+  in any order, so `git toggle` finds "Toggle git pane". The subtitle shows
+  the live query and a match count; `esc` is two-stage (first clears the
+  query, then closes), backspace edits, and `?` closes from any state. The
+  overlay holds ~80 bindings across 20 contextual sections, so a finder
+  turns "scroll and hunt" into "type three letters", the same discovery
+  surface Zed's command palette gives without pretending these contextual
+  keys are a dispatchable command registry.
 - nook's multibuffer now has change-to-change navigation. `}` jumps the
   cursor to the next inserted line and `{` to the previous one, skipping
   the surrounding context. A run of adjacent changed lines counts as one

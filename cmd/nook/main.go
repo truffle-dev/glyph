@@ -162,6 +162,11 @@ type model struct {
 	files   []string // walked once at startup; used as picker corpus
 	overlay overlay
 
+	// helpQuery is the live search string typed into the help overlay
+	// (overlayHelp). Empty means the full keymap is shown; non-empty filters
+	// the card to matching bindings. Reset to "" each time help opens.
+	helpQuery string
+
 	bufs     *bufman.Manager
 	gitPane  git.Pane
 	termPane term.Pane
@@ -1927,12 +1932,40 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// else ignored so an accidental ctrl+f doesn't open search underneath
 	// the help card.
 	if m.overlay == overlayHelp {
+		// esc is two-stage: clear an active search first, then close. This
+		// matches the find bars, so a user who typed a query can back out of
+		// it without losing the overlay.
 		if km.Type == tea.KeyEsc {
+			if m.helpQuery != "" {
+				m.helpQuery = ""
+				return m, nil
+			}
 			m.overlay = overlayNone
 			return m, nil
 		}
+		// ? always closes, even mid-search. It is the toggle key and not a
+		// useful search character, so it stays the fast way out.
 		if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '?' {
 			m.overlay = overlayNone
+			m.helpQuery = ""
+			return m, nil
+		}
+		// Backspace edits the query.
+		if km.Type == tea.KeyBackspace {
+			if r := []rune(m.helpQuery); len(r) > 0 {
+				m.helpQuery = string(r[:len(r)-1])
+			}
+			return m, nil
+		}
+		// Space and printable runes build the query; everything else
+		// (arrows, ctrl-combos) is swallowed so it can't act on the
+		// workspace underneath the card.
+		if km.Type == tea.KeySpace {
+			m.helpQuery += " "
+			return m, nil
+		}
+		if km.Type == tea.KeyRunes && !km.Alt {
+			m.helpQuery += string(km.Runes)
 			return m, nil
 		}
 		return m, nil
@@ -2453,6 +2486,7 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// typing a question mark into their source file and that wins.
 	if km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '?' && m.activePath() == "" {
 		m.overlay = overlayHelp
+		m.helpQuery = ""
 		return m, nil
 	}
 
@@ -4319,7 +4353,7 @@ func (m model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}
 	if m.overlay == overlayHelp {
-		float := centerOverlay(m.width, m.height-1, help.View(t, m.width))
+		float := centerOverlay(m.width, m.height-1, help.ViewQuery(t, m.width, m.helpQuery))
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}
 	if m.overlay == overlaySettings {
