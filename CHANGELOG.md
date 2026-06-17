@@ -19,6 +19,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- nook's multibuffer now has change-to-change navigation. `}` jumps the
+  cursor to the next inserted line and `{` to the previous one, skipping
+  the surrounding context. A run of adjacent changed lines counts as one
+  edit, so the key steps between distinct edits rather than down each line
+  of one block. This complements the existing `]`/`[` motion, which walks
+  header-to-header (file to file); together they give the same two-axis
+  review movement Zed's multibuffer offers, so scanning a large diff no
+  longer means arrowing through every context line.
 - nook's completion popup now ranks items the way the language server
   intends. Each LSP completion item carries an opaque `sortText` key, and
   the spec requires clients to order the menu by it (falling back to the

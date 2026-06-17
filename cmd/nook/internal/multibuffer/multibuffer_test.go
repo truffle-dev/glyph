@@ -867,3 +867,106 @@ func TestPane_JumpFragmentEmptyIsNoOp(t *testing.T) {
 		t.Errorf("jumpFragment on empty pane moved cursor to %d, want 0", got)
 	}
 }
+
+// changeBlockPane builds a single-fragment pane whose rows are, by index:
+//
+//	0 header
+//	1 context (a1)
+//	2 added   (a2)  ─ first edit, a two-line block
+//	3 added   (a3)  ─┘
+//	4 context (a4)
+//	5 added   (a5)  ─ second, distinct edit
+//
+// so jumpChange has both a contiguous changed run and a context gap to
+// step across.
+func changeBlockPane(t *testing.T) Pane {
+	t.Helper()
+	frags := []Fragment{{Path: "a.go", StartLine: 1, EndLine: 5, Lines: []Line{
+		{Marker: Context, FileLine: 1, Text: "a1"},
+		{Marker: Added, FileLine: 2, Text: "a2"},
+		{Marker: Added, FileLine: 3, Text: "a3"},
+		{Marker: Context, FileLine: 4, Text: "a4"},
+		{Marker: Added, FileLine: 5, Text: "a5"},
+	}}}
+	p := NewPane(theme.Default, "/repo").WithSize(80, 20).SetFragments(frags, nil)
+	if p.rows[0].kind != rowHeader {
+		t.Fatalf("precondition: header expected at row 0, got %v", p.rows[0].kind)
+	}
+	if !p.isChangeRow(2) || !p.isChangeRow(3) || !p.isChangeRow(5) {
+		t.Fatalf("precondition: rows 2/3/5 should be change rows")
+	}
+	if p.isChangeRow(1) || p.isChangeRow(4) {
+		t.Fatalf("precondition: rows 1/4 should be context rows")
+	}
+	return p
+}
+
+func TestPane_JumpChangeForwardStepsBetweenEdits(t *testing.T) {
+	t.Parallel()
+	p := changeBlockPane(t) // cursor at header 0
+	p = p.jumpChange(+1)
+	if p.cursor != 2 {
+		t.Fatalf("first }: cursor = %d, want 2 (first added line)", p.cursor)
+	}
+	// From inside the two-line block, the next } clears the whole block
+	// and lands on the next distinct edit, not row 3.
+	p = p.jumpChange(+1)
+	if p.cursor != 5 {
+		t.Fatalf("second }: cursor = %d, want 5 (next distinct edit)", p.cursor)
+	}
+	// No change past the last: cursor stays.
+	p = p.jumpChange(+1)
+	if p.cursor != 5 {
+		t.Errorf("} past last change should stay at 5, got %d", p.cursor)
+	}
+}
+
+func TestPane_JumpChangeBackwardStepsBetweenEdits(t *testing.T) {
+	t.Parallel()
+	p := changeBlockPane(t)
+	p.cursor = 5
+	p = p.jumpChange(-1)
+	if p.cursor != 3 {
+		t.Fatalf("first {: cursor = %d, want 3 (edge of prior block)", p.cursor)
+	}
+	// No change before this block: cursor stays.
+	p = p.jumpChange(-1)
+	if p.cursor != 3 {
+		t.Errorf("{ before first change should stay at 3, got %d", p.cursor)
+	}
+}
+
+func TestPane_JumpChangeNeverLandsOnContext(t *testing.T) {
+	t.Parallel()
+	p := changeBlockPane(t)
+	for i := 0; i < 6; i++ {
+		p = p.jumpChange(+1)
+		if p.isChangeRow(p.cursor) == false {
+			t.Fatalf("jumpChange landed on non-change row %d", p.cursor)
+		}
+	}
+}
+
+func TestPane_UpdateBraceKeysJumpChange(t *testing.T) {
+	t.Parallel()
+	p := changeBlockPane(t).Focus()
+	p, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'}'}})
+	if p.cursor != 2 {
+		t.Errorf("} key: cursor = %d, want 2", p.cursor)
+	}
+	if cmd != nil {
+		t.Error("} key should not emit a cmd")
+	}
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'{'}})
+	if p.cursor != 2 {
+		t.Errorf("{ key from row 2 (only block above is its own): cursor = %d, want 2", p.cursor)
+	}
+}
+
+func TestPane_JumpChangeEmptyIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := NewPane(theme.Default, "/repo")
+	if got := p.jumpChange(+1).cursor; got != 0 {
+		t.Errorf("jumpChange on empty pane moved cursor to %d, want 0", got)
+	}
+}

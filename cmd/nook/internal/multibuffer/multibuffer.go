@@ -233,6 +233,10 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 				return p.jumpFragment(+1), nil
 			case '[':
 				return p.jumpFragment(-1), nil
+			case '}':
+				return p.jumpChange(+1), nil
+			case '{':
+				return p.jumpChange(-1), nil
 			}
 		}
 		return p, nil
@@ -283,6 +287,52 @@ func (p Pane) jumpFragment(dir int) Pane {
 		nx += dir
 	}
 	return p
+}
+
+// jumpChange moves the cursor to the next changed line in the given
+// direction (+1 forward, -1 backward) — the next content row whose marker
+// is not Context. Where jumpFragment walks header-to-header (file to file),
+// jumpChange walks change-to-change, so a single key lands on the next
+// inserted line and skips the surrounding context, the way Zed's "next
+// change" motion does. A run of adjacent changed lines is one stride: from
+// inside a block the jump clears past the block before landing, so the key
+// steps between distinct edits rather than down each line of one edit. If
+// no further change exists in that direction the cursor stays.
+func (p Pane) jumpChange(dir int) Pane {
+	if len(p.rows) == 0 {
+		return p
+	}
+	nx := p.cursor + dir
+	// First clear any contiguous changed run the cursor sits in, so we
+	// land on the *next* edit rather than the next line of the current one.
+	for nx >= 0 && nx < len(p.rows) && p.isChangeRow(nx) {
+		nx += dir
+	}
+	for nx >= 0 && nx < len(p.rows) {
+		if p.isChangeRow(nx) {
+			p.cursor = nx
+			return p
+		}
+		nx += dir
+	}
+	return p
+}
+
+// isChangeRow reports whether row i is a content row carrying a non-Context
+// marker (an inserted or modified line).
+func (p Pane) isChangeRow(i int) bool {
+	if i < 0 || i >= len(p.rows) {
+		return false
+	}
+	r := p.rows[i]
+	if r.kind != rowContent || r.fragIdx < 0 || r.fragIdx >= len(p.fragments) {
+		return false
+	}
+	f := p.fragments[r.fragIdx]
+	if r.lineIdx < 0 || r.lineIdx >= len(f.Lines) {
+		return false
+	}
+	return f.Lines[r.lineIdx].Marker != Context
 }
 
 // skipSeparators nudges the cursor in the given direction if it currently
