@@ -12,6 +12,7 @@ package complete
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -46,14 +47,41 @@ func New() Popup { return Popup{} }
 // the host trimmed off the cursor row to filter them. Selection resets
 // to the first item. prefixLen is informational for the host's accept
 // path; the popup itself doesn't use it for rendering.
+//
+// Items are ordered by each one's LSP SortText before display. The LSP
+// spec says a client must sort completion items by SortText, falling
+// back to Label when an item omits it; gopls (and most servers) lean on
+// this to surface the best match first. The wire order a server returns
+// is not the display order it intends, so sorting here is what makes the
+// popup match what Zed and VSCode show. The sort is stable, so items
+// that tie on both keys keep their server order.
 func (p Popup) WithItems(items []nooklsp.CompletionItem, prefixLen int) Popup {
 	if prefixLen < 0 {
 		prefixLen = 0
 	}
-	p.items = items
+	ordered := make([]nooklsp.CompletionItem, len(items))
+	copy(ordered, items)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		ki, kj := sortKey(ordered[i]), sortKey(ordered[j])
+		if ki != kj {
+			return ki < kj
+		}
+		return ordered[i].Label < ordered[j].Label
+	})
+	p.items = ordered
 	p.selected = 0
 	p.prefixLen = prefixLen
 	return p
+}
+
+// sortKey is the primary ordering key for an item: its SortText when the
+// server supplied one, otherwise its Label. This mirrors the LSP spec's
+// fallback rule so a server that omits SortText still ranks sensibly.
+func sortKey(it nooklsp.CompletionItem) string {
+	if it.SortText != "" {
+		return it.SortText
+	}
+	return it.Label
 }
 
 // Empty reports whether the popup has nothing to show.

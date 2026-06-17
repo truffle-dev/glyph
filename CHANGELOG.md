@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- nook's completion popup now ranks items the way the language server
+  intends. Each LSP completion item carries an opaque `sortText` key, and
+  the spec requires clients to order the menu by it (falling back to the
+  label when a server omits it); gopls leans on this to float the best
+  match to the top. nook had been showing items in raw wire order, so the
+  popup's first row was arbitrary. `WithItems` now stably sorts by
+  `sortText` with a label tiebreak before display, on a copy so the host's
+  slice is untouched. Brings the popup's ordering in line with Zed and
+  VSCode.
 - nook now has a live theme switcher. `alt+shift+T` opens a list of every
   built-in theme; moving the cursor previews each one live across every
   pane, `enter` keeps the highlighted theme for the session, and `esc`

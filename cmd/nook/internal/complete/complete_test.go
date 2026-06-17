@@ -91,6 +91,84 @@ func TestPrefixLenStored(t *testing.T) {
 	}
 }
 
+// TestWithItemsSortsBySortText confirms WithItems reorders items by the
+// server's SortText so the best match lands first regardless of the wire
+// order. gopls returns items ranked via opaque SortText keys ("00", "01",
+// ...) that don't match label order; the popup must honor them.
+func TestWithItemsSortsBySortText(t *testing.T) {
+	t.Parallel()
+	// Wire order is deliberately scrambled vs the server's intended rank.
+	items := []nooklsp.CompletionItem{
+		{Label: "Zeta", SortText: "02"},
+		{Label: "Alpha", SortText: "00"},
+		{Label: "Mu", SortText: "01"},
+	}
+	p := New().WithItems(items, 0)
+	want := []string{"Alpha", "Mu", "Zeta"}
+	for i, w := range want {
+		if p.items[i].Label != w {
+			t.Fatalf("sorted item %d = %q, want %q (full=%v)", i, p.items[i].Label, w, labels(p.items))
+		}
+	}
+	if got, _ := p.Selected(); got.Label != "Alpha" {
+		t.Errorf("Selected after sort = %q, want Alpha", got.Label)
+	}
+}
+
+// TestWithItemsFallsBackToLabel confirms an item missing SortText ranks
+// by its Label, matching the LSP fallback rule.
+func TestWithItemsFallsBackToLabel(t *testing.T) {
+	t.Parallel()
+	items := []nooklsp.CompletionItem{
+		{Label: "banana"},
+		{Label: "apple"},
+		{Label: "cherry"},
+	}
+	p := New().WithItems(items, 0)
+	want := []string{"apple", "banana", "cherry"}
+	for i, w := range want {
+		if p.items[i].Label != w {
+			t.Fatalf("label-fallback item %d = %q, want %q (full=%v)", i, p.items[i].Label, w, labels(p.items))
+		}
+	}
+}
+
+// TestWithItemsTieBreaksByLabel confirms two items sharing a SortText
+// key are ordered by Label, so ties are deterministic.
+func TestWithItemsTieBreaksByLabel(t *testing.T) {
+	t.Parallel()
+	items := []nooklsp.CompletionItem{
+		{Label: " Zed", SortText: "10"},
+		{Label: "Acme", SortText: "10"},
+	}
+	p := New().WithItems(items, 0)
+	if p.items[0].Label != " Zed" {
+		t.Fatalf("tie-break first = %q, want %q", p.items[0].Label, " Zed")
+	}
+}
+
+// TestWithItemsDoesNotMutateCaller confirms sorting works on a copy so
+// the host's slice keeps its original order.
+func TestWithItemsDoesNotMutateCaller(t *testing.T) {
+	t.Parallel()
+	items := []nooklsp.CompletionItem{
+		{Label: "Zeta", SortText: "02"},
+		{Label: "Alpha", SortText: "00"},
+	}
+	New().WithItems(items, 0)
+	if items[0].Label != "Zeta" {
+		t.Errorf("caller slice was mutated: items[0] = %q, want Zeta", items[0].Label)
+	}
+}
+
+func labels(items []nooklsp.CompletionItem) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.Label
+	}
+	return out
+}
+
 // TestViewContainsAllItemLabels confirms each item's label survives
 // through the rendered popup at a reasonable width.
 func TestViewContainsAllItemLabels(t *testing.T) {
