@@ -24,6 +24,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lands on that section's own header and the downward jump on the next
   section's, the same `[[` / `]]` asymmetry vim uses. Matches Zed's
   excerpt-to-excerpt navigation in its multibuffer.
+- nook can now show its effective settings. `alt+.` opens a read-only
+  overlay listing every editor setting in force (theme, tab width,
+  format-on-save, line numbers, indent guides, inlay hints, soft wrap)
+  with a footer naming the two config scopes and whether a file is loaded
+  at each. Config loading, per-project inheritance, and live reload all
+  shipped already; this answers the question they left open — "what did
+  the merge actually produce?" — the way `git config --list` and Zed's
+  settings view do. The key is the companion of `alt+,` (reload): comma
+  re-reads the file, period shows the result. Dismiss with `esc` or a
+  second `alt+.`.
 
 ### Fixed
 

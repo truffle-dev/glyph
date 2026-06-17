@@ -182,6 +182,7 @@ func Default() []Section {
 		{Name: "Settings", Bindings: []Binding{
 			{"alt+z", "Toggle soft wrap (wrap long lines onto multiple visual rows)"},
 			{"alt+,", "Reload ~/.config/nook/config.toml"},
+			{"alt+.", "View effective settings (read-only merged config)"},
 		}},
 		{Name: "Global", Bindings: []Binding{
 			{"?", "Toggle this help"},

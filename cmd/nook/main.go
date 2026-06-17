@@ -107,6 +107,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/picker"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/rename"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/search"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/settings"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/signature"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/symbolsearch"
@@ -136,6 +137,7 @@ const (
 	overlaySymbolSearch
 	overlayOutline
 	overlayCreate
+	overlaySettings
 )
 
 // rightPane is which of git/term/diff/composer occupies the lower-right slot.
@@ -328,6 +330,17 @@ type model struct {
 	// prjCfgFinger is the most recent fingerprint of prjCfgPath. Tracked
 	// alongside cfgFinger so each tick re-arms with the right finger.
 	prjCfgFinger configwatch.Fingerprint
+	// cfg is the effective merged configuration the host last applied
+	// (user global overlaid with the per-project file). Kept on the model
+	// so the read-only settings overlay (alt+.) can render exactly the
+	// values in force without re-reading or re-merging. Refreshed on every
+	// reloadConfig.
+	cfg config.Config
+	// cfgUserExists / cfgProjectExists record whether a file was actually
+	// present at each scope when cfg was assembled. The settings overlay
+	// shows them so a user can tell which scopes are live.
+	cfgUserExists    bool
+	cfgProjectExists bool
 	// themeName is the name of the currently-applied theme. Live-reload
 	// detects a change against this stored name and propagates SetTheme to
 	// every pane in m. v0.38.0 dropped the "restart to apply" hint that
@@ -549,11 +562,14 @@ func newModel(root string, opens ...string) model {
 	// config.toml is opt-in); a parse error surfaces the same way a user
 	// parse error does. v0.42.0.
 	prjLoadErr := error(nil)
+	prjExists := false
 	if pc, md, err := config.LoadRaw(prjCfgPath); err == nil {
 		cfg = config.Merge(cfg, pc, md)
+		prjExists = true
 	} else if !errors.Is(err, config.ErrNotFound) {
 		prjLoadErr = err
 	}
+	userExists := cfgPath != "" && !loadMissing && loadErr == nil
 
 	t, themeOK := resolveTheme(cfg.Editor.Theme)
 	aiClient, _ := ai.NewClient() // tolerated nil; AI panes surface their own error
@@ -582,54 +598,57 @@ func newModel(root string, opens ...string) model {
 	}
 
 	m := model{
-		theme:          t,
-		root:           root,
-		width:          80,
-		height:         24,
-		bufs:           bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers).WithIndentGuides(cfg.Editor.IndentGuides).WithSoftWrap(cfg.Editor.SoftWrap),
-		gitPane:        git.NewPane(t, root),
-		termPane:       term.NewPane(t, root),
-		picker:         picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
-		search:         search.NewPane(t, root),
-		editPane:       edit.NewPane(t, aiClient).WithRules(rulesText),
-		composer:       composer.NewPane(t, aiClient).WithHistory(aiHistory).WithRules(rulesText),
-		ghost:          ghostMgr,
-		right:          rightNone,
-		status:         status,
-		aiClient:       aiClient,
-		aiHistory:      aiHistory,
-		rulesSource:    rulesSrc,
-		rulesText:      rulesText,
-		lspVersions:    map[string]int32{},
-		diagnostics:    map[string][]protocol.Diagnostic{},
-		finder:         finder.New(t),
-		formatOnSave:   cfg.Editor.FormatOnSave,
-		treePane:       filetree.New(t, root),
-		showTree:       false,
-		caPopup:        codeaction.New(),
-		renamePrompt:   rename.New(),
-		createPrompt:   createprompt.New(),
-		symbolPrompt:   symbolsearch.New(),
-		outlinePane:    outline.New(t),
-		outlineCache:   map[string][]nooklsp.DocSymbol{},
-		outlineLoading: map[string]bool{},
-		multibufPane:   multibuffer.NewPane(t, root),
-		diagPane:       diagnostics.NewPane(t, root),
-		mdPane:         mdpreview.NewPane(t),
-		inlayHintsOn:   cfg.Editor.InlayHints,
-		softWrapOn:     cfg.Editor.SoftWrap,
-		cfgPath:        cfgPath,
-		cfgFinger:      configwatch.Snapshot(cfgPath),
-		prjCfgPath:     prjCfgPath,
-		prjCfgFinger:   configwatch.Snapshot(prjCfgPath),
-		themeName:      cfg.Editor.Theme,
-		tabWidth:       cfg.Editor.TabWidth,
-		snipLib:        snipLib,
-		tasksPane:      tasks.NewPane(t, root),
-		sigPane:        signature.New(),
-		docPane:        completedoc.New(),
-		bpStore:        breakpoints.New(),
-		navHistory:     navhistory.New(0),
+		theme:            t,
+		root:             root,
+		width:            80,
+		height:           24,
+		bufs:             bufman.New(t).WithHighlighter(highlight.New()).WithTabWidth(cfg.Editor.TabWidth).WithLineNumbers(cfg.Editor.LineNumbers).WithIndentGuides(cfg.Editor.IndentGuides).WithSoftWrap(cfg.Editor.SoftWrap),
+		gitPane:          git.NewPane(t, root),
+		termPane:         term.NewPane(t, root),
+		picker:           picker.New(t).WithTitle("Open file").WithPlaceholder("type to filter…"),
+		search:           search.NewPane(t, root),
+		editPane:         edit.NewPane(t, aiClient).WithRules(rulesText),
+		composer:         composer.NewPane(t, aiClient).WithHistory(aiHistory).WithRules(rulesText),
+		ghost:            ghostMgr,
+		right:            rightNone,
+		status:           status,
+		aiClient:         aiClient,
+		aiHistory:        aiHistory,
+		rulesSource:      rulesSrc,
+		rulesText:        rulesText,
+		lspVersions:      map[string]int32{},
+		diagnostics:      map[string][]protocol.Diagnostic{},
+		finder:           finder.New(t),
+		formatOnSave:     cfg.Editor.FormatOnSave,
+		treePane:         filetree.New(t, root),
+		showTree:         false,
+		caPopup:          codeaction.New(),
+		renamePrompt:     rename.New(),
+		createPrompt:     createprompt.New(),
+		symbolPrompt:     symbolsearch.New(),
+		outlinePane:      outline.New(t),
+		outlineCache:     map[string][]nooklsp.DocSymbol{},
+		outlineLoading:   map[string]bool{},
+		multibufPane:     multibuffer.NewPane(t, root),
+		diagPane:         diagnostics.NewPane(t, root),
+		mdPane:           mdpreview.NewPane(t),
+		inlayHintsOn:     cfg.Editor.InlayHints,
+		softWrapOn:       cfg.Editor.SoftWrap,
+		cfgPath:          cfgPath,
+		cfgFinger:        configwatch.Snapshot(cfgPath),
+		prjCfgPath:       prjCfgPath,
+		prjCfgFinger:     configwatch.Snapshot(prjCfgPath),
+		cfg:              cfg,
+		cfgUserExists:    userExists,
+		cfgProjectExists: prjExists,
+		themeName:        cfg.Editor.Theme,
+		tabWidth:         cfg.Editor.TabWidth,
+		snipLib:          snipLib,
+		tasksPane:        tasks.NewPane(t, root),
+		sigPane:          signature.New(),
+		docPane:          completedoc.New(),
+		bpStore:          breakpoints.New(),
+		navHistory:       navhistory.New(0),
 	}
 
 	// Pre-open any files the user passed on the CLI. After OpenOrSwitch
@@ -678,6 +697,9 @@ func (m model) reloadConfig() model {
 		return m
 	}
 	prevTheme := m.themeName
+	m.cfg = cfg
+	m.cfgUserExists = userExists
+	m.cfgProjectExists = projectExists
 	m.formatOnSave = cfg.Editor.FormatOnSave
 	m.inlayHintsOn = cfg.Editor.InlayHints
 	m.tabWidth = cfg.Editor.TabWidth
@@ -1909,6 +1931,21 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Settings overlay swallows its own keys the same way help does: esc or
+	// a second alt+. dismiss, everything else is ignored so a stray keystroke
+	// doesn't act on the editor underneath the read-only card.
+	if m.overlay == overlaySettings {
+		if km.Type == tea.KeyEsc {
+			m.overlay = overlayNone
+			return m, nil
+		}
+		if km.Alt && km.Type == tea.KeyRunes && len(km.Runes) == 1 && km.Runes[0] == '.' {
+			m.overlay = overlayNone
+			return m, nil
+		}
+		return m, nil
+	}
+
 	// Hover overlay also swallows its own keys: any keypress dismisses
 	// (matches the modeless tooltip pattern in mainstream editors —
 	// click/move/type away and the popup goes). Esc is reserved as the
@@ -2312,6 +2349,13 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.inlayHintsOn {
 				return m, m.refreshInlayHintsCmd()
 			}
+			return m, nil
+		case '.':
+			// Alt+. opens the read-only settings overlay — the companion to
+			// alt+, (reload). Comma reloads the file, period shows the merged
+			// result in force. The two keys sit next to each other so the
+			// pairing reads off the keyboard.
+			m.overlay = overlaySettings
 			return m, nil
 		case 'j':
 			// Alt+j expands a VSCode-format snippet whose prefix the user has
@@ -4225,6 +4269,11 @@ func (m model) View() string {
 	}
 	if m.overlay == overlayHelp {
 		float := centerOverlay(m.width, m.height-1, help.View(t, m.width))
+		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
+	}
+	if m.overlay == overlaySettings {
+		card := settings.View(t, m.width, m.cfg, m.cfgPath, m.prjCfgPath, m.cfgUserExists, m.cfgProjectExists)
+		float := centerOverlay(m.width, m.height-1, card)
 		return lipgloss.JoinVertical(lipgloss.Left, float, statusBar)
 	}
 	if m.overlay == overlayHover {
