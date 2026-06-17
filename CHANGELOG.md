@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- nook's diagnostics panel now collapses multi-line messages to a single
+  row. rustc appends `note:` and `help:` clauses on their own lines and
+  gopls multi-part errors wrap, so a raw message could carry a newline;
+  rendered as-is it split one logical row across two terminal lines and
+  corrupted the bordered card and the per-entry windowing. The list row
+  now flattens whitespace runs (including newlines) to single spaces, so
+  the message reads as one continuous line the way Zed and VSCode show it.
+  The full multi-line text stays on the entry for the jump target.
+
 ### Added
 
 - nook's completion popup now ranks items the way the language server

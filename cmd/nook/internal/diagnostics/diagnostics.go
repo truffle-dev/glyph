@@ -492,7 +492,7 @@ func (p Pane) renderRow(idx, width int) string {
 			Italic(true).
 			Render(" [" + tag + "]")
 	}
-	msg := lipgloss.NewStyle().Foreground(p.theme.Text).Render(e.Message)
+	msg := lipgloss.NewStyle().Foreground(p.theme.Text).Render(flattenMessage(e.Message))
 
 	prefix := mark + " " + loc + source + "  "
 	usedCells := lipgloss.Width(prefix)
@@ -523,6 +523,20 @@ func (p Pane) formatLocation(e Entry) string {
 	}
 	display = filepath.ToSlash(display)
 	return fmt.Sprintf("%s:%d:%d", display, e.Row+1, e.Col+1)
+}
+
+// flattenMessage collapses a diagnostic message to a single display
+// line. LSP messages routinely carry newlines: rustc appends `note:`
+// and `help:` clauses on their own lines, and gopls multi-part errors
+// wrap. Rendered raw, an embedded newline would split one logical row
+// across two terminal lines, corrupting the bordered card and the
+// windowing math that assumes one row per entry. Every run of
+// whitespace (including the newline) collapses to a single space, and
+// the result is trimmed, so the row reads as a continuous sentence the
+// way Zed and VSCode show it in their problems list. The full
+// multi-line text is preserved on the Entry for the host's jump target.
+func flattenMessage(msg string) string {
+	return strings.Join(strings.Fields(msg), " ")
 }
 
 // truncateCells truncates a styled string to at most n display cells.

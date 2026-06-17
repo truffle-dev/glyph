@@ -383,6 +383,56 @@ func TestViewIncludesEntryFields(t *testing.T) {
 	}
 }
 
+func TestFlattenMessageCollapsesNewlines(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"simple message", "simple message"},
+		{"expected `;`\nnote: this is a note", "expected `;` note: this is a note"},
+		{"line one\r\nline two", "line one line two"},
+		{"trailing\n", "trailing"},
+		{"\n  leading", "leading"},
+		{"tabs\tand   spaces", "tabs and spaces"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := flattenMessage(c.in); got != c.want {
+			t.Errorf("flattenMessage(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestViewFlattensMultilineMessage confirms a diagnostic whose message
+// carries a newline renders on a single row: the second clause appears,
+// and no body line past the header window is introduced by the message
+// itself. A raw newline here would split the row and break the card.
+func TestViewFlattensMultilineMessage(t *testing.T) {
+	p := NewPane(theme.Default, "/work").
+		WithSize(120, 20).
+		WithEntries([]Entry{
+			{
+				Path:     "/work/lib.rs",
+				Row:      9,
+				Col:      4,
+				Severity: SeverityError,
+				Source:   "rustc",
+				Code:     "E0277",
+				Message:  "the trait bound is not satisfied\nnote: required by a bound\nhelp: consider adding",
+			},
+		})
+	v := p.View()
+	// The flattened message must appear as one continuous run.
+	if !strings.Contains(v, "the trait bound is not satisfied note: required by a bound help: consider adding") {
+		t.Errorf("view did not flatten the multi-line message:\n%s", v)
+	}
+	// Defensively, the rendered message must not reintroduce a bare
+	// newline from the source message.
+	if strings.Contains(v, "satisfied\nnote") {
+		t.Errorf("view left an embedded newline in the message:\n%s", v)
+	}
+}
+
 func TestFormatLocationRelativeWithinRoot(t *testing.T) {
 	p := NewPane(theme.Default, "/work")
 	got := p.formatLocation(Entry{Path: "/work/sub/file.go", Row: 0, Col: 0})
