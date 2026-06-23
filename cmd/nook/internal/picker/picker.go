@@ -14,9 +14,11 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -329,8 +331,8 @@ func Score(target, query string) int {
 	if query == "" {
 		return 1
 	}
-	tl := strings.ToLower(target)
-	ql := strings.ToLower(query)
+	tl := normalize(strings.ToLower(target))
+	ql := normalize(strings.ToLower(query))
 	tr := []rune(tl)
 	qr := []rune(ql)
 
@@ -373,6 +375,27 @@ func isBoundary(r rune) bool {
 		return true
 	}
 	return unicode.IsUpper(r)
+}
+
+// normalize folds a string to NFC so that filenames stored decomposed (NFD,
+// the form macOS keeps on disk) match queries typed precomposed (NFC, what
+// most input methods emit). Without this, the rune walk in Score compares
+// "é" (U+00E9) against "e"+U+0301 and never matches. Pure-ASCII strings are
+// already canonical, so the common path skips the work and allocates nothing.
+func normalize(s string) string {
+	if isASCII(s) {
+		return s
+	}
+	return norm.NFC.String(s)
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // --- helpers ---

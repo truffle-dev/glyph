@@ -243,3 +243,43 @@ func TestSpaceIsAcceptedInFilter(t *testing.T) {
 		t.Fatalf("expected 'h w', got %q", p.Filter())
 	}
 }
+
+// "café" written two ways: NFC has the precomposed é (U+00E9); NFD has a
+// bare e (U+0065) followed by a combining acute (U+0301). They render
+// identically and name the same file, but a rune-by-rune match treats them
+// as different sequences. macOS stores filenames in NFD, while most input
+// methods emit NFC, so the file on disk and the query you type routinely
+// disagree on form.
+const (
+	cafeNFC = "caf\u00e9"          // café, precomposed
+	cafeNFD = "cafe\u0301"         // café, decomposed
+	resNFD  = "re\u0301sume\u0301" // résumé, decomposed
+)
+
+func TestNFDTargetMatchesNFCQuery(t *testing.T) {
+	// File on disk is NFD (macOS), the typed query is NFC.
+	if s := Score(cafeNFD, cafeNFC); s == 0 {
+		t.Fatalf("NFD filename %q should match NFC query %q, scored 0", cafeNFD, cafeNFC)
+	}
+}
+
+func TestNFCTargetMatchesNFDQuery(t *testing.T) {
+	// The reverse: NFC filename, NFD query (paste from an NFD source).
+	if s := Score(cafeNFC, cafeNFD); s == 0 {
+		t.Fatalf("NFC filename %q should match NFD query %q, scored 0", cafeNFC, cafeNFD)
+	}
+}
+
+func TestNFDSubsequenceMatchesNFCPrefix(t *testing.T) {
+	// Typing a precomposed prefix should still match an NFD filename.
+	if s := Score(resNFD, "r\u00e9s"); s == 0 {
+		t.Fatalf("NFD filename %q should match NFC prefix %q, scored 0", resNFD, "r\u00e9s")
+	}
+}
+
+func TestUnrelatedQueryStillMissesAfterNormalization(t *testing.T) {
+	// Normalization must not turn a genuine non-match into a match.
+	if s := Score(cafeNFD, "xyz"); s != 0 {
+		t.Fatalf("unrelated query should still miss, got %d", s)
+	}
+}

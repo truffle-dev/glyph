@@ -3,6 +3,7 @@ module github.com/truffle-dev/glyph
 go 1.26.2
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/alecthomas/chroma/v2 v2.24.1
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -14,10 +15,10 @@ require (
 	go.lsp.dev/protocol v0.12.0
 	go.lsp.dev/uri v0.3.0
 	go.uber.org/zap v1.28.0
+	golang.org/x/text v0.27.0
 )
 
 require (
-	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
 	github.com/charmbracelet/x/ansi v0.10.1 // indirect
@@ -39,5 +40,4 @@ require (
 	go.lsp.dev/pkg v0.0.0-20210717090340-384b27a52fb2 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
-	golang.org/x/text v0.27.0 // indirect
 )
