@@ -1,6 +1,7 @@
 package filetree
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,28 @@ func makeFixture(t *testing.T) string {
 	mk("vendor/v.go", false)
 	mk("dist/out.js", false)
 	mk("target/release/bin", false)
+	return root
+}
+
+// makeWideFixture lays out nDirs directories (each with a "sub" child)
+// holding nFiles files apiece, so a recursive BuildTree walk has a cost
+// that clearly dwarfs constant-time construction. Used by the startup
+// guard to compare New() against an actual walk on the same tree.
+func makeWideFixture(t *testing.T, nDirs, nFiles int) string {
+	t.Helper()
+	root := t.TempDir()
+	for d := 0; d < nDirs; d++ {
+		dir := filepath.Join(root, fmt.Sprintf("pkg%03d", d), "sub")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		for f := 0; f < nFiles; f++ {
+			p := filepath.Join(dir, fmt.Sprintf("f%03d.go", f))
+			if err := os.WriteFile(p, []byte("package x\n"), 0o644); err != nil {
+				t.Fatalf("write %s: %v", p, err)
+			}
+		}
+	}
 	return root
 }
 
@@ -253,25 +276,55 @@ func TestPane_ViewEmptyWhenTooSmall(t *testing.T) {
 	}
 }
 
-// TestPane_StartupIsConstantTime asserts that New() returns in well
-// under the cost of a recursive file-system walk. This is the
-// load-bearing property the whole refactor exists to enforce: the
-// first paint must never block on the tree walk. Budget is generous
-// (10ms) to avoid false positives on shared-CI machines.
+// TestPane_StartupIsConstantTime asserts that New() does not walk the
+// file system. This is the load-bearing property the whole refactor
+// exists to enforce: the first paint must never block on the tree walk.
+//
+// An absolute millisecond budget is too weak a guard — a synchronous
+// walk of a small tree still finishes under it, so the guard would
+// silently pass the exact regression it exists to catch. Instead we
+// compare New() against the cost of an actual BuildTree walk on the same
+// large fixture: constant-time construction must be an order of
+// magnitude cheaper than the walk. If New() ever starts walking, newCost
+// approaches walkCost, the ratio collapses, and this test goes red on
+// any machine regardless of absolute speed.
 func TestPane_StartupIsConstantTime(t *testing.T) {
+	// Small-fixture behaviour: New must not report Built and must render
+	// the Scanning… placeholder before SetNode lands.
 	root := makeFixture(t)
-	t0 := timeNow()
 	p := New(theme.Default, root)
 	p.SetSize(40, 20)
-	dt := timeSince(t0)
-	if dt > 10_000_000 { // 10ms
-		t.Errorf("New + SetSize took %dns; expected <10ms (it must not walk the FS)", dt)
-	}
 	if p.Built() {
 		t.Error("pane is reporting Built() before SetNode landed")
 	}
 	if !strings.Contains(stripANSI(p.View()), "Scanning") {
 		t.Error("pre-built pane should render a Scanning… placeholder")
+	}
+
+	// Relative guard on a tree big enough that the walk dominates timing
+	// noise (~2,400 files).
+	big := makeWideFixture(t, 120, 20)
+	_ = BuildTree(big) // warm the dentry/page cache so walkCost is steady-state
+	tw := timeNow()
+	walk := BuildTree(big)
+	walkCost := timeSince(tw)
+	if len(walk.Children) < 100 {
+		t.Fatalf("fixture too small to time a walk: %d top-level entries", len(walk.Children))
+	}
+	// Best-of-N strips scheduler/GC outliers from the construction timing.
+	var newCost int64 = 1 << 62
+	for i := 0; i < 5; i++ {
+		tn := timeNow()
+		q := New(theme.Default, big)
+		q.SetSize(40, 20)
+		if c := timeSince(tn); c < newCost {
+			newCost = c
+		}
+	}
+	if newCost*10 >= walkCost {
+		t.Errorf("New() took %dns vs a %dns BuildTree walk on the same tree; "+
+			"construction is not <<1/10th the walk, so startup appears to walk the FS",
+			newCost, walkCost)
 	}
 }
 
