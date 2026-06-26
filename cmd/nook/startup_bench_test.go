@@ -34,37 +34,11 @@ func makeStartupFixture(t *testing.T, nDirs, nFiles int) string {
 	return root
 }
 
-// TestStartupNotGatedOnTreeWalk asserts the load-bearing property of the
-// async filetree refactor: newModel() + Init() must complete in well under
-// a recursive walk of the same tree. Pre-refactor a dotfile-edit launch
-// (root=$HOME) took ~1.1s because filetree.New synchronously walked every
-// file in $HOME before returning; post-refactor the walk runs in a
-// goroutine emitting BuildTreeMsg later, so the first frame renders
-// immediately.
-//
-// The guard is relative, not an absolute millisecond budget. An absolute
-// budget against $HOME silently weakens to a no-op on a host with a small
-// home directory: a reintroduced sync walk of a near-empty $HOME finishes
-// under the budget and the regression passes. Here the same controlled
-// tree is walked to obtain a real baseline, and construction must be at
-// least 10x faster than that walk — a property that holds with wide margin
-// for constant-time construction and collapses the moment sync FS work
-// leaks back into the startup path.
-func TestStartupNotGatedOnTreeWalk(t *testing.T) {
-	root := makeStartupFixture(t, 120, 20) // ~2,400 files
-
-	// Real recursive walk cost of the same tree, the baseline the startup
-	// path must beat. Warm the cache first so walkCost is steady-state.
-	_ = filetree.BuildTree(root)
-	tw := time.Now()
-	walk := filetree.BuildTree(root)
-	walkCost := time.Since(tw)
-	if len(walk.Children) < 100 {
-		t.Fatalf("fixture too small to time a walk: %d top-level entries", len(walk.Children))
-	}
-
-	// Best-of-N strips scheduler/GC outliers from the construction timing.
-	var startCost time.Duration = 1 << 62
+// bestNewModelCost times newModel(root)+Init() best-of-N, so scheduler
+// and GC outliers are stripped from the construction timing.
+func bestNewModelCost(t *testing.T, root string) time.Duration {
+	t.Helper()
+	best := time.Duration(1 << 62)
 	for i := 0; i < 5; i++ {
 		t0 := time.Now()
 		m := newModel(root)
@@ -72,20 +46,62 @@ func TestStartupNotGatedOnTreeWalk(t *testing.T) {
 		if cmd == nil {
 			t.Fatal("Init returned no cmd")
 		}
-		if c := time.Since(t0); c < startCost {
-			startCost = c
+		if c := time.Since(t0); c < best {
+			best = c
 		}
 	}
-	if startCost*10 >= walkCost {
-		t.Errorf("newModel+Init took %s vs a %s BuildTree walk on the same tree; "+
-			"startup is not <<1/10th the walk, so sync FS work leaked into newModel",
-			startCost, walkCost)
+	return best
+}
+
+// TestStartupNotGatedOnTreeWalk asserts the load-bearing property of the
+// async filetree refactor: newModel() + Init() must not walk the project
+// tree. Pre-refactor a dotfile-edit launch (root=$HOME) took ~1.1s because
+// filetree.New synchronously walked every file in $HOME before returning;
+// post-refactor the walk runs in a goroutine emitting BuildTreeMsg later,
+// so the first frame renders immediately.
+//
+// The guard isolates tree-size scaling rather than timing against an
+// absolute budget. newModel has a fixed cost of its own (config path
+// resolution + load) that is several milliseconds on a slow filesystem and
+// has nothing to do with the project tree, so neither an absolute budget
+// nor a ratio against a single walk is reliable across machines. Instead
+// construct on a large tree and a tiny tree: both pay the same fixed
+// baseline, so the difference between them is the part of newModel that
+// scales with tree size. Constant-time construction makes that difference
+// noise; a reintroduced sync walk makes it approach the walk cost. The
+// difference must stay well under a real walk of the large tree.
+func TestStartupNotGatedOnTreeWalk(t *testing.T) {
+	big := makeStartupFixture(t, 120, 20) // ~2,400 files
+	small := makeStartupFixture(t, 1, 2)  // a handful of files
+
+	// Real recursive walk cost of the large tree, the scale a leaked walk
+	// would add to construction. Warm the cache so walkCost is steady-state.
+	_ = filetree.BuildTree(big)
+	tw := time.Now()
+	walk := filetree.BuildTree(big)
+	walkCost := time.Since(tw)
+	if len(walk.Children) < 100 {
+		t.Fatalf("fixture too small to time a walk: %d top-level entries", len(walk.Children))
 	}
-	t.Logf("newModel+Init %s vs walk %s", startCost, walkCost)
+
+	bigCost := bestNewModelCost(t, big)
+	smallCost := bestNewModelCost(t, small)
+	scaleWithTree := bigCost - smallCost
+
+	// A leaked walk adds ~walkCost to the large-tree construction; honest
+	// constant-time construction leaves only timing noise. Half the walk is
+	// a wide margin between the two.
+	if scaleWithTree*2 >= walkCost {
+		t.Errorf("newModel grew %s going from a tiny tree (%s) to a ~2,400-file tree (%s) "+
+			"against a %s walk of that tree; construction scales with tree size, "+
+			"so sync FS work leaked into newModel", scaleWithTree, smallCost, bigCost, walkCost)
+	}
+	t.Logf("newModel tree-size delta %s (small %s, big %s) vs walk %s",
+		scaleWithTree, smallCost, bigCost, walkCost)
 
 	// The async walk must still land as Built() once BuildTreeMsg arrives.
-	m := newModel(root)
-	msg := filetree.BuildTreeMsg{Root: root, Node: filetree.BuildTree(root)}
+	m := newModel(big)
+	msg := filetree.BuildTreeMsg{Root: big, Node: filetree.BuildTree(big)}
 	updated, _ := m.Update(msg)
 	mm := updated.(model)
 	if !mm.treePane.Built() {
