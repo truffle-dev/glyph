@@ -103,6 +103,7 @@ func Default() []Section {
 			{"alt+d", "Add cursor at every match of word under cursor"},
 			{"ctrl+↑", "Add cursor on row above (column edit)"},
 			{"ctrl+↓", "Add cursor on row below (column edit)"},
+			{"alt+i", "Split selection into a cursor per line"},
 			{"esc", "Clear extra cursors"},
 			{"any movement", "Collapse to primary cursor"},
 		}},

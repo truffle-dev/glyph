@@ -1541,6 +1541,34 @@ func (p Pane) AddAllMatchCursors() Pane {
 	return p
 }
 
+// SplitSelectionIntoLines replaces a selection that spans two or more rows
+// with one cursor at the end of every row it touches, then clears the
+// selection. This is the keyboard "split selection into lines" gesture
+// (VSCode Shift+Alt+I): select a block, split it, and edit every line's end
+// at once. The primary lands on the last row; earlier rows get extras. A
+// selection within a single row, or no selection at all, is a no-op — there
+// is nothing to split.
+func (p Pane) SplitSelectionIntoLines() Pane {
+	if !p.selecting {
+		return p
+	}
+	startRow, _, endRow, _ := p.SelectionRange()
+	if startRow == endRow {
+		return p
+	}
+	p.selecting = false
+	p.extras = nil
+	for r := startRow; r < endRow; r++ {
+		p.extras = append(p.extras, extraCursor{Row: r, Col: len(p.buf.Lines[r])})
+	}
+	p.row = endRow
+	p.col = len(p.buf.Lines[endRow])
+	p.anchorRow, p.anchorCol = p.row, p.col
+	(&p).dedupCursors()
+	(&p).scrollToShow(p.row)
+	return p
+}
+
 // allCursorsSorted returns every cursor position (primary + extras) sorted by
 // (row, col) ascending. The parallel idxMap maps back to -1 for the primary
 // or extras index for each extra.
@@ -1998,6 +2026,11 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			// adds matches one per press. Terminals cannot deliver
 			// Ctrl+Shift+d distinctly, so alt+d is the portable surface.
 			p = p.AddAllMatchCursors()
+		} else if km.Alt && len(km.Runes) == 1 && km.Runes[0] == 'i' {
+			// Alt+i splits a multi-row selection into one cursor per line,
+			// each at the line's end. Mirrors VSCode Shift+Alt+I, which
+			// terminals cannot deliver distinctly, so alt+i is the surface.
+			p = p.SplitSelectionIntoLines()
 		} else if p.selecting {
 			p = p.DeleteSelection()
 			p.insertRunes(km.Runes)

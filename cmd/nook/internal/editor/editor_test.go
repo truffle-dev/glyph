@@ -823,6 +823,77 @@ func TestAddNextMatchCursorSnapsMidWordPrimary(t *testing.T) {
 	}
 }
 
+func TestSplitSelectionIntoLines(t *testing.T) {
+	// A selection spanning three rows splits into one cursor at the end of
+	// every row, with no selection left behind.
+	p := paneWithBuffer([]string{"alpha", "beta", "gamma"}, 2, 3)
+	p.selecting = true
+	p.anchorRow, p.anchorCol = 0, 0
+	p = p.SplitSelectionIntoLines()
+	if p.HasSelection() {
+		t.Fatal("selection should be cleared after split")
+	}
+	all := p.AllCursorPositions()
+	want := map[CursorPos]bool{{Row: 0, Col: 5}: true, {Row: 1, Col: 4}: true, {Row: 2, Col: 5}: true}
+	if len(all) != len(want) {
+		t.Fatalf("expected %d cursors, got %d (%v)", len(want), len(all), all)
+	}
+	for _, c := range all {
+		if !want[c] {
+			t.Errorf("unexpected cursor (%d,%d); want one of %v", c.Row, c.Col, want)
+		}
+	}
+	// Every cursor sits at a line end, so a keystroke appends to each line.
+	p, _ = p.Update(runeMsg("!"))
+	if got := p.Lines(); got[0] != "alpha!" || got[1] != "beta!" || got[2] != "gamma!" {
+		t.Fatalf("expected each line appended with '!', got %v", got)
+	}
+}
+
+func TestSplitSelectionSingleRowIsNoOp(t *testing.T) {
+	// Nothing to split within one row: the selection survives and no extra
+	// cursors are created.
+	p := paneWithBuffer([]string{"hello world"}, 0, 5)
+	p.selecting = true
+	p.anchorRow, p.anchorCol = 0, 0
+	p = p.SplitSelectionIntoLines()
+	if !p.HasSelection() {
+		t.Error("single-row selection should be left untouched")
+	}
+	if p.ExtraCursorCount() != 0 {
+		t.Errorf("expected no extra cursors, got %d", p.ExtraCursorCount())
+	}
+}
+
+func TestSplitSelectionNoSelectionIsNoOp(t *testing.T) {
+	p := paneWithBuffer([]string{"alpha", "beta"}, 0, 2)
+	p = p.SplitSelectionIntoLines()
+	if p.ExtraCursorCount() != 0 {
+		t.Errorf("expected no extra cursors without a selection, got %d", p.ExtraCursorCount())
+	}
+}
+
+func TestSplitSelectionViaAltI(t *testing.T) {
+	// alt+i is the portable surface for VSCode Shift+Alt+I.
+	p := paneWithBuffer([]string{"one", "two", "three"}, 2, 5)
+	p.selecting = true
+	p.anchorRow, p.anchorCol = 0, 0
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}, Alt: true})
+	if p.HasSelection() {
+		t.Fatal("alt+i should clear the selection")
+	}
+	if p.ExtraCursorCount() != 2 {
+		t.Fatalf("expected 2 extra cursors, got %d", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	want := map[CursorPos]bool{{Row: 0, Col: 3}: true, {Row: 1, Col: 3}: true, {Row: 2, Col: 5}: true}
+	for _, c := range all {
+		if !want[c] {
+			t.Errorf("unexpected cursor (%d,%d); want one of %v", c.Row, c.Col, want)
+		}
+	}
+}
+
 func TestMultiCursorInsertRunes(t *testing.T) {
 	p := paneWithBuffer([]string{"foo", "bar", "baz"}, 0, 0)
 	p = p.AddCursorBelow().AddCursorBelow()

@@ -65,9 +65,10 @@ Roughly in priority order. None of these has a package yet.
    the existing panes.
 2. **Full multi-cursor.** Add-cursor-at-next-match (ctrl+d),
    select-all-occurrences (alt+d), stack-above/below (ctrl+↑/↓),
-   multi-line edit at every cursor, and consistent placement of the
-   primary within its own match all work. What remains for a first
-   class mode: column/box cursors (drag or keyboard column selection).
+   split-selection-into-lines (alt+i), multi-line edit at every cursor,
+   and consistent placement of the primary within its own match all
+   work. What remains for a first class mode: column/box cursors (drag
+   or keyboard column selection).
 3. **Vim mode.** Modal editing as an opt-in layer. Gated on an explicit
    product decision before build — it is a large surface and should not
    land half-done.
