@@ -1454,10 +1454,16 @@ func (p Pane) AddNextMatchCursor() Pane {
 	if p.row < 0 || p.row >= len(p.buf.Lines) {
 		return p
 	}
+	_, wEnd := wordBoundsAt(p.buf.Lines[p.row], p.col)
 	word := wordAt(p.buf.Lines[p.row], p.col)
 	if word == "" {
 		return p
 	}
+	// Snap the primary to the end of its own match so every cursor sits at
+	// the same relative position. Without this, a primary left mid-word
+	// edits at a different column than the word-end extras and the matches
+	// drift apart on the first keystroke.
+	p.col = wEnd
 	latestRow, latestCol := p.row, p.col
 	for _, e := range p.extras {
 		if e.Row > latestRow || (e.Row == latestRow && e.Col > latestCol) {
@@ -1505,10 +1511,15 @@ func (p Pane) AddAllMatchCursors() Pane {
 	if p.row < 0 || p.row >= len(p.buf.Lines) {
 		return p
 	}
+	_, wEnd := wordBoundsAt(p.buf.Lines[p.row], p.col)
 	word := wordAt(p.buf.Lines[p.row], p.col)
 	if word == "" {
 		return p
 	}
+	// Snap the primary to the end of its own match so it lines up with the
+	// word-end extras; otherwise a mid-word primary edits at the wrong
+	// column and the matches drift apart on the first keystroke.
+	p.col = wEnd
 	for r := 0; r < len(p.buf.Lines); r++ {
 		off := 0
 		for {
@@ -1668,24 +1679,32 @@ func isWordChar(b byte) bool {
 // wordAt returns the identifier ([A-Za-z0-9_]+) surrounding col in line, or
 // "" if col is not on or adjacent to one.
 func wordAt(line string, col int) string {
+	l, r := wordBoundsAt(line, col)
+	if l == r {
+		return ""
+	}
+	return line[l:r]
+}
+
+// wordBoundsAt returns the [lo, hi) byte bounds of the whole word that
+// contains or abuts col. When there is no word char adjacent to col it
+// returns lo == hi, which callers read as "no word here".
+func wordBoundsAt(line string, col int) (lo, hi int) {
 	if col < 0 {
 		col = 0
 	}
 	if col > len(line) {
 		col = len(line)
 	}
-	l := col
-	for l > 0 && isWordChar(line[l-1]) {
-		l--
+	lo = col
+	for lo > 0 && isWordChar(line[lo-1]) {
+		lo--
 	}
-	r := col
-	for r < len(line) && isWordChar(line[r]) {
-		r++
+	hi = col
+	for hi < len(line) && isWordChar(line[hi]) {
+		hi++
 	}
-	if l == r {
-		return ""
-	}
-	return line[l:r]
+	return lo, hi
 }
 
 // indexWholeWord searches s for word as a whole identifier (boundaries are

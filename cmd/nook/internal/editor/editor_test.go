@@ -720,8 +720,10 @@ func TestAddAllMatchCursorsSelectsEveryOccurrence(t *testing.T) {
 		t.Fatalf("expected 2 extras, got %d", p.ExtraCursorCount())
 	}
 	all := p.AllCursorPositions()
-	if all[0].Row != 0 || all[0].Col != 1 {
-		t.Errorf("primary should be unchanged at (0,1), got (%d,%d)", all[0].Row, all[0].Col)
+	// The primary snaps to the end of its own match (col 3) so it aligns
+	// with the word-end extras; a mid-word primary would drift on insert.
+	if all[0].Row != 0 || all[0].Col != 3 {
+		t.Errorf("primary should snap to its word end (0,3), got (%d,%d)", all[0].Row, all[0].Col)
 	}
 	if all[1].Row != 0 || all[1].Col != 11 {
 		t.Errorf("expected extra at (0,11), got (%d,%d)", all[1].Row, all[1].Col)
@@ -784,6 +786,40 @@ func TestAddAllMatchCursorsThenInsertEditsEveryMatch(t *testing.T) {
 	p, _ = p.Update(runeMsg("X"))
 	if p.Line(0) != "fooX" || p.Line(1) != "fooX" {
 		t.Fatalf("expected 'fooX' on both rows, got %v", p.Lines())
+	}
+}
+
+func TestAddAllMatchCursorsMidWordPrimaryAlignsOnInsert(t *testing.T) {
+	// Primary starts mid-word; without snapping, the primary would edit at
+	// col 1 while the word-end extra edits at col 3, drifting the matches
+	// apart. The fix snaps the primary to its word end so every match gets
+	// the same edit.
+	p := paneWithBuffer([]string{"foo", "foo"}, 0, 1) // primary inside first "foo"
+	p = p.AddAllMatchCursors()
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("expected 1 extra, got %d", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	if all[0].Row != 0 || all[0].Col != 3 {
+		t.Fatalf("primary should snap to its word end (0,3), got (%d,%d)", all[0].Row, all[0].Col)
+	}
+	p, _ = p.Update(runeMsg("X"))
+	if p.Line(0) != "fooX" || p.Line(1) != "fooX" {
+		t.Fatalf("expected 'fooX' on both rows, got %v", p.Lines())
+	}
+}
+
+func TestAddNextMatchCursorSnapsMidWordPrimary(t *testing.T) {
+	// The primary snaps to the end of its own match so it lines up with the
+	// word-end extra AddNext produces.
+	p := paneWithBuffer([]string{"foo foo"}, 0, 1) // primary inside first "foo"
+	p = p.AddNextMatchCursor()
+	all := p.AllCursorPositions()
+	if all[0].Row != 0 || all[0].Col != 3 {
+		t.Errorf("primary should snap to its word end (0,3), got (%d,%d)", all[0].Row, all[0].Col)
+	}
+	if all[1].Row != 0 || all[1].Col != 7 {
+		t.Errorf("expected extra at (0,7), got (%d,%d)", all[1].Row, all[1].Col)
 	}
 }
 
