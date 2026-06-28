@@ -57,12 +57,18 @@ place. Grouped by area, each backed by a package under
 
 ## Remaining for parity
 
-Roughly in priority order. None of these has a package yet.
+Roughly in priority order.
 
 1. **Split panes.** Horizontal and vertical view splits over the same or
    different buffers. The single biggest layout gap against Zed. Has to
    respect the first-paint rule and the recursive pump pattern used for
-   the existing panes.
+   the existing panes. The geometry foundation is in place:
+   `internal/splitlayout` is a pure binary layout tree (leaf = pane,
+   internal = Columns/Rows split with a ratio) with split, close, ordered
+   and directional focus, divider-resize, and rectangle computation, all
+   constant-time and unit-tested. What remains is host wiring: rendering
+   each pane's editor view into its rect, drawing dividers, and the focus
+   and split keybindings.
 2. **Full multi-cursor.** Add-cursor-at-next-match (ctrl+d),
    select-all-occurrences (alt+d), stack-above/below (ctrl+↑/↓),
    split-selection-into-lines (alt+i), multi-line edit at every cursor,
