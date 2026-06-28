@@ -100,6 +100,7 @@ func Default() []Section {
 		}},
 		{Name: "Multi-cursor", Bindings: []Binding{
 			{"ctrl+d", "Add cursor at next match of word under cursor"},
+			{"alt+d", "Add cursor at every match of word under cursor"},
 			{"ctrl+↑", "Add cursor on row above (column edit)"},
 			{"ctrl+↓", "Add cursor on row below (column edit)"},
 			{"esc", "Clear extra cursors"},

@@ -711,6 +711,82 @@ func TestAddNextMatchCursorEmptyWordNoOp(t *testing.T) {
 	}
 }
 
+func TestAddAllMatchCursorsSelectsEveryOccurrence(t *testing.T) {
+	p := paneWithBuffer([]string{"foo bar foo", "baz foo", "qux"}, 0, 1) // primary inside first "foo"
+	p = p.AddAllMatchCursors()
+	// Every other whole-word "foo": (0,8) ends at 11, (1,4) ends at 7. The
+	// occurrence the primary sits within (first "foo") is skipped.
+	if p.ExtraCursorCount() != 2 {
+		t.Fatalf("expected 2 extras, got %d", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	if all[0].Row != 0 || all[0].Col != 1 {
+		t.Errorf("primary should be unchanged at (0,1), got (%d,%d)", all[0].Row, all[0].Col)
+	}
+	if all[1].Row != 0 || all[1].Col != 11 {
+		t.Errorf("expected extra at (0,11), got (%d,%d)", all[1].Row, all[1].Col)
+	}
+	if all[2].Row != 1 || all[2].Col != 7 {
+		t.Errorf("expected extra at (1,7), got (%d,%d)", all[2].Row, all[2].Col)
+	}
+}
+
+func TestAddAllMatchCursorsWholeWordOnly(t *testing.T) {
+	p := paneWithBuffer([]string{"foo foobar foo"}, 0, 1)
+	p = p.AddAllMatchCursors()
+	// "foobar" is not a whole-word match; only the trailing "foo" qualifies.
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("expected 1 extra, got %d", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	if all[1].Row != 0 || all[1].Col != 14 {
+		t.Errorf("expected extra at (0,14), got (%d,%d)", all[1].Row, all[1].Col)
+	}
+}
+
+func TestAddAllMatchCursorsEmptyWordNoOp(t *testing.T) {
+	p := paneWithBuffer([]string{"  foo"}, 0, 0)
+	p = p.AddAllMatchCursors()
+	if p.ExtraCursorCount() != 0 {
+		t.Errorf("AddAllMatchCursors with no word under cursor should be no-op, got %d extras", p.ExtraCursorCount())
+	}
+}
+
+func TestAddAllMatchCursorsSingleOccurrenceNoExtras(t *testing.T) {
+	p := paneWithBuffer([]string{"foo bar baz"}, 0, 1) // only one "foo"
+	p = p.AddAllMatchCursors()
+	if p.ExtraCursorCount() != 0 {
+		t.Errorf("a lone occurrence should add no extras, got %d", p.ExtraCursorCount())
+	}
+}
+
+func TestAltDSelectsAllOccurrencesViaUpdate(t *testing.T) {
+	p := paneWithBuffer([]string{"foo bar foo"}, 0, 1)
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}, Alt: true})
+	if p.Line(0) != "foo bar foo" {
+		t.Fatalf("alt+d must not insert a literal 'd', got %q", p.Line(0))
+	}
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("expected 1 extra after alt+d, got %d", p.ExtraCursorCount())
+	}
+	all := p.AllCursorPositions()
+	if all[1].Row != 0 || all[1].Col != 11 {
+		t.Errorf("expected extra at (0,11), got (%d,%d)", all[1].Row, all[1].Col)
+	}
+}
+
+func TestAddAllMatchCursorsThenInsertEditsEveryMatch(t *testing.T) {
+	p := paneWithBuffer([]string{"foo", "foo"}, 0, 3) // primary at end of first "foo"
+	p = p.AddAllMatchCursors()
+	if p.ExtraCursorCount() != 1 {
+		t.Fatalf("expected 1 extra, got %d", p.ExtraCursorCount())
+	}
+	p, _ = p.Update(runeMsg("X"))
+	if p.Line(0) != "fooX" || p.Line(1) != "fooX" {
+		t.Fatalf("expected 'fooX' on both rows, got %v", p.Lines())
+	}
+}
+
 func TestMultiCursorInsertRunes(t *testing.T) {
 	p := paneWithBuffer([]string{"foo", "bar", "baz"}, 0, 0)
 	p = p.AddCursorBelow().AddCursorBelow()

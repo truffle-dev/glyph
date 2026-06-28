@@ -1495,6 +1495,41 @@ func (p Pane) AddNextMatchCursor() Pane {
 	return p
 }
 
+// AddAllMatchCursors adds an extra cursor at the end of every whole-word
+// occurrence of the word under the primary cursor across the entire buffer,
+// skipping the occurrence the primary already sits within. Where
+// AddNextMatchCursor grows the cursor set one match per press, this selects
+// them all in a single gesture (VSCode's "select all occurrences"). No-op
+// when there is no word at the primary cursor.
+func (p Pane) AddAllMatchCursors() Pane {
+	if p.row < 0 || p.row >= len(p.buf.Lines) {
+		return p
+	}
+	word := wordAt(p.buf.Lines[p.row], p.col)
+	if word == "" {
+		return p
+	}
+	for r := 0; r < len(p.buf.Lines); r++ {
+		off := 0
+		for {
+			idx := indexWholeWord(p.buf.Lines[r], word, off)
+			if idx < 0 {
+				break
+			}
+			end := idx + len(word)
+			// Skip the occurrence the primary already sits within; a
+			// coincident extra there would just be deduped away.
+			if !(r == p.row && p.col >= idx && p.col <= end) {
+				p.extras = append(p.extras, extraCursor{Row: r, Col: end})
+			}
+			off = end
+		}
+	}
+	(&p).dedupCursors()
+	(&p).scrollToShow(p.row)
+	return p
+}
+
 // allCursorsSorted returns every cursor position (primary + extras) sorted by
 // (row, col) ascending. The parallel idxMap maps back to -1 for the primary
 // or extras index for each extra.
@@ -1938,7 +1973,13 @@ func (p Pane) Update(msg tea.Msg) (Pane, tea.Cmd) {
 			p.insertRunes([]rune{' '})
 		}
 	case tea.KeyRunes:
-		if p.selecting {
+		if km.Alt && len(km.Runes) == 1 && km.Runes[0] == 'd' {
+			// Alt+d selects every whole-word occurrence of the word under
+			// the cursor at once — the all-at-once sibling of Ctrl+d, which
+			// adds matches one per press. Terminals cannot deliver
+			// Ctrl+Shift+d distinctly, so alt+d is the portable surface.
+			p = p.AddAllMatchCursors()
+		} else if p.selecting {
 			p = p.DeleteSelection()
 			p.insertRunes(km.Runes)
 		} else if len(p.extras) > 0 {
