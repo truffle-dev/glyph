@@ -335,11 +335,14 @@ func (t *Tree) Rects(width, height int) map[PaneID]Rect {
 	return out
 }
 
-func layout(n *node, r Rect, out map[PaneID]Rect) {
-	if n.leaf {
-		out[n.id] = r
-		return
-	}
+// splitGeom is the single source of truth for an internal node's geometry: the
+// two child rectangles within r and the one-cell divider that sits between
+// them. layout and dividers both go through here so a pane's rectangle and the
+// divider drawn beside it can never disagree about where the split falls. The
+// arithmetic reserves one cell for the divider, rounds child a to the node's
+// ratio, and clamps so neither child overflows. hasDiv is false when the line
+// would have zero length (a split squeezed into no space on its long axis).
+func splitGeom(n *node, r Rect) (a, b Rect, div Divider, hasDiv bool) {
 	if n.orient == Columns {
 		avail := r.W - 1
 		if avail < 0 {
@@ -349,10 +352,10 @@ func layout(n *node, r Rect, out map[PaneID]Rect) {
 		if aw > avail {
 			aw = avail
 		}
-		bw := avail - aw
-		layout(n.a, Rect{X: r.X, Y: r.Y, W: aw, H: r.H}, out)
-		layout(n.b, Rect{X: r.X + aw + 1, Y: r.Y, W: bw, H: r.H}, out)
-		return
+		a = Rect{X: r.X, Y: r.Y, W: aw, H: r.H}
+		b = Rect{X: r.X + aw + 1, Y: r.Y, W: avail - aw, H: r.H}
+		div = Divider{Orient: Columns, X: r.X + aw, Y: r.Y, Length: r.H}
+		return a, b, div, r.H > 0
 	}
 	avail := r.H - 1
 	if avail < 0 {
@@ -362,9 +365,20 @@ func layout(n *node, r Rect, out map[PaneID]Rect) {
 	if ah > avail {
 		ah = avail
 	}
-	bh := avail - ah
-	layout(n.a, Rect{X: r.X, Y: r.Y, W: r.W, H: ah}, out)
-	layout(n.b, Rect{X: r.X, Y: r.Y + ah + 1, W: r.W, H: bh}, out)
+	a = Rect{X: r.X, Y: r.Y, W: r.W, H: ah}
+	b = Rect{X: r.X, Y: r.Y + ah + 1, W: r.W, H: avail - ah}
+	div = Divider{Orient: Rows, X: r.X, Y: r.Y + ah, Length: r.W}
+	return a, b, div, r.W > 0
+}
+
+func layout(n *node, r Rect, out map[PaneID]Rect) {
+	if n.leaf {
+		out[n.id] = r
+		return
+	}
+	a, b, _, _ := splitGeom(n, r)
+	layout(n.a, a, out)
+	layout(n.b, b, out)
 }
 
 // Divider is the one-cell separator line between a split's two children, in the
@@ -397,35 +411,12 @@ func dividers(n *node, r Rect, out *[]Divider) {
 	if n.leaf {
 		return
 	}
-	if n.orient == Columns {
-		avail := r.W - 1
-		if avail < 0 {
-			avail = 0
-		}
-		aw := int(math.Round(float64(avail) * n.ratio))
-		if aw > avail {
-			aw = avail
-		}
-		if r.H > 0 {
-			*out = append(*out, Divider{Orient: Columns, X: r.X + aw, Y: r.Y, Length: r.H})
-		}
-		dividers(n.a, Rect{X: r.X, Y: r.Y, W: aw, H: r.H}, out)
-		dividers(n.b, Rect{X: r.X + aw + 1, Y: r.Y, W: avail - aw, H: r.H}, out)
-		return
+	a, b, div, hasDiv := splitGeom(n, r)
+	if hasDiv {
+		*out = append(*out, div)
 	}
-	avail := r.H - 1
-	if avail < 0 {
-		avail = 0
-	}
-	ah := int(math.Round(float64(avail) * n.ratio))
-	if ah > avail {
-		ah = avail
-	}
-	if r.W > 0 {
-		*out = append(*out, Divider{Orient: Rows, X: r.X, Y: r.Y + ah, Length: r.W})
-	}
-	dividers(n.a, Rect{X: r.X, Y: r.Y, W: r.W, H: ah}, out)
-	dividers(n.b, Rect{X: r.X, Y: r.Y + ah + 1, W: r.W, H: avail - ah}, out)
+	dividers(n.a, a, out)
+	dividers(n.b, b, out)
 }
 
 // PaneAt reports the pane whose rectangle contains the cell (x, y) within the
