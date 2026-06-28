@@ -195,6 +195,81 @@ func TestResizeSinglePaneRefused(t *testing.T) {
 	}
 }
 
+func TestDividersSinglePaneNone(t *testing.T) {
+	tr, _ := New()
+	if d := tr.Dividers(80, 24); len(d) != 0 {
+		t.Fatalf("single pane has %d dividers, want 0", len(d))
+	}
+}
+
+func TestDividersColumns(t *testing.T) {
+	tr, _ := New()
+	tr.SplitFocused(Columns)
+	// width 81: avail 80, aw 40 -> vertical divider at x=40 spanning full height.
+	got := tr.Dividers(81, 24)
+	want := []Divider{{Orient: Columns, X: 40, Y: 0, Length: 24}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("column dividers = %+v, want %+v", got, want)
+	}
+}
+
+func TestDividersRows(t *testing.T) {
+	tr, _ := New()
+	tr.SplitFocused(Rows)
+	// height 25: avail 24, ah 12 -> horizontal divider at y=12 spanning full width.
+	got := tr.Dividers(80, 25)
+	want := []Divider{{Orient: Rows, X: 0, Y: 12, Length: 80}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("row dividers = %+v, want %+v", got, want)
+	}
+}
+
+func TestDividersNested(t *testing.T) {
+	// [a | b] then split b into [b / c]: one vertical divider in the parent,
+	// one horizontal divider inside the right column.
+	tr, _ := New()
+	b := tr.SplitFocused(Columns)
+	tr.Focus(b)
+	tr.SplitFocused(Rows)
+	got := tr.Dividers(81, 25)
+	if len(got) != 2 {
+		t.Fatalf("nested dividers count = %d, want 2: %+v", len(got), got)
+	}
+	var cols, rows int
+	for _, d := range got {
+		switch d.Orient {
+		case Columns:
+			cols++
+		case Rows:
+			rows++
+		}
+	}
+	if cols != 1 || rows != 1 {
+		t.Fatalf("nested dividers = %d columns, %d rows; want 1 and 1", cols, rows)
+	}
+}
+
+func TestPaneAtHitsAndMisses(t *testing.T) {
+	tr, first := New()
+	second := tr.SplitFocused(Columns) // [first | second] at width 81: first 0..39, divider 40, second 41..80
+	const w, h = 81, 24
+
+	if id, ok := tr.PaneAt(10, 5, w, h); !ok || id != first {
+		t.Fatalf("PaneAt(10,5) = (%d,%v), want (%d,true)", id, ok, first)
+	}
+	if id, ok := tr.PaneAt(60, 5, w, h); !ok || id != second {
+		t.Fatalf("PaneAt(60,5) = (%d,%v), want (%d,true)", id, ok, second)
+	}
+	// x=40 is the divider gap: belongs to no pane.
+	if id, ok := tr.PaneAt(40, 5, w, h); ok {
+		t.Fatalf("PaneAt on divider gap = (%d,true), want miss", id)
+	}
+	// outside the screen entirely.
+	if _, ok := tr.PaneAt(200, 200, w, h); ok {
+		t.Fatal("PaneAt outside all panes should miss")
+	}
+}
+
 func TestRectsTinySizeNoNegative(t *testing.T) {
 	tr, _ := New()
 	tr.SplitFocused(Columns)

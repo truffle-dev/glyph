@@ -366,3 +366,77 @@ func layout(n *node, r Rect, out map[PaneID]Rect) {
 	layout(n.a, Rect{X: r.X, Y: r.Y, W: r.W, H: ah}, out)
 	layout(n.b, Rect{X: r.X, Y: r.Y + ah + 1, W: r.W, H: bh}, out)
 }
+
+// Divider is the one-cell separator line between a split's two children, in the
+// same coordinate space as Rects. The host draws it; the tree only says where.
+type Divider struct {
+	// Orient is the parent split's orientation: Columns means a vertical
+	// line (drawn down a column of cells), Rows means a horizontal line.
+	Orient Orientation
+	// X, Y is the top-left cell of the line. Length is its extent: the
+	// number of rows for a vertical line, columns for a horizontal one.
+	X, Y, Length int
+}
+
+// Dividers returns every separator line for the layout at the given size, in
+// the same geometry Rects uses. A single-pane tree has none. A line is omitted
+// when it would have zero length (a split squeezed into no space).
+func (t *Tree) Dividers(width, height int) []Divider {
+	if width < 0 {
+		width = 0
+	}
+	if height < 0 {
+		height = 0
+	}
+	var out []Divider
+	dividers(t.root, Rect{X: 0, Y: 0, W: width, H: height}, &out)
+	return out
+}
+
+func dividers(n *node, r Rect, out *[]Divider) {
+	if n.leaf {
+		return
+	}
+	if n.orient == Columns {
+		avail := r.W - 1
+		if avail < 0 {
+			avail = 0
+		}
+		aw := int(math.Round(float64(avail) * n.ratio))
+		if aw > avail {
+			aw = avail
+		}
+		if r.H > 0 {
+			*out = append(*out, Divider{Orient: Columns, X: r.X + aw, Y: r.Y, Length: r.H})
+		}
+		dividers(n.a, Rect{X: r.X, Y: r.Y, W: aw, H: r.H}, out)
+		dividers(n.b, Rect{X: r.X + aw + 1, Y: r.Y, W: avail - aw, H: r.H}, out)
+		return
+	}
+	avail := r.H - 1
+	if avail < 0 {
+		avail = 0
+	}
+	ah := int(math.Round(float64(avail) * n.ratio))
+	if ah > avail {
+		ah = avail
+	}
+	if r.W > 0 {
+		*out = append(*out, Divider{Orient: Rows, X: r.X, Y: r.Y + ah, Length: r.W})
+	}
+	dividers(n.a, Rect{X: r.X, Y: r.Y, W: r.W, H: ah}, out)
+	dividers(n.b, Rect{X: r.X, Y: r.Y + ah + 1, W: r.W, H: avail - ah}, out)
+}
+
+// PaneAt reports the pane whose rectangle contains the cell (x, y) within the
+// given size, for mouse focus and divider hit-testing. A click that lands on a
+// divider gap, or outside every pane, returns false. When panes are squeezed to
+// zero size they contain no cells and so are never hit.
+func (t *Tree) PaneAt(x, y, width, height int) (PaneID, bool) {
+	for id, r := range t.Rects(width, height) {
+		if x >= r.X && x < r.X+r.W && y >= r.Y && y < r.Y+r.H {
+			return id, true
+		}
+	}
+	return 0, false
+}

@@ -65,10 +65,11 @@ Roughly in priority order.
    the existing panes. The geometry foundation is in place:
    `internal/splitlayout` is a pure binary layout tree (leaf = pane,
    internal = Columns/Rows split with a ratio) with split, close, ordered
-   and directional focus, divider-resize, and rectangle computation, all
-   constant-time and unit-tested. What remains is host wiring: rendering
-   each pane's editor view into its rect, drawing dividers, and the focus
-   and split keybindings.
+   and directional focus, divider-resize, rectangle computation, divider
+   line positions for rendering, and `PaneAt` hit-testing for mouse focus,
+   all constant-time and unit-tested. What remains is host wiring: rendering
+   each pane's editor view into its rect, drawing the dividers, routing
+   input to the focused pane, and the focus and split keybindings.
 2. **Full multi-cursor.** Add-cursor-at-next-match (ctrl+d),
    select-all-occurrences (alt+d), stack-above/below (ctrl+↑/↓),
    split-selection-into-lines (alt+i), multi-line edit at every cursor,
