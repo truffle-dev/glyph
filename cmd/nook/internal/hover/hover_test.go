@@ -3,6 +3,7 @@ package hover
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -70,6 +71,30 @@ func TestWrapAndClampHardWraps(t *testing.T) {
 		if len(line) > 20 {
 			t.Errorf("wrap produced a %d-char line, want <=20: %q", len(line), line)
 		}
+	}
+}
+
+// TestWrapKeepsMultibyteRunesIntact confirms the hard-wrap never splits
+// a multi-byte rune at the wrap point. gopls hover markdown is full of
+// non-ASCII (em dashes, arrows, curly quotes); byte-slicing at the width
+// boundary used to cut a 3-byte rune in half and emit invalid UTF-8.
+func TestWrapKeepsMultibyteRunesIntact(t *testing.T) {
+	t.Parallel()
+	// Ten em dashes (3 bytes / 1 display cell each). A byte-based wrap at
+	// width 8 lands mid-rune; a cell-based wrap breaks cleanly after 8.
+	in := strings.Repeat("\u2014", 10)
+	out := wrapAndClamp(in, 8, 100)
+	if !utf8.ValidString(out) {
+		t.Fatalf("wrap produced invalid UTF-8: %q", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > 8 {
+			t.Errorf("wrapped line exceeds 8 display cells (got %d): %q", w, line)
+		}
+	}
+	// No data loss: every em dash survives the round trip.
+	if got := strings.Count(out, "\u2014"); got != 10 {
+		t.Errorf("lost runes in wrap: got %d em dashes, want 10", got)
 	}
 }
 

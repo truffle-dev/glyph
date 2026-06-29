@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -59,24 +60,19 @@ func View(t theme.Theme, contents string, width, maxLines int) string {
 		Render(body)
 }
 
-// wrapAndClamp hard-wraps each input line at width characters then
-// keeps the first maxLines rows, replacing the final row with "…" if
-// the original content was longer.
+// wrapAndClamp hard-wraps the input at width display columns then keeps
+// the first maxLines rows, replacing the final row with "…" if the
+// original content was longer. Wrapping is grapheme- and wide-character-
+// aware: gopls hover markdown routinely contains multi-byte runes (arrows,
+// curly quotes, em dashes), so byte-slicing at the wrap point would both
+// split a rune mid-sequence (emitting invalid UTF-8) and mismeasure the
+// line width. ansi.Hardwrap counts display cells and never breaks a
+// grapheme cluster.
 func wrapAndClamp(s string, width, maxLines int) string {
-	var rows []string
-	for _, line := range strings.Split(s, "\n") {
-		if line == "" {
-			rows = append(rows, "")
-			continue
-		}
-		for len(line) > width {
-			rows = append(rows, line[:width])
-			line = line[width:]
-		}
-		rows = append(rows, line)
-	}
+	wrapped := ansi.Hardwrap(s, width, true)
+	rows := strings.Split(wrapped, "\n")
 	if len(rows) <= maxLines {
-		return strings.Join(rows, "\n")
+		return wrapped
 	}
 	rows = rows[:maxLines]
 	rows[maxLines-1] = "…"
