@@ -16,6 +16,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -477,18 +478,18 @@ func relativize(path, root string) string {
 	return path
 }
 
+// truncate clips s to w display columns with a trailing "…" when content
+// was dropped. It counts display cells, not runes, so wide characters (CJK,
+// emoji) that occupy two columns don't overshoot the budget; ansi.Truncate
+// is grapheme- and wide-character-aware.
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= w {
-		return s
+	if w == 1 {
+		return ansi.Truncate(s, w, "")
 	}
-	if w <= 1 {
-		return string(r[:w])
-	}
-	return string(r[:w-1]) + "…"
+	return ansi.Truncate(s, w, "…")
 }
 
 func padRight(s string, w int) string {

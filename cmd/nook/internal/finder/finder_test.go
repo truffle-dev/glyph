@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -358,5 +359,22 @@ func TestApplyReplacementWithExpandUsesRegexp(t *testing.T) {
 	got := ApplyReplacement("v42 final", Match{Row: 0, StartCol: 1, EndCol: 3}, "<$1>", re)
 	if got != "v<42> final" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// TestClipRespectsDisplayWidth confirms clip budgets display cells, not
+// runes: a wide character (CJK) is one rune but two columns, so a rune-
+// counting clip would overshoot the column budget.
+func TestClipRespectsDisplayWidth(t *testing.T) {
+	t.Parallel()
+	out := clip("日本語コード done", 6)
+	if w := lipgloss.Width(out); w > 6 {
+		t.Errorf("clip exceeded 6 display cells (got %d): %q", w, out)
+	}
+	if !strings.HasSuffix(out, "…") {
+		t.Errorf("expected ellipsis tail on truncated input: %q", out)
+	}
+	if got := clip("hi", 10); got != "hi" {
+		t.Errorf("clip fit-input changed content: %q", got)
 	}
 }

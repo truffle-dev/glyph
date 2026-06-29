@@ -26,6 +26,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -658,17 +659,22 @@ func relativize(p, root string) string {
 	return p
 }
 
+// truncate clips s to w display columns, appending "…" when content was
+// dropped. It measures display cells, not bytes: ln.Text is buffer content
+// that routinely carries multi-byte runes (CJK, em dashes, arrows), so the
+// old byte-slice form (s[:w-1]) split a rune mid-sequence and emitted
+// invalid UTF-8 whenever w-1 landed inside a multi-byte character.
+// ansi.Truncate is grapheme- and wide-character-aware and adds the tail
+// only when truncation actually occurs.
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	if len(s) <= w {
-		return s
+	if w == 1 {
+		// No room for an ellipsis; show as much real content as fits.
+		return ansi.Truncate(s, w, "")
 	}
-	if w <= 1 {
-		return s[:w]
-	}
-	return s[:w-1] + "…"
+	return ansi.Truncate(s, w, "…")
 }
 
 func padRight(s string, w int) string {

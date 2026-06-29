@@ -26,6 +26,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -391,13 +392,16 @@ func stripANSI(s string) string {
 	return out.String()
 }
 
+// clipLine clips s to w display columns with a trailing "…" when content
+// was dropped. It counts display cells, not runes: a wide character (CJK,
+// emoji) is one rune but two columns, so a rune-counting clip overshoots
+// the budget. ansi.Truncate is grapheme- and wide-character-aware.
 func clipLine(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
-		return s
+	if w <= 0 {
+		return ""
 	}
-	if w <= 1 {
-		return string(r[:w])
+	if w == 1 {
+		return ansi.Truncate(s, w, "")
 	}
-	return string(r[:w-1]) + "…"
+	return ansi.Truncate(s, w, "…")
 }

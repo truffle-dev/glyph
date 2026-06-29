@@ -369,3 +369,20 @@ func TestPaneViewRendersReplaceRow(t *testing.T) {
 		t.Fatalf("expected 'bar' replacement value in View():\n%s", out)
 	}
 }
+
+// TestTruncateRespectsDisplayWidth confirms truncate budgets display cells,
+// not runes: a wide character (CJK) is one rune but two columns, so a
+// rune-counting truncate would overshoot the column budget.
+func TestTruncateRespectsDisplayWidth(t *testing.T) {
+	t.Parallel()
+	out := truncate("日本語コード done", 6)
+	if w := lipgloss.Width(out); w > 6 {
+		t.Errorf("truncate exceeded 6 display cells (got %d): %q", w, out)
+	}
+	if !strings.HasSuffix(out, "…") {
+		t.Errorf("expected ellipsis tail on truncated input: %q", out)
+	}
+	if got := truncate("hi", 10); got != "hi" {
+		t.Errorf("truncate fit-input changed content: %q", got)
+	}
+}

@@ -20,6 +20,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -405,15 +406,18 @@ func (f Finder) renderInput(label, value string, focused bool, field, focusField
 	return label + rendered + cur + strings.Repeat(" ", pad)
 }
 
+// clip clips s to w display columns with a trailing "…" when content was
+// dropped. It counts display cells, not runes, so wide characters (CJK,
+// emoji) that occupy two columns don't overshoot the budget; ansi.Truncate
+// is grapheme- and wide-character-aware.
 func clip(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
-		return s
+	if w <= 0 {
+		return ""
 	}
-	if w <= 1 {
-		return string(r[:w])
+	if w == 1 {
+		return ansi.Truncate(s, w, "")
 	}
-	return string(r[:w-1]) + "…"
+	return ansi.Truncate(s, w, "…")
 }
 
 // Search scans buf and returns every match of pattern. When useRegex is

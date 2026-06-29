@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/truffle-dev/glyph/components/theme"
 )
@@ -968,5 +970,49 @@ func TestPane_JumpChangeEmptyIsNoOp(t *testing.T) {
 	p := NewPane(theme.Default, "/repo")
 	if got := p.jumpChange(+1).cursor; got != 0 {
 		t.Errorf("jumpChange on empty pane moved cursor to %d, want 0", got)
+	}
+}
+
+// TestTruncateKeepsMultibyteRunesIntact pins the UTF-8-corruption fix.
+// Buffer lines routinely carry multi-byte runes; the old byte-slice
+// truncate (s[:w-1]) split a rune whenever w-1 fell inside a multi-byte
+// character, producing invalid UTF-8 on screen. w=3 over a string of
+// em dashes (3 bytes each) lands the cut at byte 2 — mid-rune — which is
+// exactly the case that used to corrupt.
+func TestTruncateKeepsMultibyteRunesIntact(t *testing.T) {
+	t.Parallel()
+	in := strings.Repeat("\u2014", 5) // 5 em dashes, 3 bytes / 1 cell each
+	out := truncate(in, 3)
+	if !utf8.ValidString(out) {
+		t.Fatalf("truncate produced invalid UTF-8: %q", out)
+	}
+	if w := lipgloss.Width(out); w > 3 {
+		t.Errorf("truncate exceeded 3 display cells (got %d): %q", w, out)
+	}
+}
+
+// TestTruncateRespectsDisplayWidthForWideChars confirms truncation budgets
+// display cells, not runes: a CJK glyph is one rune but two cells, so a
+// rune-counting clip would overshoot the column budget.
+func TestTruncateRespectsDisplayWidthForWideChars(t *testing.T) {
+	t.Parallel()
+	out := truncate("日本語コード", 4)
+	if w := lipgloss.Width(out); w > 4 {
+		t.Errorf("truncate exceeded 4 display cells on wide chars (got %d): %q", w, out)
+	}
+	if !strings.HasSuffix(out, "…") {
+		t.Errorf("expected ellipsis tail on truncated wide-char input: %q", out)
+	}
+}
+
+// TestTruncateShortInputUnchanged confirms content that fits is returned
+// verbatim with no tail.
+func TestTruncateShortInputUnchanged(t *testing.T) {
+	t.Parallel()
+	if got := truncate("hi", 10); got != "hi" {
+		t.Errorf("truncate(\"hi\", 10) = %q, want \"hi\"", got)
+	}
+	if got := truncate("x", 0); got != "" {
+		t.Errorf("truncate(\"x\", 0) = %q, want empty", got)
 	}
 }
