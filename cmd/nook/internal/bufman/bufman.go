@@ -258,6 +258,17 @@ func (m *Manager) WithSize(w, h int) {
 	}
 }
 
+// SetSizeAt sizes the single buffer at idx, leaving every other buffer
+// untouched. Split panes need each on-screen buffer at its own pane
+// rectangle, which the blanket WithSize cannot express. Out-of-range idx is
+// a no-op so a stale pane binding can never panic.
+func (m *Manager) SetSizeAt(idx, w, h int) {
+	if idx < 0 || idx >= len(m.panes) {
+		return
+	}
+	m.panes[idx] = m.panes[idx].WithSize(w, h)
+}
+
 // TabInfo is one entry in the tab bar.
 type TabInfo struct {
 	Path  string

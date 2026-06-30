@@ -102,20 +102,46 @@ risk, while changing nothing the user sees.
 
 ### Slice 2 — split, close, render two panes
 
-- `ctrl+w v` (Columns / split right) and `ctrl+w s` (Rows / split down),
-  matching vim and Zed muscle memory. On split: `SplitFocused`, bind the
-  new pane to the next open buffer (or the current one if only a single
-  buffer is open), then `bufs.Switch` to it.
-- `renderMainColumn()` iterates `split.Rects()`, sizes each bound buffer
-  to its rect individually (not `bufman.WithSize`), renders each
-  `buffer.View()` into its rect, and composes the panes with the lines
-  from `split.Dividers()`.
+Slice 2 split in two because the render half and the keybinding half carry
+independent risk. The render compositor is keybinding-free and testable by
+driving the tree directly; the keys need a conflict resolved first.
+
+#### Slice 2a — render compositor + per-buffer sizing — LANDED
+
+Done. `bufman.SetSizeAt(idx, w, h)` sizes one buffer to its own pane rect
+(the blanket `WithSize` could only set them all to one size). `resize()`
+branches: when `split.Count() > 1` it walks `paneBuf` and sizes each bound
+buffer to `split.Rects(leftW, bodyH)[pid]`; otherwise it keeps the legacy
+blanket setter. `renderMainColumn()` calls `renderSplitPanes()` when
+`split.Count() == 2`, which orders the two panes by screen position, forces
+each `buffer.View()` into a fixed `rect.W × rect.H` lipgloss block, and joins
+them with a themed divider whose orientation comes from `split.Dividers()[0]`
+(vertical bar for Columns via `JoinHorizontal`, horizontal rule for Rows via
+`JoinVertical`). The composite fills the editor region exactly. Tests drive
+the split tree directly (no keybinding yet) and assert both orientations fill
+the region and show both buffers; a mutation-proof confirms the width guard
+goes red on a doubled divider. **v1 caps at two panes (one split).** A general
+N-pane compositor is deferred until a real use case needs it.
+
+#### Slice 2b — split / close keybindings — NEXT
+
+- **ctrl+w conflict, pinned.** `ctrl+w` is already bound to
+  `closeActiveTab()` (`main.go`, the `tea.KeyCtrlW` case in the global
+  switch). The vim/Zed `ctrl+w <motion>` chord prefix cannot be added
+  naively without stealing that binding. Resolution for 2b: introduce a
+  pending-`ctrl+w` prefix state — the first `ctrl+w` arms it, a following
+  `v`/`s`/`c`/`h`/`j`/`k`/`l`/`w`/`<`/`>` consumes the chord, and any other
+  key (or a second `ctrl+w`) falls back to `closeActiveTab()`. This keeps
+  the existing close-tab muscle memory (bare `ctrl+w`) while layering the
+  window chords on top, exactly as vim does with its own `ctrl+w` prefix.
+- `ctrl+w v` (Columns / split right) and `ctrl+w s` (Rows / split down).
+  On split: `SplitFocused`, bind the new pane to the next open buffer (or
+  the current one if only a single buffer is open), then `bufs.Switch` to it.
 - `ctrl+w c` closes the focused pane: `CloseFocused`, drop the binding,
   collapse. `CloseFocused` already refuses the last pane.
-- `WindowSizeMsg` recomputes rects and sizes every bound buffer.
-- Tests: split raises pane count and binds a buffer; close refuses the
-  last pane; rects partition the area with no overlap; the binding map
-  stays consistent across split/close cycles.
+- Tests: the prefix arms and disarms correctly; bare `ctrl+w` still closes
+  a tab; split raises pane count and binds a buffer; close refuses the last
+  pane; the binding map stays consistent across split/close cycles.
 
 ### Slice 3 — focus routing
 

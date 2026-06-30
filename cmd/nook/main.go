@@ -4337,7 +4337,19 @@ func (m model) resize() model {
 	if fh := m.finder.Height(); fh > 0 {
 		bodyH -= fh // reserve rows for the find/replace bar
 	}
-	m.bufs.WithSize(leftW, bodyH)
+	if m.split != nil && m.split.Count() > 1 {
+		// A split is live: each on-screen buffer is sized to its own pane
+		// rectangle, not the shared region. Buffers not bound to any pane
+		// keep whatever size they last had; they are off-screen.
+		rects := m.split.Rects(leftW, bodyH)
+		for pid, idx := range m.paneBuf {
+			if r, ok := rects[pid]; ok {
+				m.bufs.SetSizeAt(idx, r.W, r.H)
+			}
+		}
+	} else {
+		m.bufs.WithSize(leftW, bodyH)
+	}
 	m.gitPane = m.gitPane.WithSize(rightW, bodyH)
 	m.termPane = m.termPane.WithSize(rightW, bodyH)
 	m.composer = m.composer.WithSize(rightW, bodyH)
@@ -4620,7 +4632,68 @@ func (m model) renderMainColumn() string {
 		w, h := m.editorSize()
 		return welcome.View(m.theme, m.welcomeInfo(), w, h)
 	}
+	if m.split != nil && m.split.Count() == 2 {
+		return m.renderSplitPanes()
+	}
+	// One pane (or, defensively, a tree state v1 never produces) renders the
+	// focused buffer exactly as before splits existed.
 	return m.bufs.Active().View()
+}
+
+// renderSplitPanes composes the two-pane view. v1 caps at a single split, so
+// exactly two panes partition the editor region: side by side with a vertical
+// divider (Columns) or stacked with a horizontal one (Rows). Each pane's
+// buffer is sized to its own rectangle by resize(); here each view is forced
+// to that rectangle so the join stays clean, and the composed output fills the
+// whole region. The divider orientation comes straight from the layout tree.
+func (m model) renderSplitPanes() string {
+	t := m.theme
+	w, h := m.editorRegion()
+	rects := m.split.Rects(w, h)
+
+	// Order the two panes by screen position so left/top renders first.
+	ids := m.split.Panes()
+	if len(ids) != 2 {
+		return m.bufs.Active().View()
+	}
+	divs := m.split.Dividers(w, h)
+	orient := splitlayout.Columns
+	if len(divs) > 0 {
+		orient = divs[0].Orient
+	}
+	if orient == splitlayout.Columns {
+		if rects[ids[0]].X > rects[ids[1]].X {
+			ids[0], ids[1] = ids[1], ids[0]
+		}
+	} else {
+		if rects[ids[0]].Y > rects[ids[1]].Y {
+			ids[0], ids[1] = ids[1], ids[0]
+		}
+	}
+
+	view := func(id splitlayout.PaneID) string {
+		r := rects[id]
+		body := ""
+		if buf := m.bufs.At(m.paneBuf[id]); buf != nil {
+			body = buf.View()
+		}
+		// Force the pane block to its exact rectangle so neighbouring panes
+		// line up and the composite matches the region byte for byte.
+		return lipgloss.NewStyle().
+			Width(r.W).Height(r.H).
+			MaxWidth(r.W).MaxHeight(r.H).
+			Render(body)
+	}
+
+	a, b := view(ids[0]), view(ids[1])
+	if orient == splitlayout.Columns {
+		divider := lipgloss.NewStyle().Foreground(t.Border).
+			Render(strings.TrimRight(strings.Repeat("│\n", h), "\n"))
+		return lipgloss.JoinHorizontal(lipgloss.Top, a, divider, b)
+	}
+	divider := lipgloss.NewStyle().Foreground(t.Border).
+		Render(strings.Repeat("─", w))
+	return lipgloss.JoinVertical(lipgloss.Left, a, divider, b)
 }
 
 // shouldShowWelcome is true when there are no open buffers. Closing the last

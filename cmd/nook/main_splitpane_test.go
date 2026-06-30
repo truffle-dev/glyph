@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/splitlayout"
+)
 
 // legacyEditorRegion is the editor-region math exactly as it stood before the
 // split layout tree was wired in. The test pins editorSize() against it so the
@@ -110,5 +117,95 @@ func TestEditorSizeNilSplitFallsBack(t *testing.T) {
 	wantW, wantH := m.editorRegion()
 	if gotW != wantW || gotH != wantH {
 		t.Errorf("nil-split editorSize() = (%d,%d), want region (%d,%d)", gotW, gotH, wantW, wantH)
+	}
+}
+
+// splitTwoBuffers seeds a model with two open buffers and one live split,
+// binding pane 0 to buffer 0 and the freshly split pane to buffer 1. It is the
+// shared fixture for the render-composition tests: it drives the split tree
+// directly (no keybinding exists yet) so the two-pane compositor can be tested
+// in isolation from the focus-routing slice.
+func splitTwoBuffers(t *testing.T, o splitlayout.Orientation) (model, int, int) {
+	t.Helper()
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.bufs.OpenOrSwitch(filepath.Join(root, "a.go"))
+	m.bufs.OpenOrSwitch(filepath.Join(root, "sub", "b.go"))
+	if m.bufs.Count() != 2 {
+		t.Fatalf("want 2 open buffers, got %d", m.bufs.Count())
+	}
+	old := m.split.Focused()
+	pid := m.split.SplitFocused(o)
+	if m.split.Count() != 2 {
+		t.Fatalf("split count = %d, want 2", m.split.Count())
+	}
+	m.paneBuf[old] = 0
+	m.paneBuf[pid] = 1
+	m = m.resize()
+	regW, regH := m.editorRegion()
+	return m, regW, regH
+}
+
+// TestRenderSplitColumnsFillsRegion checks the side-by-side compositor: the
+// two panes plus a vertical divider must exactly fill the editor region, and
+// both buffers' contents must be visible at once (the headline split win).
+func TestRenderSplitColumnsFillsRegion(t *testing.T) {
+	m, regW, regH := splitTwoBuffers(t, splitlayout.Columns)
+	out := m.renderMainColumn()
+
+	if w := lipgloss.Width(out); w != regW {
+		t.Errorf("columns split width = %d, want region %d", w, regW)
+	}
+	if h := lipgloss.Height(out); h != regH {
+		t.Errorf("columns split height = %d, want region %d", h, regH)
+	}
+	if !strings.Contains(out, "│") {
+		t.Error("columns split missing vertical divider")
+	}
+	if !strings.Contains(out, "Foo") || !strings.Contains(out, "Bar") {
+		t.Error("columns split should show both buffers (Foo from a.go, Bar from b.go)")
+	}
+}
+
+// TestRenderSplitRowsFillsRegion is the stacked analogue: two panes plus a
+// horizontal divider fill the region top to bottom, both buffers visible.
+func TestRenderSplitRowsFillsRegion(t *testing.T) {
+	m, regW, regH := splitTwoBuffers(t, splitlayout.Rows)
+	out := m.renderMainColumn()
+
+	if w := lipgloss.Width(out); w != regW {
+		t.Errorf("rows split width = %d, want region %d", w, regW)
+	}
+	if h := lipgloss.Height(out); h != regH {
+		t.Errorf("rows split height = %d, want region %d", h, regH)
+	}
+	if !strings.Contains(out, "─") {
+		t.Error("rows split missing horizontal divider")
+	}
+	if !strings.Contains(out, "Foo") || !strings.Contains(out, "Bar") {
+		t.Error("rows split should show both buffers (Foo from a.go, Bar from b.go)")
+	}
+}
+
+// TestRenderSinglePaneUnchanged guards that with no split live the main column
+// is byte-identical to the active buffer's own view: the compositor is dormant
+// until a split actually exists.
+func TestRenderSinglePaneUnchanged(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.bufs.OpenOrSwitch(filepath.Join(root, "a.go"))
+	m = m.resize()
+
+	if m.split.Count() != 1 {
+		t.Fatalf("single pane expected, got %d", m.split.Count())
+	}
+	if got, want := m.renderMainColumn(), m.bufs.Active().View(); got != want {
+		t.Error("single-pane renderMainColumn diverged from the active buffer view")
 	}
 }
