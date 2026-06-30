@@ -110,6 +110,7 @@ import (
 	"github.com/truffle-dev/glyph/cmd/nook/internal/settings"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/signature"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/snippets"
+	"github.com/truffle-dev/glyph/cmd/nook/internal/splitlayout"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/symbolsearch"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tabbar"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/tasks"
@@ -167,7 +168,18 @@ type model struct {
 	// the card to matching bindings. Reset to "" each time help opens.
 	helpQuery string
 
-	bufs     *bufman.Manager
+	bufs *bufman.Manager
+
+	// split is the view-split layout tree. Until a split gesture lands it
+	// holds a single pane covering the whole editor region, so every size
+	// and render path below behaves exactly as it did before splits
+	// existed. paneBuf maps each pane to the bufman buffer index it shows;
+	// the focused pane's buffer is kept as the active buffer, so the ~60
+	// existing m.bufs.Active() editing paths operate on the focused pane
+	// with no per-pane bookkeeping.
+	split   *splitlayout.Tree
+	paneBuf map[splitlayout.PaneID]int
+
 	gitPane  git.Pane
 	termPane term.Pane
 	picker   picker.Picker
@@ -662,6 +674,13 @@ func newModel(root string, opens ...string) model {
 		bpStore:          breakpoints.New(),
 		navHistory:       navhistory.New(0),
 	}
+
+	// Start with a single pane bound to buffer 0. splitlayout.New is
+	// constant-time and does no I/O, so this stays inside the first-paint
+	// rule. The pane stays single until a split gesture lands.
+	sp, pid := splitlayout.New()
+	m.split = sp
+	m.paneBuf = map[splitlayout.PaneID]int{pid: 0}
 
 	// Pre-open any files the user passed on the CLI. After OpenOrSwitch
 	// the last one is active; switch back to index 0 so a multi-file
@@ -4611,12 +4630,13 @@ func (m model) shouldShowWelcome() bool {
 	return m.bufs.Count() == 0
 }
 
-// editorSize returns the dimensions allocated to the editor pane. The
-// welcome card needs to know this so it can self-clamp. Must mirror
-// resize() exactly: tree on the left when visible, right pane on the
-// right when active, and a minimum-20 editor floor that shrinks the
-// tree when necessary.
-func (m model) editorSize() (int, int) {
+// editorRegion returns the dimensions of the whole editor body: the area
+// left after the tree (left) and the right pane claim their columns and the
+// tab/status bars claim their rows. Split panes subdivide this region; with a
+// single pane it IS the pane. Must mirror resize() exactly: tree on the left
+// when visible, right pane on the right when active, and a minimum-20 editor
+// floor that shrinks the tree when necessary.
+func (m model) editorRegion() (int, int) {
 	treeW := 0
 	if m.showTree {
 		treeW = m.width / 5
@@ -4652,6 +4672,20 @@ func (m model) editorSize() (int, int) {
 		bodyH--
 	}
 	return leftW, bodyH
+}
+
+// editorSize returns the dimensions allocated to the focused editor pane.
+// It routes the whole editor region (editorRegion) through the split layout
+// tree and reports the focused pane's rectangle. With a single pane that
+// rectangle equals the region exactly, so every caller behaves as it did
+// before splits existed; once a split lands, each pane gets its own slice.
+func (m model) editorSize() (int, int) {
+	w, h := m.editorRegion()
+	if m.split == nil {
+		return w, h
+	}
+	r := m.split.Rects(w, h)[m.split.Focused()]
+	return r.W, r.H
 }
 
 // welcomeInfo gathers the everything-the-welcome-card-needs bundle.

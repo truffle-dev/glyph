@@ -75,7 +75,16 @@ Two facts make split panes more than a render change:
 Each slice is complete on its own, ships with green tests, leaves no dead
 keybinding, and keeps the binary starting instantly.
 
-### Slice 1 — bind the tree, no behavior change
+### Slice 1 — bind the tree, no behavior change — LANDED
+
+Done. `model` now carries `split *splitlayout.Tree` and
+`paneBuf map[splitlayout.PaneID]int`; `newModel` seeds one pane bound to
+buffer 0 (constant-time, no I/O). `editorSize()` routes the region —
+computed by the renamed `editorRegion()` — through `split.Rects()` and
+returns the focused pane's rectangle, which for one pane equals the region
+exactly. `TestEditorSizeSinglePaneMatchesLegacy` pins that equality against
+a frozen copy of the pre-split region math across a width/height/tree/right
+matrix, so the single-pane path can never drift. Original plan below.
 
 - Add `split *splitlayout.Tree` and `paneBuf map[splitlayout.PaneID]int`
   (pane → `bufman` index) to `model`. In `newModel`, `New()` yields one
