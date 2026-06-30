@@ -393,3 +393,77 @@ func TestWindowLeaderFocusNoSplitIsNoOp(t *testing.T) {
 			before, m.bufs.ActiveIndex())
 	}
 }
+
+// focusedRectW returns the width of the currently focused pane's rectangle,
+// the observable quantity that resize moves.
+func focusedRectW(m model) int {
+	w, h := m.editorRegion()
+	return m.split.Rects(w, h)[m.split.Focused()].W
+}
+
+// TestWindowLeaderResizeGrowsFocused drives alt+w > and asserts the focused
+// pane gets wider while its sibling shrinks; a positive delta always grows the
+// focused side (ResizeFocused folds the child-a/child-b sign for us).
+func TestWindowLeaderResizeGrowsFocused(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'v') // columns split, focus on the new (right) pane
+	before := focusedRectW(m)
+
+	m = altW(m)
+	m = runeKey(m, '>')
+	after := focusedRectW(m)
+	if after <= before {
+		t.Errorf("alt+w > did not grow the focused pane: %d -> %d", before, after)
+	}
+}
+
+// TestWindowLeaderResizeShrinksFocused is the mirror: alt+w < narrows the
+// focused pane.
+func TestWindowLeaderResizeShrinksFocused(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'v')
+	before := focusedRectW(m)
+
+	m = altW(m)
+	m = runeKey(m, '<')
+	after := focusedRectW(m)
+	if after >= before {
+		t.Errorf("alt+w < did not shrink the focused pane: %d -> %d", before, after)
+	}
+}
+
+// TestWindowLeaderResizeClampsBeforeCollapse hammers alt+w < far past the
+// floor and confirms the sibling pane never vanishes: the split tree clamps
+// the ratio so both panes keep a positive width.
+func TestWindowLeaderResizeClampsBeforeCollapse(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'v')
+
+	for i := 0; i < 40; i++ {
+		m = altW(m)
+		m = runeKey(m, '<')
+	}
+	w, h := m.editorRegion()
+	rects := m.split.Rects(w, h)
+	for pid, r := range rects {
+		if r.W <= 0 {
+			t.Errorf("pane %v collapsed to width %d after repeated shrink", pid, r.W)
+		}
+	}
+}
+
+// TestWindowLeaderResizeNoSplitIsNoOp confirms the resize chord is inert with a
+// single pane: alt+w > / alt+w < must not panic or create a split.
+func TestWindowLeaderResizeNoSplitIsNoOp(t *testing.T) {
+	m := openTwo(t) // two buffers, no split yet
+	m = altW(m)
+	m = runeKey(m, '>')
+	m = altW(m)
+	m = runeKey(m, '<')
+	if m.split.Count() != 1 {
+		t.Errorf("resize chord created a split: count = %d", m.split.Count())
+	}
+}

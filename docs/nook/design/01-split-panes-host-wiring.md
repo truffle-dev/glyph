@@ -177,12 +177,30 @@ per-pane highlighted border was considered and deferred: borders consume cells
 and would fight the "composite fills the region byte for byte" invariant; the
 cursor is the honest focus indicator for a two-pane v1.
 
-#### Slice 3b — resize + mouse — NEXT
+#### Slice 3b — keyboard resize — LANDED
 
-- `alt+w <` / `alt+w >` → `ResizeFocused` to shift the divider.
-- If mouse is wired: click → `PaneAt` → focus.
-- Tests: resize clamps so neither pane vanishes; a click selects the pane
-  under the cursor.
+Done. `alt+w >` / `alt+w <` shift the divider via `resizePane(delta)`, which
+calls `split.ResizeFocused(delta)` then `m.resize()` so each bound buffer
+re-sizes to its new rect. The sign is folded inside `ResizeFocused` (ratio is
+child a's fraction; it adds `delta` when the focused pane is child a and
+subtracts it when child b), so a **positive delta always grows the focused
+pane** — `>` grows, `<` shrinks, regardless of which side of the split holds
+focus. `clampRatio` bounds the ratio to `[minRatio, maxRatio]` so neither pane
+can collapse. The chord is inert with a single pane (hint, no-op). The leader
+hint now reads `< / > resize`. Tests (`main_splitpane_test.go`): `>` grows and
+`<` shrinks the focused pane's rect width; 40 repeated shrinks never drive a
+pane to zero width (clamp proof); the chord is a no-op with one pane.
+
+The mouse split was deferred to keep this slice complete and green. Keyboard
+resize is the interactive capstone; mouse needs its own screen-coordinate map.
+
+#### Slice 3c — mouse focus — NEXT
+
+- Mouse is already enabled (`tea.WithMouseCellMotion()` at `main.go`).
+- Click → map screen coords (tree-width left offset, header rows) to an editor
+  region point → `split.PaneAt` → `Focus` → `syncFocusedPane`.
+- Tests: a click in each pane's rectangle selects that pane; a click in the
+  tree or header is ignored.
 
 ### Slice 4 — reconciliation polish
 

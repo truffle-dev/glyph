@@ -2157,6 +2157,10 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.focusDir(splitlayout.Right)
 			case 'w':
 				return m.focusNext()
+			case '>':
+				return m.resizePane(0.05)
+			case '<':
+				return m.resizePane(-0.05)
 			}
 		}
 		// Any other key cancels the leader without acting on the workspace.
@@ -2437,7 +2441,7 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// cycles to the next pane. Kept off ctrl+w so the historical
 			// close-tab binding survives unchanged.
 			m.awaitingWindowKey = true
-			m.status = "window: v/s split · c close · h/j/k/l focus · w next"
+			m.status = "window: v/s split · c close · h/j/k/l focus · w next · < / > resize"
 			return m, nil
 		case 'y':
 			// Alt+y toggles gopls inlay hints (type annotations + parameter
@@ -4073,6 +4077,22 @@ func (m model) focusNext() (tea.Model, tea.Cmd) {
 	}
 	m.split.FocusNext()
 	return m.syncFocusedPane(true)
+}
+
+// resizePane shifts the divider between the focused pane and its sibling.
+// A positive delta always grows the focused pane (ResizeFocused folds the
+// child-a/child-b sign), so alt+w > grows and alt+w < shrinks. The split
+// tree clamps the ratio so neither pane can collapse to nothing; after the
+// ratio moves, resize() re-sizes each bound buffer to its new rect.
+func (m model) resizePane(delta float64) (tea.Model, tea.Cmd) {
+	if m.split == nil || m.split.Count() < 2 {
+		m.status = "no split to resize — alt+w v to split"
+		return m, nil
+	}
+	m.split.ResizeFocused(delta)
+	m = m.resize()
+	m.status = ""
+	return m, nil
 }
 
 // syncFocusedPane restores the focus==active invariant after the split tree's
