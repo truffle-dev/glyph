@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/truffle-dev/glyph/cmd/nook/internal/splitlayout"
 )
@@ -207,5 +208,122 @@ func TestRenderSinglePaneUnchanged(t *testing.T) {
 	}
 	if got, want := m.renderMainColumn(), m.bufs.Active().View(); got != want {
 		t.Error("single-pane renderMainColumn diverged from the active buffer view")
+	}
+}
+
+// altW presses the window-command leader (alt+w) and returns the updated model.
+func altW(m model) model {
+	u, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}, Alt: true})
+	return u.(model)
+}
+
+// runeKey presses a single plain rune (no modifiers) and returns the model.
+func runeKey(m model, r rune) model {
+	u, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	return u.(model)
+}
+
+// openTwo seeds a model sized for split work with two real buffers open. The
+// keybinding tests start here and then drive the alt+w leader so the split /
+// close handlers are exercised through the same key path a user takes.
+func openTwo(t *testing.T) model {
+	t.Helper()
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.bufs.OpenOrSwitch(filepath.Join(root, "a.go"))
+	m.bufs.OpenOrSwitch(filepath.Join(root, "sub", "b.go"))
+	if m.bufs.Count() != 2 {
+		t.Fatalf("want 2 buffers, got %d", m.bufs.Count())
+	}
+	return m
+}
+
+// TestWindowLeaderSplitColumns drives alt+w v and asserts a second column pane
+// appears bound to the other buffer, leaving the leader state disarmed.
+func TestWindowLeaderSplitColumns(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	if !m.awaitingWindowKey {
+		t.Fatal("alt+w did not arm the window leader")
+	}
+	m = runeKey(m, 'v')
+	if m.awaitingWindowKey {
+		t.Error("window leader still armed after running a window op")
+	}
+	if m.split.Count() != 2 {
+		t.Fatalf("split count = %d, want 2", m.split.Count())
+	}
+	divs := m.split.Dividers(m.editorRegion())
+	if len(divs) != 1 || divs[0].Orient != splitlayout.Columns {
+		t.Errorf("want a single columns divider, got %+v", divs)
+	}
+}
+
+// TestWindowLeaderSplitRows drives alt+w s and asserts a stacked-row split.
+func TestWindowLeaderSplitRows(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 's')
+	if m.split.Count() != 2 {
+		t.Fatalf("split count = %d, want 2", m.split.Count())
+	}
+	divs := m.split.Dividers(m.editorRegion())
+	if len(divs) != 1 || divs[0].Orient != splitlayout.Rows {
+		t.Errorf("want a single rows divider, got %+v", divs)
+	}
+}
+
+// TestWindowLeaderClosePane splits then closes via alt+w c, returning to one
+// pane while both buffers stay open as tabs.
+func TestWindowLeaderClosePane(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'v')
+	if m.split.Count() != 2 {
+		t.Fatalf("split count = %d after split, want 2", m.split.Count())
+	}
+	m = altW(m)
+	m = runeKey(m, 'c')
+	if m.split.Count() != 1 {
+		t.Fatalf("split count = %d after close, want 1", m.split.Count())
+	}
+	if m.bufs.Count() != 2 {
+		t.Errorf("closing a pane dropped a buffer: count = %d, want 2", m.bufs.Count())
+	}
+}
+
+// TestWindowLeaderCancels guards the disarm path: alt+w then an unrelated key
+// runs no window op and clears the leader, never splitting.
+func TestWindowLeaderCancels(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'z')
+	if m.awaitingWindowKey {
+		t.Error("unrelated key left the window leader armed")
+	}
+	if m.split.Count() != 1 {
+		t.Errorf("unrelated key after alt+w changed the split: count = %d, want 1", m.split.Count())
+	}
+}
+
+// TestWindowLeaderRefusesSingleBuffer guards the v1 rule that a split needs a
+// second buffer to show; with one buffer open alt+w v is a no-op with a hint.
+func TestWindowLeaderRefusesSingleBuffer(t *testing.T) {
+	root := fixtureRepo(t)
+	m := newModel(root)
+	m.width = 120
+	m.height = 32
+	m = m.resize()
+	m.bufs.OpenOrSwitch(filepath.Join(root, "a.go"))
+	if m.bufs.Count() != 1 {
+		t.Fatalf("want 1 buffer, got %d", m.bufs.Count())
+	}
+	m = altW(m)
+	m = runeKey(m, 'v')
+	if m.split.Count() != 1 {
+		t.Errorf("split with one buffer should be refused, count = %d", m.split.Count())
 	}
 }

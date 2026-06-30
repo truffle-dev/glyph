@@ -180,6 +180,12 @@ type model struct {
 	split   *splitlayout.Tree
 	paneBuf map[splitlayout.PaneID]int
 
+	// awaitingWindowKey is the one-shot "window command" leader state. alt+w
+	// arms it; the next key runs a window op (v/s split, c close pane) or
+	// disarms. alt+w is used rather than the vim/tmux ctrl+w so the historical
+	// ctrl+w = close-tab binding stays intact.
+	awaitingWindowKey bool
+
 	gitPane  git.Pane
 	termPane term.Pane
 	picker   picker.Picker
@@ -2127,6 +2133,27 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.routeOutline(km)
 	}
 
+	// Window-command leader: alt+w arms awaitingWindowKey, and the very next
+	// key either runs a window op or disarms. This sits ahead of the global
+	// switch so the chord's second key (a plain rune like v/s/c) is consumed
+	// here instead of being typed into the buffer.
+	if m.awaitingWindowKey {
+		m.awaitingWindowKey = false
+		if km.Type == tea.KeyRunes && len(km.Runes) == 1 && !km.Alt {
+			switch km.Runes[0] {
+			case 'v':
+				return m.splitPane(splitlayout.Columns)
+			case 's':
+				return m.splitPane(splitlayout.Rows)
+			case 'c':
+				return m.closePane()
+			}
+		}
+		// Any other key cancels the leader without acting on the workspace.
+		m.status = ""
+		return m, nil
+	}
+
 	// Global keys
 	switch km.Type {
 	case tea.KeyCtrlQ:
@@ -2392,6 +2419,15 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// is reserved by most terminal emulators for paste, so alt+v is
 			// the portable surface.
 			return m.toggleMdPreview()
+		case 'w':
+			// Alt+w is the window-command leader (mnemonic: window). It arms a
+			// one-shot state read at the top of routeKey: the next key runs a
+			// window op. v splits the focused pane into side-by-side columns, s
+			// splits it into stacked rows, c closes the focused pane. Kept off
+			// ctrl+w so the historical close-tab binding survives unchanged.
+			m.awaitingWindowKey = true
+			m.status = "window: v split right · s split down · c close pane"
+			return m, nil
 		case 'y':
 			// Alt+y toggles gopls inlay hints (type annotations + parameter
 			// names) for every open buffer. Hints are visual-only; the
@@ -3951,6 +3987,59 @@ func (m model) closeActiveTab() (tea.Model, tea.Cmd) {
 	m = m.resize()
 	m = m.applyDiagnosticsToActive()
 	return m, cmd
+}
+
+// splitPane divides the focused pane along o and binds the new pane to a
+// different open buffer, so the split immediately shows two files. v1 caps the
+// layout at two panes (one split) and needs at least two open buffers:
+// splitting a lone buffer would show the same content twice, which the
+// per-pane sizing can't honor. The fresh pane takes focus, and its buffer is
+// made active so every existing editing path operates on the focused pane.
+func (m model) splitPane(o splitlayout.Orientation) (tea.Model, tea.Cmd) {
+	if m.split == nil {
+		return m, nil
+	}
+	if m.split.Count() > 1 {
+		m.status = "nook shows two panes in this version — close one with alt+w c"
+		return m, nil
+	}
+	if m.bufs.Count() < 2 {
+		m.status = "open another file to split (ctrl+P)"
+		return m, nil
+	}
+	old := m.split.Focused()
+	m.paneBuf[old] = m.bufs.ActiveIndex()
+	other := (m.bufs.ActiveIndex() + 1) % m.bufs.Count()
+	newID := m.split.SplitFocused(o)
+	m.paneBuf[newID] = other
+	m.bufs.Switch(other)
+	m = m.resize()
+	m = m.applyDiagnosticsToActive()
+	m.status = "split — alt+w c to close the pane"
+	return m, nil
+}
+
+// closePane closes the focused split pane; its space collapses into the
+// sibling. The buffer the pane showed stays open as a tab, so only the pane
+// binding is dropped. Closing the sole remaining pane is refused by the layout
+// tree. After a close the surviving focused pane's buffer becomes active.
+func (m model) closePane() (tea.Model, tea.Cmd) {
+	if m.split == nil {
+		return m, nil
+	}
+	closed := m.split.Focused()
+	if !m.split.CloseFocused() {
+		m.status = "only one pane open"
+		return m, nil
+	}
+	delete(m.paneBuf, closed)
+	if idx, ok := m.paneBuf[m.split.Focused()]; ok {
+		m.bufs.Switch(idx)
+	}
+	m = m.resize()
+	m = m.applyDiagnosticsToActive()
+	m.status = "pane closed"
+	return m, nil
 }
 
 func min(a, b int) int {

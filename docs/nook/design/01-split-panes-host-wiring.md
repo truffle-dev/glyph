@@ -123,33 +123,44 @@ the region and show both buffers; a mutation-proof confirms the width guard
 goes red on a doubled divider. **v1 caps at two panes (one split).** A general
 N-pane compositor is deferred until a real use case needs it.
 
-#### Slice 2b — split / close keybindings — NEXT
+#### Slice 2b — split / close keybindings — LANDED
 
-- **ctrl+w conflict, pinned.** `ctrl+w` is already bound to
-  `closeActiveTab()` (`main.go`, the `tea.KeyCtrlW` case in the global
-  switch). The vim/Zed `ctrl+w <motion>` chord prefix cannot be added
-  naively without stealing that binding. Resolution for 2b: introduce a
-  pending-`ctrl+w` prefix state — the first `ctrl+w` arms it, a following
-  `v`/`s`/`c`/`h`/`j`/`k`/`l`/`w`/`<`/`>` consumes the chord, and any other
-  key (or a second `ctrl+w`) falls back to `closeActiveTab()`. This keeps
-  the existing close-tab muscle memory (bare `ctrl+w`) while layering the
-  window chords on top, exactly as vim does with its own `ctrl+w` prefix.
-- `ctrl+w v` (Columns / split right) and `ctrl+w s` (Rows / split down).
-  On split: `SplitFocused`, bind the new pane to the next open buffer (or
-  the current one if only a single buffer is open), then `bufs.Switch` to it.
-- `ctrl+w c` closes the focused pane: `CloseFocused`, drop the binding,
-  collapse. `CloseFocused` already refuses the last pane.
-- Tests: the prefix arms and disarms correctly; bare `ctrl+w` still closes
-  a tab; split raises pane count and binds a buffer; close refuses the last
-  pane; the binding map stays consistent across split/close cycles.
+Done, with one decision changed from the plan below. **The window leader is
+`alt+w`, not a pending-`ctrl+w` prefix.** The pinned ctrl+w-prefix idea was
+abandoned because `ctrl+w` is already bound to `closeActiveTab()` and several
+existing tests (`TestTabFlow`, `TestTabFlowDirtyBlocksClose`) press a single
+`ctrl+w` expecting an immediate tab close — a prefix state would have made
+the first `ctrl+w` swallow that close, breaking both the tests and the
+committed promise to preserve close-tab muscle memory. `alt+w` is free, reads
+as "window," and fits nook's existing alt-leader idiom (alt+v markdown
+preview, alt+] / alt+[ tab cycle). `ctrl+w` stays exactly as it was.
+
+- **`alt+w` arms a one-shot `awaitingWindowKey` state.** A handler at the top
+  of `routeKey` reads it before the global switch, so the chord's second key
+  (a plain rune) is consumed there instead of being typed into the buffer.
+  The next key runs a window op or disarms.
+- `alt+w v` (Columns / split right) and `alt+w s` (Rows / split down).
+  `splitPane` requires ≥2 open buffers — a lone-buffer split would show the
+  same content twice, which per-pane sizing cannot honor — and v1 caps at one
+  split (two panes). It binds the new pane to the next open buffer and
+  `bufs.Switch`es to it, keeping the focus==active invariant.
+- `alt+w c` closes the focused pane: `CloseFocused`, drop the `paneBuf`
+  binding, re-switch the active buffer to the surviving pane's binding. The
+  buffer stays open as a tab; only the pane binding drops, so no bufman
+  reindex is needed. `CloseFocused` already refuses the last pane.
+- Tests (`main_splitpane_test.go`): `alt+w v` / `alt+w s` raise pane count and
+  produce the right divider orientation; `alt+w c` returns to one pane with
+  both buffers still open; `alt+w` + an unrelated key disarms without
+  splitting; split is refused with a single buffer; existing `TestTabFlow`
+  confirms bare `ctrl+w` still closes a tab.
 
 ### Slice 3 — focus routing
 
-- `ctrl+w h/j/k/l` → `FocusDir`, then `bufs.Switch` to the focused pane's
-  bound buffer. `ctrl+w w` → `FocusNext`.
+- `alt+w h/j/k/l` → `FocusDir`, then `bufs.Switch` to the focused pane's
+  bound buffer. `alt+w w` → `FocusNext`.
 - Active-pane affordance: brighten the focused pane's divider/border so
   the user can see which split has the cursor.
-- `ctrl+w <` / `ctrl+w >` → `ResizeFocused` to shift the divider.
+- `alt+w <` / `alt+w >` → `ResizeFocused` to shift the divider.
 - If mouse is wired: click → `PaneAt` → focus.
 - Tests: directional focus selects the correct neighbor; focusing a pane
   changes `bufs.ActiveIndex()` to that pane's bound buffer.
