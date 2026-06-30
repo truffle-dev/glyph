@@ -194,13 +194,30 @@ pane to zero width (clamp proof); the chord is a no-op with one pane.
 The mouse split was deferred to keep this slice complete and green. Keyboard
 resize is the interactive capstone; mouse needs its own screen-coordinate map.
 
-#### Slice 3c — mouse focus — NEXT
+#### Slice 3c — mouse focus — LANDED
 
-- Mouse is already enabled (`tea.WithMouseCellMotion()` at `main.go`).
-- Click → map screen coords (tree-width left offset, header rows) to an editor
-  region point → `split.PaneAt` → `Focus` → `syncFocusedPane`.
-- Tests: a click in each pane's rectangle selects that pane; a click in the
-  tree or header is ignored.
+Done. A left-button press is dispatched to `routeMouse`, the mouse twin of the
+alt+w focus chords. It acts only on `MouseButtonLeft` + `MouseActionPress`,
+only when a split is live and no overlay floats; wheel, drag, and clicks
+outside the editor region fall through untouched so future mouse uses stay
+open. The screen→region mapping is the inverse of `View()`'s composition,
+factored into two helpers so it can never drift from the layout:
+
+- `treeWidth()` — extracted from `editorRegion` so the tree's column count has
+  one definition that both width and origin read.
+- `editorOrigin()` — the editor region's top-left screen cell: `treeWidth()`
+  plus one divider column on the left, plus one tab-bar row on top when a
+  buffer is open.
+
+`routeMouse` subtracts the origin from the click, bounds-checks against the
+region, then `split.PaneAt` → `Focus` → `syncFocusedPane` (keeping
+focus==active). A click on the divider gap or the already-focused pane is a
+no-op. Tests (`main_splitpane_test.go`): a click in each pane selects it and
+drags the active buffer; a click in the file tree is ignored; a click with no
+split is inert; a wheel event never reroutes focus.
+
+**Split panes is now complete from both keyboard and mouse.** Remaining work
+is Slice 4 reconciliation polish, a separate concern.
 
 ### Slice 4 — reconciliation polish
 

@@ -467,3 +467,104 @@ func TestWindowLeaderResizeNoSplitIsNoOp(t *testing.T) {
 		t.Errorf("resize chord created a split: count = %d", m.split.Count())
 	}
 }
+
+// clickAt presses the left mouse button at screen coordinate (x, y).
+func clickAt(m model, x, y int) model {
+	u, _ := m.Update(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	return u.(model)
+}
+
+// paneCenter returns a screen point inside pane pid's rectangle, mapping the
+// region-local rect back through the editor origin the way View() lays it out.
+func paneCenter(m model, pid splitlayout.PaneID) (int, int) {
+	w, h := m.editorRegion()
+	r := m.split.Rects(w, h)[pid]
+	ox, oy := m.editorOrigin()
+	return ox + r.X + r.W/2, oy + r.Y + r.H/2
+}
+
+// TestMouseClickFocusesPaneUnderCursor is the headline of slice 3c: clicking
+// inside a pane makes it the focused pane and drags the active buffer with it,
+// the mouse twin of alt+w w. A columns split puts two panes side by side; a
+// click in each must select that pane.
+func TestMouseClickFocusesPaneUnderCursor(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'v') // columns split; focus lands on the new (right) pane
+	ids := m.split.Panes()
+	if len(ids) != 2 {
+		t.Fatalf("want 2 panes, got %d", len(ids))
+	}
+	left, right := ids[0], ids[1]
+
+	// Click the left pane: focus moves there and the active buffer follows.
+	lx, ly := paneCenter(m, left)
+	m = clickAt(m, lx, ly)
+	if m.split.Focused() != left {
+		t.Fatalf("click in left pane focused %v, want %v", m.split.Focused(), left)
+	}
+	if m.bufs.ActiveIndex() != m.paneBuf[left] {
+		t.Errorf("focus==active broken after click: active=%d, pane binds %d",
+			m.bufs.ActiveIndex(), m.paneBuf[left])
+	}
+
+	// Click the right pane: focus moves back.
+	rx, ry := paneCenter(m, right)
+	m = clickAt(m, rx, ry)
+	if m.split.Focused() != right {
+		t.Errorf("click in right pane focused %v, want %v", m.split.Focused(), right)
+	}
+}
+
+// TestMouseClickInTreeIgnored guards the origin math: a click to the left of
+// the editor region (in the file tree) must not change split focus.
+func TestMouseClickInTreeIgnored(t *testing.T) {
+	m := openTwo(t)
+	m.showTree = true
+	m = m.resize()
+	m = altW(m)
+	m = runeKey(m, 'v')
+	before := m.split.Focused()
+
+	// x=0 is inside the tree column, left of the editor origin.
+	m = clickAt(m, 0, 5)
+	if m.split.Focused() != before {
+		t.Error("a click in the file tree moved split focus")
+	}
+}
+
+// TestMouseClickNoSplitIsNoOp confirms a click is inert with one pane: nothing
+// to refocus, no panic, no split created.
+func TestMouseClickNoSplitIsNoOp(t *testing.T) {
+	m := openTwo(t) // two buffers, no split
+	before := m.bufs.ActiveIndex()
+	m = clickAt(m, 40, 10)
+	if m.split.Count() != 1 {
+		t.Errorf("a click created a split: count = %d", m.split.Count())
+	}
+	if m.bufs.ActiveIndex() != before {
+		t.Errorf("a click with no split changed the active buffer: %d -> %d",
+			before, m.bufs.ActiveIndex())
+	}
+}
+
+// TestMouseWheelIgnored guards that non-left-press events (here a wheel-up)
+// never reroute focus: only a deliberate left click selects a pane.
+func TestMouseWheelIgnored(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'v')
+	before := m.split.Focused()
+	ids := m.split.Panes()
+	other := ids[0]
+	if other == before {
+		other = ids[1]
+	}
+	// Aim the wheel event at the non-focused pane; it must still be ignored.
+	x, y := paneCenter(m, other)
+	u, _ := m.Update(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	m = u.(model)
+	if m.split.Focused() != before {
+		t.Error("a mouse wheel event moved split focus")
+	}
+}

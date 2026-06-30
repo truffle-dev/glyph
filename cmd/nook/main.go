@@ -1200,6 +1200,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.routeKey(msg)
 
+	case tea.MouseMsg:
+		return m.routeMouse(msg)
+
 	case filesLoadedMsg:
 		m.files = msg.files
 		items := make([]picker.Item, len(msg.files))
@@ -4057,6 +4060,33 @@ func (m model) closePane() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// routeMouse focuses the pane under a left click. It is the mouse twin of the
+// alt+w h/j/k/l/w chords: a click is the most direct way to say "work here".
+// Only a left-button press is acted on, and only when a split is live and no
+// overlay is floating; everything else (wheel, drag, clicks in the tree or tab
+// bar or on the divider gap) falls through untouched so existing behaviour and
+// future mouse uses stay open.
+func (m model) routeMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Button != tea.MouseButtonLeft || msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	if m.overlay != overlayNone || m.split == nil || m.split.Count() < 2 {
+		return m, nil
+	}
+	ox, oy := m.editorOrigin()
+	rx, ry := msg.X-ox, msg.Y-oy
+	w, h := m.editorRegion()
+	if rx < 0 || ry < 0 || rx >= w || ry >= h {
+		return m, nil // click landed in the tree, tab bar, or right pane
+	}
+	pid, ok := m.split.PaneAt(rx, ry, w, h)
+	if !ok || pid == m.split.Focused() {
+		return m, nil // the divider gap, or the already-focused pane
+	}
+	m.split.Focus(pid)
+	return m.syncFocusedPane(true)
+}
+
 // focusDir moves split focus to the nearest pane in direction d (alt+w h/j/k/l)
 // and re-syncs the editor onto it. With no live split the chord is a no-op.
 func (m model) focusDir(d splitlayout.Direction) (tea.Model, tea.Cmd) {
@@ -4875,17 +4905,41 @@ func (m model) shouldShowWelcome() bool {
 // single pane it IS the pane. Must mirror resize() exactly: tree on the left
 // when visible, right pane on the right when active, and a minimum-20 editor
 // floor that shrinks the tree when necessary.
-func (m model) editorRegion() (int, int) {
-	treeW := 0
-	if m.showTree {
-		treeW = m.width / 5
-		if treeW < 22 {
-			treeW = 22
-		}
-		if treeW > 40 {
-			treeW = 40
-		}
+// treeWidth is the column count the file tree occupies, or 0 when it is
+// hidden. editorRegion and editorOrigin both go through here so the editor's
+// width and its on-screen left edge can never disagree about where the tree
+// ends.
+func (m model) treeWidth() int {
+	if !m.showTree {
+		return 0
 	}
+	treeW := m.width / 5
+	if treeW < 22 {
+		treeW = 22
+	}
+	if treeW > 40 {
+		treeW = 40
+	}
+	return treeW
+}
+
+// editorOrigin is the screen coordinate of the editor region's top-left cell:
+// past the tree and its divider on the left, and below the tab bar on top.
+// It is the inverse of the View() composition, used to turn a mouse click into
+// a point inside the editor region.
+func (m model) editorOrigin() (x, y int) {
+	x = m.treeWidth()
+	if x > 0 {
+		x++ // the one-cell divider drawn between the tree and the editor
+	}
+	if m.bufs.Count() > 0 {
+		y = 1 // the tab bar sits above the body whenever a buffer is open
+	}
+	return x, y
+}
+
+func (m model) editorRegion() (int, int) {
+	treeW := m.treeWidth()
 	leftW := m.width - treeW
 	if treeW > 0 {
 		leftW--
