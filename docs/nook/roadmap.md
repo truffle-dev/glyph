@@ -12,9 +12,9 @@ This file tracks reality against it.
 
 ## Where nook is now
 
-- Latest release: **v0.49.0** (2026-06-16). Tags run v0.1.0 → v0.49.0.
+- Latest release: **v0.51.0** (2026-06-30). Tags run v0.1.0 → v0.51.0.
 - `cmd/nook/internal/`: 53 panes/packages.
-- `components/`: 38 glyph components (all released as of v0.49.0).
+- `components/`: 40 glyph components (all released as of v0.51.0).
 - Binary builds via goreleaser on every `v*` tag (13 assets).
 
 nook is well past the spec's Phase 1 ("vim with picker + search + git +
@@ -64,6 +64,13 @@ Grouped by arc. One line per capability; the tag is where it landed.
 - v0.49.0 — the boolean primitive: `toggle` switch, completing the
   form-input family (text-input / select / range-slider / toggle).
   Registry re-synced and deployed to the public registry on release.
+- v0.50.0 — the status primitive: `badge`, a value-based stateless
+  status pill between `stat-card` and `status-bar`.
+- v0.51.0 — split panes: nook shows two files at once (`alt+w v/s` split,
+  `h/j/k/l`/click focus, `< / >` resize). Plus nook review-surface
+  maturation (multibuffer motion, diagnostics filter + codes, theme
+  switcher, settings overlay, LSP-ordered completions) and the
+  `multi-select` component completing the form-input family.
 
 ## Standing constraints (do not regress)
 
