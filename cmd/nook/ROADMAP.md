@@ -69,7 +69,9 @@ Roughly in priority order.
    line positions for rendering, and `PaneAt` hit-testing for mouse focus,
    all constant-time and unit-tested. What remains is host wiring: rendering
    each pane's editor view into its rect, drawing the dividers, routing
-   input to the focused pane, and the focus and split keybindings.
+   input to the focused pane, and the focus and split keybindings. The
+   wiring is decomposed into four green-shippable slices in
+   `docs/nook/design/01-split-panes-host-wiring.md`.
 2. **Full multi-cursor.** Add-cursor-at-next-match (ctrl+d),
    select-all-occurrences (alt+d), stack-above/below (ctrl+↑/↓),
    split-selection-into-lines (alt+i), multi-line edit at every cursor,
