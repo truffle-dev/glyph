@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-06-30
+
+Two files at once. nook gains split panes — the headline Zed-parity
+feature and the largest single addition since the editor itself. `alt+w v`
+and `alt+w s` split the viewport into columns or rows, focus moves by
+direction or click, and the divider slides under `alt+w <` / `alt+w >`. The
+release also matures nook's review and navigation surfaces: multibuffer
+file-to-file and change-to-change motion, a severity filter and diagnostic
+codes on the workspace problems panel, a live theme switcher, a read-only
+effective-settings overlay, and LSP-ordered completions. On the library
+side, `components/multi-select` completes the form-input family with the
+missing zero-or-more control.
+
 ### Fixed
 
 - nook's diagnostics panel now collapses multi-line messages to a single
@@ -19,6 +32,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- nook can now split the editor into two panes and show two files at
+  once — the headline Zed-parity feature and the largest single addition
+  since the editor itself. `alt+w v` splits the viewport into side-by-side
+  columns, `alt+w s` into stacked rows; each pane binds to a distinct open
+  buffer. `alt+w h/j/k/l` moves focus by direction and `alt+w w` cycles it;
+  `alt+w <` / `alt+w >` slide the divider to shrink or grow the focused pane
+  (a `>` always grows the focused side regardless of which half it is); a
+  left click selects the pane under the cursor. `alt+w c` closes the focused
+  pane and leaves both buffers open as tabs. Focus is the active buffer, so
+  every existing editing path — cursor, save, find, completion, LSP — drives
+  the focused pane with no per-pane bookkeeping. The live divider tints with
+  the theme accent and the editing cursor marks which pane holds focus. v1
+  caps at one split (two panes) with one distinct buffer per pane; showing
+  the same buffer in two panes with independent scroll is deferred.
 - `components/multi-select` — bounded multi-choice list with checkbox rows,
   the sibling to `select` for when the answer is "zero or more of these":
   files to stage, tags to attach, scopes to grant. `Space` or `Tab` toggles
