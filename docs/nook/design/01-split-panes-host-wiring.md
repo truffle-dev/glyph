@@ -154,16 +154,35 @@ preview, alt+] / alt+[ tab cycle). `ctrl+w` stays exactly as it was.
   splitting; split is refused with a single buffer; existing `TestTabFlow`
   confirms bare `ctrl+w` still closes a tab.
 
-### Slice 3 — focus routing
+#### Slice 3a — focus routing — LANDED
 
-- `alt+w h/j/k/l` → `FocusDir`, then `bufs.Switch` to the focused pane's
-  bound buffer. `alt+w w` → `FocusNext`.
-- Active-pane affordance: brighten the focused pane's divider/border so
-  the user can see which split has the cursor.
+Done. The split is now navigable from the keyboard. `alt+w h/j/k/l` calls
+`FocusDir(Left/Down/Up/Right, w, h)` and `alt+w w` calls `FocusNext`; both
+route through `syncFocusedPane`, which restores the focus==active invariant by
+`bufs.Switch`ing to the newly focused pane's bound buffer, then reapplies
+diagnostics and sizing — so every existing editing path operates on the
+focused pane with no per-pane bookkeeping. A `FocusDir` with no neighbour that
+way (e.g. `alt+w k` in a side-by-side columns split) is a no-op with a hint;
+the focus chords are inert with a single pane. The directional geometry is
+covered by `splitlayout`'s own `TestFocusDir`; the host tests cover the wiring
+(`TestWindowLeaderFocusNextSyncsBuffer` proves the active buffer follows
+focus), the dead-end (`...FocusDirNoNeighborIsNoOp`), and the single-pane
+no-op (`...FocusNoSplitIsNoOp`).
+
+Affordance: the live-split divider is tinted with the accent (`theme.Primary`)
+rather than the quiet border colour, so a split reads as an active workspace at
+a glance. **Which** pane holds focus is shown by the cursor — the focused pane
+is the active buffer (focus==active) and only it draws the editing cursor. A
+per-pane highlighted border was considered and deferred: borders consume cells
+and would fight the "composite fills the region byte for byte" invariant; the
+cursor is the honest focus indicator for a two-pane v1.
+
+#### Slice 3b — resize + mouse — NEXT
+
 - `alt+w <` / `alt+w >` → `ResizeFocused` to shift the divider.
 - If mouse is wired: click → `PaneAt` → focus.
-- Tests: directional focus selects the correct neighbor; focusing a pane
-  changes `bufs.ActiveIndex()` to that pane's bound buffer.
+- Tests: resize clamps so neither pane vanishes; a click selects the pane
+  under the cursor.
 
 ### Slice 4 — reconciliation polish
 

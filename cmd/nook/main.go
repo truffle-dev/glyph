@@ -2147,6 +2147,16 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.splitPane(splitlayout.Rows)
 			case 'c':
 				return m.closePane()
+			case 'h':
+				return m.focusDir(splitlayout.Left)
+			case 'j':
+				return m.focusDir(splitlayout.Down)
+			case 'k':
+				return m.focusDir(splitlayout.Up)
+			case 'l':
+				return m.focusDir(splitlayout.Right)
+			case 'w':
+				return m.focusNext()
 			}
 		}
 		// Any other key cancels the leader without acting on the workspace.
@@ -2422,11 +2432,12 @@ func (m model) routeKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 'w':
 			// Alt+w is the window-command leader (mnemonic: window). It arms a
 			// one-shot state read at the top of routeKey: the next key runs a
-			// window op. v splits the focused pane into side-by-side columns, s
-			// splits it into stacked rows, c closes the focused pane. Kept off
-			// ctrl+w so the historical close-tab binding survives unchanged.
+			// window op. v/s split the focused pane (columns / rows), c closes
+			// it, h/j/k/l move focus to the neighbour in that direction and w
+			// cycles to the next pane. Kept off ctrl+w so the historical
+			// close-tab binding survives unchanged.
 			m.awaitingWindowKey = true
-			m.status = "window: v split right · s split down · c close pane"
+			m.status = "window: v/s split · c close · h/j/k/l focus · w next"
 			return m, nil
 		case 'y':
 			// Alt+y toggles gopls inlay hints (type annotations + parameter
@@ -4042,6 +4053,47 @@ func (m model) closePane() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// focusDir moves split focus to the nearest pane in direction d (alt+w h/j/k/l)
+// and re-syncs the editor onto it. With no live split the chord is a no-op.
+func (m model) focusDir(d splitlayout.Direction) (tea.Model, tea.Cmd) {
+	if m.split == nil || m.split.Count() < 2 {
+		m.status = "no split to move through — alt+w v to split"
+		return m, nil
+	}
+	w, h := m.editorRegion()
+	return m.syncFocusedPane(m.split.FocusDir(d, w, h))
+}
+
+// focusNext cycles split focus to the next pane (alt+w w) and re-syncs onto it.
+// With two panes this toggles between them; with one it is a no-op.
+func (m model) focusNext() (tea.Model, tea.Cmd) {
+	if m.split == nil || m.split.Count() < 2 {
+		m.status = "no split to cycle — alt+w v to split"
+		return m, nil
+	}
+	m.split.FocusNext()
+	return m.syncFocusedPane(true)
+}
+
+// syncFocusedPane restores the focus==active invariant after the split tree's
+// focus changed: the newly focused pane's bound buffer becomes the active
+// buffer, so every existing editing path operates on the focused pane with no
+// per-pane bookkeeping. moved reports whether focus actually changed; when it
+// did not (no neighbour that way) the workspace is left untouched with a hint.
+func (m model) syncFocusedPane(moved bool) (tea.Model, tea.Cmd) {
+	if !moved {
+		m.status = "no pane that way"
+		return m, nil
+	}
+	if idx, ok := m.paneBuf[m.split.Focused()]; ok {
+		m.bufs.Switch(idx)
+	}
+	m = m.resize()
+	m = m.applyDiagnosticsToActive()
+	m.status = ""
+	return m, nil
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -4774,13 +4826,18 @@ func (m model) renderSplitPanes() string {
 			Render(body)
 	}
 
+	// The divider is tinted with the accent rather than the quiet border
+	// colour so a live split reads as an active workspace at a glance. Which
+	// of the two panes holds focus is shown by the cursor: the focused pane is
+	// the active buffer (the focus==active invariant), and only it draws the
+	// editing cursor.
 	a, b := view(ids[0]), view(ids[1])
 	if orient == splitlayout.Columns {
-		divider := lipgloss.NewStyle().Foreground(t.Border).
+		divider := lipgloss.NewStyle().Foreground(t.Primary).
 			Render(strings.TrimRight(strings.Repeat("│\n", h), "\n"))
 		return lipgloss.JoinHorizontal(lipgloss.Top, a, divider, b)
 	}
-	divider := lipgloss.NewStyle().Foreground(t.Border).
+	divider := lipgloss.NewStyle().Foreground(t.Primary).
 		Render(strings.Repeat("─", w))
 	return lipgloss.JoinVertical(lipgloss.Left, a, divider, b)
 }

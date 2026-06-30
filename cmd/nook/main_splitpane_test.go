@@ -327,3 +327,69 @@ func TestWindowLeaderRefusesSingleBuffer(t *testing.T) {
 		t.Errorf("split with one buffer should be refused, count = %d", m.split.Count())
 	}
 }
+
+// TestWindowLeaderFocusNextSyncsBuffer is the headline of slice 3: moving split
+// focus must carry the active buffer with it, because every editing path keys
+// off the active buffer (the focus==active invariant). After a split, alt+w w
+// cycles to the other pane and the active buffer becomes that pane's binding.
+func TestWindowLeaderFocusNextSyncsBuffer(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'v')
+	first := m.split.Focused()
+	if m.bufs.ActiveIndex() != m.paneBuf[first] {
+		t.Fatalf("post-split invariant broken: active=%d, focused pane binds %d",
+			m.bufs.ActiveIndex(), m.paneBuf[first])
+	}
+
+	m = altW(m)
+	m = runeKey(m, 'w')
+	if m.split.Focused() == first {
+		t.Fatal("alt+w w did not move focus to the other pane")
+	}
+	if m.bufs.ActiveIndex() != m.paneBuf[m.split.Focused()] {
+		t.Errorf("focus==active broken after move: active=%d, focused pane binds %d",
+			m.bufs.ActiveIndex(), m.paneBuf[m.split.Focused()])
+	}
+	if m.bufs.ActiveIndex() == m.paneBuf[first] {
+		t.Error("active buffer did not change when focus moved to the other pane")
+	}
+}
+
+// TestWindowLeaderFocusDirNoNeighborIsNoOp guards the dead-end path: in a
+// side-by-side columns split there is no pane above, so alt+w k must leave
+// focus exactly where it was rather than wrapping or panicking.
+func TestWindowLeaderFocusDirNoNeighborIsNoOp(t *testing.T) {
+	m := openTwo(t)
+	m = altW(m)
+	m = runeKey(m, 'v') // columns: the two panes sit side by side
+	before := m.split.Focused()
+
+	m = altW(m)
+	m = runeKey(m, 'k') // Up has no neighbour in a columns split
+	if m.split.Focused() != before {
+		t.Error("alt+w k moved focus in a columns split with no vertical neighbour")
+	}
+}
+
+// TestWindowLeaderFocusNoSplitIsNoOp confirms the focus chords are inert with a
+// single pane: alt+w w / alt+w l must not panic or change the active buffer.
+func TestWindowLeaderFocusNoSplitIsNoOp(t *testing.T) {
+	m := openTwo(t) // two buffers, but no split yet
+	before := m.bufs.ActiveIndex()
+	if m.split.Count() != 1 {
+		t.Fatalf("expected a single pane before splitting, got %d", m.split.Count())
+	}
+
+	m = altW(m)
+	m = runeKey(m, 'w')
+	m = altW(m)
+	m = runeKey(m, 'l')
+	if m.split.Count() != 1 {
+		t.Errorf("focus chord created a split: count = %d", m.split.Count())
+	}
+	if m.bufs.ActiveIndex() != before {
+		t.Errorf("focus chord with no split changed the active buffer: %d -> %d",
+			before, m.bufs.ActiveIndex())
+	}
+}
